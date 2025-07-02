@@ -36,9 +36,12 @@ scons -jX
 
 ## 📦 External Dependencies
 
-- [ROOT](https://root.cern/)
-- [pybind11](https://github.com/pybind/pybind11)
-- [yaml-cpp](https://github.com/jbeder/yaml-cpp)
+- [ROOT](https://root.cern/) — Data processing, I/O, RDataFrame
+- [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings
+- [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML config parsing
+- [nlohmann/json](https://github.com/nlohmann/json) — JSON serialization (single-header)
+- [SCons](https://scons.org/) — Build system (`pip install scons`)
+- C++17 or higher
 
 ---
 
