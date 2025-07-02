@@ -1,0 +1,10 @@
+import os
+
+Import("env")
+
+srcs = ["ParamManager.cc"]
+
+lib = env.SharedLibrary("libParamManager", srcs)
+install_targets = env.Install(env["LIBDIR"], lib)
+
+Return("lib install_targets")

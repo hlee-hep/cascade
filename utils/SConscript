@@ -1,0 +1,25 @@
+import os
+Import("env","TOP")
+
+srcdir = os.path.join(TOP, "utils")              
+builddir = os.path.join(TOP, "build", "utils")    
+headers = [os.path.join(srcdir, "Logger.hh")]
+linkdef = os.path.join(srcdir, "LinkDef.h")
+
+dict_cxx = os.path.join(builddir, "utilsDict.cxx")
+pcm = os.path.join(builddir, "utilsDict_rdict.pcm")
+rootmap = os.path.join(builddir, "libutils.rootmap")
+modenv = env.Clone()
+
+dict = modenv.Command(
+    target=[dict_cxx, pcm, rootmap],
+    source=[linkdef],
+    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libutils.so"
+)
+
+sources = [dict_cxx, os.path.join(builddir, "Logger.cc")]
+lib = modenv.SharedLibrary("libutils", sources)
+
+install_targets = modenv.Install(modenv["LIBDIR"], [lib, pcm, rootmap])
+
+Return("lib install_targets")

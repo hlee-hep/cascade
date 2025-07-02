@@ -1,0 +1,4 @@
+build/
+gui/
+framework_test/
+.sconsign.dblite

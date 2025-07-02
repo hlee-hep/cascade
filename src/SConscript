@@ -1,0 +1,14 @@
+import os
+Import("env", "lib_param_obj")
+
+modenv = env.Clone()
+libname = os.path.basename(lib_param_obj[0].name)[3:-3]
+modenv.Append(LIBPATH=[modenv["LIBDIR"]])
+modenv.Append(LIBS=[libname])
+
+libs = []
+install_targets = []
+srcs = Glob("*.cc")
+libs = modenv.SharedLibrary(srcs)
+install_targets = modenv.Install(modenv["LIBDIR"], [libs])
+Return("libs install_targets")

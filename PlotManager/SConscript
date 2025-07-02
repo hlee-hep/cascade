@@ -1,0 +1,28 @@
+import os
+Import("env","TOP")
+
+srcdir = os.path.join(TOP, "PlotManager")             
+builddir = os.path.join(TOP, "build", "PlotManager")  
+utilsdir = os.path.join(TOP, "build", "utils")
+headers = [os.path.join(srcdir, "PlotManager.hh")]
+linkdef = os.path.join(srcdir, "LinkDef.h")
+
+dict_cxx = os.path.join(builddir, "PlotManagerDict.cxx")
+pcm = os.path.join(builddir, "PlotManagerDict_rdict.pcm")
+rootmap = os.path.join(builddir, "libPlotManager.rootmap")
+modenv = env.Clone()
+modenv.Append(LIBS=["utils"])
+modenv.Append(LIBPATH=[utilsdir])
+
+dict = modenv.Command(
+    target=[dict_cxx, pcm, rootmap],
+    source=[],
+    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libPlotManager.so"
+)
+
+sources = [dict_cxx, os.path.join(builddir, "PlotManager.cc")]
+lib = modenv.SharedLibrary("libPlotManager", sources)
+
+install_targets = modenv.Install(modenv["LIBDIR"], [lib, pcm, rootmap])
+
+Return("lib install_targets")

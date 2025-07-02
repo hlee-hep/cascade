@@ -1,0 +1,28 @@
+import os
+Import("env","TOP")
+
+srcdir = os.path.join(TOP, "AnalysisManager")              
+builddir = os.path.join(TOP, "build", "AnalysisManager")    
+utilsdir = os.path.join(TOP, "build", "utils")
+headers = [os.path.join(srcdir, "AnalysisManager.hh"), os.path.join(srcdir, "LambdaManager.hh")]
+linkdef = os.path.join(srcdir, "LinkDef.h")
+
+dict_cxx = os.path.join(builddir, "AnalysisManagerDict.cxx")
+pcm = os.path.join(builddir, "AnalysisManagerDict_rdict.pcm")
+rootmap = os.path.join(builddir, "libAnalysisManager.rootmap")
+modenv = env.Clone()
+modenv.Append(LIBS=["utils"])
+modenv.Append(LIBPATH=[utilsdir])
+
+dict = modenv.Command(
+    target=[dict_cxx, pcm, rootmap],
+    source=["AnalysisManager.cc"],
+    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} -I{TOP}/utils {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libAnalysisManager.so"
+)
+
+sources = [dict_cxx, os.path.join(builddir, "AnalysisManager.cc")]
+lib = modenv.SharedLibrary("libAnalysisManager", sources)
+
+install_targets = modenv.Install(modenv["LIBDIR"], [lib, pcm, rootmap])
+
+Return("lib install_targets")

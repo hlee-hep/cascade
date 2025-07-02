@@ -1,0 +1,20 @@
+import os, glob
+
+Import("env", "lib_param_obj")
+
+modules = glob.glob("src/*Module.cc")
+
+modenv = env.Clone()
+libname = os.path.basename(lib_param_obj[0].name)[3:-3]
+modenv.Append(LIBPATH=[modenv["LIBDIR"]])
+modenv.Append(LIBS=[libname])
+
+libs = []
+installs = []
+for mod in modules:
+    mod = os.path.splitext(os.path.basename(mod))[0]
+    lib = modenv.SharedLibrary(f"lib{mod}", [f"src/{mod}.cc"])
+    libs.append(lib)
+    installs.append(modenv.Install(modenv["LIBDIR"], lib))
+
+Return("libs installs")

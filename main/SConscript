@@ -1,0 +1,24 @@
+import os
+from collections import defaultdict
+
+Import("env", "core_objs", "utils_obj", "lib_param_obj" ,"module_libs_obj", "lib_analysis_obj", "lib_plot_obj")
+
+all_objs = core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj
+
+for sublist in module_libs_obj:
+    all_objs.extend(sublist)
+
+modenv = env.Clone()
+for obj in all_objs:
+    if str(obj).endswith(".so"):
+        libname = os.path.basename(obj.name)[3:-3]
+        modenv.AppendUnique(LIBS=[libname])
+        modenv.AppendUnique(LIBPATH=[modenv["LIBDIR"]])
+
+
+srcs = ["Cascade.cc"]
+
+lib = modenv.SharedLibrary("Cascade", srcs)
+install_targets = modenv.Install(modenv["LIBDIR"], lib)
+
+Return("lib install_targets")
