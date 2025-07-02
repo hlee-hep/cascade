@@ -1,4 +1,5 @@
 build/
 gui/
 framework_test/
+include/json.hpp
 .sconsign.dblite
