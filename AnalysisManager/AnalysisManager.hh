@@ -71,7 +71,8 @@ class AnalysisManager
     void SaveHistsConfig(const std::string &yamlOut);
     void SaveHists(const std::string &outfile);
 
-    void SetRDFInput(const std::string &yamlPath);
+    void SetRDFInputFromConfig(const std::string &yamlPath);
+    void SetRDFInputFromFile(const std::string &treename, const std::string &rootfile);
 
     template <typename F>
     void DefineRDFVar(const std::string &name, F &&func,
@@ -121,6 +122,9 @@ class AnalysisManager
     LambdaManager *GetLambdaManager();
     std::ofstream OpenResultFile(const std::string &filename,
                                  const std::string &mode = "recreate") const;
+
+    std::unique_ptr<AnalysisManager> Fork();
+    ROOT::RDF::RNode GetIsolatedRNode();
 
     void PrintCuts();
     void PrintConfig();

@@ -56,7 +56,7 @@ class IAnalysisModule
     const auto &GetAllManagers() const { return _mgr; }
 
   protected:
-    virtual void RegisterAnalysisManager(const std::string &name)
+    virtual void RegisterAnalysisManager(const std::string &name = "main")
     {
         auto it = _mgr.find(name);
         if (it != _mgr.end())

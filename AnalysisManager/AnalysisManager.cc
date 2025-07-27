@@ -698,7 +698,7 @@ void AnalysisManager::LoadEntry(Long64_t i)
 
 Long64_t AnalysisManager::GetEntries() { return currentTree->GetEntries(); }
 
-void AnalysisManager::SetRDFInput(const std::string &yamlPath)
+void AnalysisManager::SetRDFInputFromConfig(const std::string &yamlPath)
 {
     YAML::Node config = YAML::LoadFile(yamlPath);
     auto input = config["input"];
@@ -732,6 +732,16 @@ void AnalysisManager::SetRDFInput(const std::string &yamlPath)
         LOG_ERROR("AnalysisManager", "Cannot find input!");
         return;
     }
+}
+
+void AnalysisManager::SetRDFInputFromFile(const std::string &treename, const std::string &filename)
+{
+    currentTree = new TChain(treename.c_str());
+    currentTree->Add(filename.c_str());
+    useRDF = true;
+    rdf_raw = std::make_unique<ROOT::RDataFrame>(*currentTree);
+    rdf_node = *rdf_raw;
+    lm = std::make_unique<LambdaManager>();
 }
 
 void AnalysisManager::DefineRDFVar(const std::string &name,
@@ -915,6 +925,27 @@ void AnalysisManager::SaveHistsRDF(const std::string &outfile)
     delete file;
     UpdateProgress(1.0);
     LOG_INFO("AnalysisManager", "RDF Histograms are saved in " << outfile);
+}
+
+std::unique_ptr<AnalysisManager> AnalysisManager::Fork()
+{
+    auto forked = std::make_unique<AnalysisManager>();
+    forked->rdf_node = this->rdf_node->Filter([](){return true;});
+    forked->useRDF = true;
+    forked->rawCutExpr = this->rawCutExpr;
+    forked->definedVars = this->definedVars;
+    forked->lm = std::make_unique<LambdaManager>();
+
+    return forked;
+}
+
+ROOT::RDF::RNode AnalysisManager::GetIsolatedRNode()
+{
+    if (!rdf_node.has_value())
+        throw std::runtime_error("rdf_node not initialized");
+
+    LOG_INFO("AnalysisManager","Isolated RNode is generated. Manager has no responsible for the RNode.");
+    return rdf_node->Filter([](){return true;});
 }
 
 LambdaManager *AnalysisManager::GetLambdaManager()

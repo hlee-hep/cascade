@@ -39,7 +39,7 @@ class RDFHistModule : public IAnalysisModule
     {
         SetStatus("Initializing");
         mg = GetAnalysisManager("main");
-        mg->SetRDFInput(_param.Get<std::string>("config"));
+        mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
         mg->ApplyRDFFilter("types",
                            ("Type==" + _param.Get<std::string>("type")));
         mg->BookRDFHistsFromConfig(_param.Get<std::string>("hist_config"),

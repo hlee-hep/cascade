@@ -31,7 +31,7 @@ class RDFSkimModule : public IAnalysisModule
     void Init() override
     {
         mg = GetAnalysisManager("main");
-        mg->SetRDFInput(_param.Get<std::string>("config"));
+        mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
     }
     void Execute() override
     {
