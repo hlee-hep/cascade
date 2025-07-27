@@ -74,7 +74,7 @@ class RDFHistModule : public IAnalysisModule
 
     std::string ComputeSnapshotHash() const override
     {
-        return SnapshotHasher::Compute(_param, *mg, basename,
+        return SnapshotHasher::Compute(_param, GetAllManagers(), basename,
                                        code_version_hash);
     }
 
