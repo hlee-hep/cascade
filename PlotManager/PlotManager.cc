@@ -1126,6 +1126,11 @@ void PlotManager::PlotComparison(const string &var,
     canvasList.push_back({var, c1});
 }
 
+void PlotManager::RegisterCanvas(const string &name, TCanvas* c)
+{
+    canvasList.push_back({name,c});
+}
+
 void PlotManager::SaveDrawnCanvases(const string &suffix, const string &comment)
 {
     for (auto &can : canvasList)

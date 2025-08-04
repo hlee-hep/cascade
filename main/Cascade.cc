@@ -40,7 +40,7 @@ PYBIND11_MODULE(_cascade, m)
         .def("get_dag", &AMCM::GetDAGManager,
              py::return_value_policy::reference_internal)
         .def("run_dag", &AMCM::RunDAG);
-    py::enum_<logger::LogLevel>(m, "LogLevel")
+    py::enum_<logger::LogLevel>(m, "log_level")
         .value("DEBUG", logger::LogLevel::DEBUG)
         .value("INFO", logger::LogLevel::INFO)
         .value("WARN", logger::LogLevel::WARN)

@@ -2,6 +2,7 @@
 #include "AnalysisModuleRegistry.hh"
 #include "Logger.hh"
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
@@ -131,7 +132,7 @@ void AMCM::SaveRunLog() const
     std::tm *now = std::localtime(&t);
     char buf[20];
     std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", now);
-    std::string filename = "log_" + std::string(buf);
+    std::string filename = "control_log_" + std::string(buf);
     int counter = 0;
 
     YAML::Emitter out;
@@ -161,7 +162,8 @@ void AMCM::SaveRunLog() const
     out << YAML::EndMap;
 
     filename += ".yaml";
-    std::ofstream fout(filename);
+    std::filesystem::create_directories("run_logs");
+    std::ofstream fout("run_logs/"+filename);
     fout << out.c_str();
     LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
 }

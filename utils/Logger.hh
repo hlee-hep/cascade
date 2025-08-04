@@ -43,7 +43,7 @@ class Logger
   private:
     Logger();
     LogLevel g_level = LogLevel::INFO;
-    std::mutex log_mutex;
+    std::recursive_mutex log_mutex;
     std::unique_ptr<std::ofstream> log_file_out;
     bool is_terminal = isatty(fileno(stdout));
 

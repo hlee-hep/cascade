@@ -750,7 +750,6 @@ void AnalysisManager::DefineRDFVar(const std::string &name,
     if (!useRDF)
         throw std::runtime_error("RDF not initialized");
     rdf_node = rdf_node->Define(name, expr);
-    definedVars.insert(name);
 }
 
 void AnalysisManager::ApplyRDFFilter(const std::string &name)
@@ -882,13 +881,12 @@ void AnalysisManager::SnapshotRDF(const std::string &treeName,
     // ROOT::RDF::Experimental::AddProgressBar(*rdf_node);
     ROOT::RDF::RSnapshotOptions opts;
     opts.fLazy = true;
-    std::vector<std::string> cols(definedVars.begin(), definedVars.end());
     if (option == TreeOpt::OM::kRecreate)
-        rdf_node->Snapshot(treeName, fileName, cols, opts);
+        rdf_node->Snapshot(treeName, fileName, GetDefinedVarNames(), opts);
     else if (option == TreeOpt::OM::kAppend)
-        rdf_node->Snapshot(treeName, fileName, rdf_node->GetColumnNames(),
-                           opts);
-
+        rdf_node->Snapshot(treeName, fileName, GetAllVarNames(), opts);
+    else
+        throw std::runtime_error("No such option avaliable");
     start_time = std::chrono::steady_clock::now();
     *callback;
     UpdateProgress(1.0);
@@ -933,7 +931,6 @@ std::unique_ptr<AnalysisManager> AnalysisManager::Fork()
     forked->rdf_node = this->rdf_node->Filter([](){return true;});
     forked->useRDF = true;
     forked->rawCutExpr = this->rawCutExpr;
-    forked->definedVars = this->definedVars;
     forked->lm = std::make_unique<LambdaManager>();
 
     return forked;
@@ -1130,5 +1127,4 @@ AnalysisManager::~AnalysisManager()
     cutFormulas.clear();
     inputFiles.clear();
     delete currentTree;
-    definedVars.clear();
 }

@@ -24,9 +24,7 @@ class pyAMCM:
         elif isinstance(name_or_mod,pyBaseModule):
             mod = name_or_mod
             if mod in self.python_modules.values():
-                mod.init()
-                mod.execute()
-                mod.finalize()
+                mod.run()
             else:
                 print("No such module exists.")
         elif isinstance(name_or_mod, IAnalysisModule):

@@ -44,6 +44,11 @@ class pyBaseModule:
     def print_description(self):
         raise NotImplementedError("PythonModuleBase: print_description() must be implemented by subclass")
 
+    def run(self):
+        self.init()
+        self.execute()
+        self.finalize()
+
     def init(self):
         raise NotImplementedError("PythonModuleBase: init() must be implemented by subclass")
 

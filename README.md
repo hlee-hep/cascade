@@ -40,6 +40,7 @@ scons -jX
 - [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings
 - [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML config parsing
 - [nlohmann/json](https://github.com/nlohmann/json) — JSON serialization (single-header)
+- [openSSL](https://openssl-library.org) — Hash calculation
 - [SCons](https://scons.org/) — Build system (`pip install scons`)
 - C++17 or higher
 
@@ -57,7 +58,8 @@ Handles ROOT I/O, TTree, and RDataFrame-based analysis logic.
 ### 📊 PlotManager
 Manages ROOT histograms and plotting utilities.
 
-- Creates and renders 1D/2D histograms and graphs
+- Define consistent styles for 1D and 2D histograms and graphs
+- Drawing pre-defined 1D histograms
 - Designed to be decoupled from analysis logic
 - **Can be used independently in ROOT macros similar to AnalysisManager**
 

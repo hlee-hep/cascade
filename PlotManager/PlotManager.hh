@@ -46,7 +46,7 @@ using namespace std;
 
 class PlotManager
 {
-  public:
+public:
     PlotManager();
     ~PlotManager();
 
@@ -100,10 +100,12 @@ class PlotManager
                         int opts = 0);
     void SaveDrawnCanvases(const string &suffix = "pdf",
                            const string &comment = "");
+    void RegisterCanvas(const string &name, TCanvas* c);
+
     void ResetCanvases();
     string ExtractUnit(const std::string &input);
 
-  private:
+private:
     TLatex *latex;
     TLegend *leg;
     vector<int> colors;

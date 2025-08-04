@@ -81,7 +81,6 @@ class AnalysisManager
         if (!useRDF)
             throw std::runtime_error("RDF not initialized");
         rdf_node = rdf_node->Define(name, std::forward<F>(func), vars);
-        definedVars.insert(name);
     }
     void DefineRDFVar(const std::string &name, const std::string &expr);
 
@@ -126,6 +125,9 @@ class AnalysisManager
     std::unique_ptr<AnalysisManager> Fork();
     ROOT::RDF::RNode GetIsolatedRNode();
 
+    inline std::vector<std::string> GetAllVarNames() {return rdf_node->GetColumnNames();}
+    inline std::vector<std::string> GetDefinedVarNames() {return rdf_node->GetDefinedColumnNames();}
+    
     void PrintCuts();
     void PrintConfig();
     void PrintHists();
@@ -170,7 +172,6 @@ class AnalysisManager
 
     std::unique_ptr<ROOT::RDataFrame> rdf_raw = nullptr;
     std::optional<ROOT::RDF::RNode> rdf_node;
-    std::set<std::string> definedVars;
     bool useRDF = false;
     std::unique_ptr<LambdaManager> lm = nullptr;
 

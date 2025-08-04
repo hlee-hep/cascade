@@ -13,13 +13,13 @@ Logger::Logger() {}
 
 void Logger::SetLogLevel(LogLevel level)
 {
-    std::lock_guard<std::mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     g_level = level;
 }
 
 void Logger::InitLogFile(const std::string &path)
 {
-    std::lock_guard<std::mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     log_file_out = std::make_unique<std::ofstream>(path);
     if (!log_file_out->is_open())
         throw std::runtime_error("Failed to open log file: " + path);
@@ -211,7 +211,7 @@ std::string Logger::ApplyColor(LogLevel level, const std::string &module,
 void Logger::Log(LogLevel level, const std::string &module,
                  const std::string &msg)
 {
-    std::lock_guard<std::mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     if (level < g_level)
         return;
 
@@ -230,14 +230,14 @@ void Logger::Log(LogLevel level, const std::string &module,
     // file
     if (log_file_out && log_file_out->is_open())
     {
-        *log_file_out << raw << std::endl;
+        *log_file_out <<"["<<GetCurrentTime()<<"] "<< raw << std::endl;
     }
 }
 
 void Logger::PrintProgressBar(const std::string &name, double progress,
                               double elapsed, double eta)
 {
-    std::lock_guard<std::mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     const int barWidth = 40;
     int pos = static_cast<int>(progress * barWidth);
 
@@ -273,7 +273,7 @@ void Logger::PrintProgressBar(const std::string &name, double progress,
 
 std::string Logger::GetCurrentTime()
 {
-    std::lock_guard<std::mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
 
