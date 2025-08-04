@@ -95,19 +95,10 @@ class __attribute__((visibility("default"))) ParamManager
 
     std::string DumpJSON() const
     {
-        std::ostringstream oss;
-        oss << "{";
-        bool first = true;
+        json j;
         for (const auto &[k, v] : values_)
-        {
-            if (!first) oss << ",";
-            first = false;
-            oss << "\"" << k << "\": {"
-                << "\"value\": \"" << v << "\", "
-                << "\"description\": \"" << EscapeJSON(descriptions_.at(k)) << "\"}";
-        }
-        oss << "}";
-        return oss.str();
+            j[k] = {{"value", v},{"description", descriptions_.at(k)}};
+        return j.dump();
     }
 
     std::string PrintParameters() const
@@ -149,27 +140,4 @@ class __attribute__((visibility("default"))) ParamManager
     std::any GetRawAny(const std::string &key) const { return rawValues_.at(key); }
 
   private:
-    static std::string EscapeJSON(const std::string &str)
-    {
-        std::ostringstream oss;
-        for (char c : str)
-        {
-            switch (c)
-            {
-            case '"':
-                oss << "\\\"";
-                break;
-            case '\\':
-                oss << "\\\\";
-                break;
-            case '\n':
-                oss << "\\n";
-                break;
-            default:
-                oss << c;
-                break;
-            }
-        }
-        return oss.str();
-    }
 };
