@@ -19,17 +19,11 @@ class LambdaBase
 template <typename T> class LambdaHolder : public LambdaBase
 {
   public:
-    LambdaHolder(T func, std::vector<std::string> columns)
-        : func_(std::move(func)), columns_(std::move(columns))
-    {
-    }
+    LambdaHolder(T func, std::vector<std::string> columns) : func_(std::move(func)), columns_(std::move(columns)) {}
 
     T Get() const { return func_; }
     std::vector<std::string> GetColumns() const override { return columns_; }
-    std::type_index GetType() const override
-    {
-        return std::type_index(typeid(T));
-    }
+    std::type_index GetType() const override { return std::type_index(typeid(T)); }
 
   private:
     T func_;
@@ -39,17 +33,13 @@ template <typename T> class LambdaHolder : public LambdaBase
 class LambdaManager
 {
   public:
-    template <typename T>
-    void Register(const std::string &name, T func,
-                  std::vector<std::string> columns)
+    template <typename T> void Register(const std::string &name, T func, std::vector<std::string> columns)
     {
         if (lambdas.count(name))
         {
-            throw std::runtime_error("Lambda with name '" + name +
-                                     "' already registered");
+            throw std::runtime_error("Lambda with name '" + name + "' already registered");
         }
-        lambdas[name] = std::make_shared<LambdaHolder<T>>(std::move(func),
-                                                          std::move(columns));
+        lambdas[name] = std::make_shared<LambdaHolder<T>>(std::move(func), std::move(columns));
     }
 
     template <typename T> T Get(const std::string &name) const
@@ -57,8 +47,7 @@ class LambdaManager
         auto it = lambdas.find(name);
         if (it == lambdas.end())
         {
-            throw std::runtime_error("Lambda with name '" + name +
-                                     "' not found");
+            throw std::runtime_error("Lambda with name '" + name + "' not found");
         }
 
         auto base = it->second;
@@ -76,18 +65,12 @@ class LambdaManager
         auto it = lambdas.find(name);
         if (it == lambdas.end())
         {
-            throw std::runtime_error("Lambda with name '" + name +
-                                     "' not found");
+            throw std::runtime_error("Lambda with name '" + name + "' not found");
         }
         return it->second->GetColumns();
     }
 
-    template <typename T>
-    std::pair<T, std::vector<std::string>>
-    UseLambda(const std::string &name) const
-    {
-        return {Get<T>(name), GetColumns(name)};
-    }
+    template <typename T> std::pair<T, std::vector<std::string>> UseLambda(const std::string &name) const { return {Get<T>(name), GetColumns(name)}; }
 
     std::vector<std::string> ListRegisteredNames() const
     {

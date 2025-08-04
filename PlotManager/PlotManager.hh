@@ -46,7 +46,7 @@ using namespace std;
 
 class PlotManager
 {
-public:
+  public:
     PlotManager();
     ~PlotManager();
 
@@ -88,32 +88,25 @@ public:
     vector<string> GetPrefixList();
     vector<string> GetVarList();
 
-    void StyleHists(const vector<string> &prefixes,
-                    const vector<int> &fillcolor, const vector<int> &linecolor);
+    void StyleHists(const vector<string> &prefixes, const vector<int> &fillcolor, const vector<int> &linecolor);
     void StyleHists();
-    void PlotSingle(const string &prefix, const string &var,
-                    const string &title = "", int opts = 0);
-    void PlotMultiple(const vector<vector<string>> &prefixes, const string &var,
-                      const string &title = "", int opts = 0);
-    void PlotComparison(const string &var, const vector<string> &prefixes_num,
-                        const string &prefixes_den, const string &title = "",
-                        int opts = 0);
-    void SaveDrawnCanvases(const string &suffix = "pdf",
-                           const string &comment = "");
-    void RegisterCanvas(const string &name, TCanvas* c);
+    void PlotSingle(const string &prefix, const string &var, const string &title = "", int opts = 0);
+    void PlotMultiple(const vector<vector<string>> &prefixes, const string &var, const string &title = "", int opts = 0);
+    void PlotComparison(const string &var, const vector<string> &prefixes_num, const string &prefixes_den, const string &title = "", int opts = 0);
+    void SaveDrawnCanvases(const string &suffix = "pdf", const string &comment = "");
+    void RegisterCanvas(const string &name, TCanvas *c);
 
     void ResetCanvases();
     string ExtractUnit(const std::string &input);
 
-private:
+  private:
     TLatex *latex;
     TLegend *leg;
     vector<int> colors;
     TString experiment;
     TString comment;
     TString luminosity;
-    vector<string> defaultcolors = {"#E24A33", "#348ABD", "#988ED5", "#777777",
-                                    "#FBC15E", "#8EBA42", "#FFB5B8"};
+    vector<string> defaultcolors = {"#E24A33", "#348ABD", "#988ED5", "#777777", "#FBC15E", "#8EBA42", "#FFB5B8"};
     bool isLumCalled;
     bool isExpCalled;
     vector<unique_ptr<TH1F>> dummy;

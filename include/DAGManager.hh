@@ -18,13 +18,9 @@ class DAGManager
         bool executed = false;
     };
 
-    void AddNode(const std::string &name, const std::vector<std::string> &deps,
-                 std::function<void()> task);
-    void LinkOutputToParam(const std::string &fromNode,
-                           const std::string &outKey, const std::string &toNode,
-                           const std::string &paramKey);
-    void SetParamManagerMap(
-        const std::unordered_map<std::string, ParamManager *> &map);
+    void AddNode(const std::string &name, const std::vector<std::string> &deps, std::function<void()> task);
+    void LinkOutputToParam(const std::string &fromNode, const std::string &outKey, const std::string &toNode, const std::string &paramKey);
+    void SetParamManagerMap(const std::unordered_map<std::string, ParamManager *> &map);
     void Execute();
     void DumpDOT(const std::string &filename) const;
     std::vector<std::string> GetNodeNames() const;

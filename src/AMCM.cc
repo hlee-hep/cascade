@@ -25,8 +25,7 @@ AMCM::AMCM()
     dag = std::make_unique<DAGManager>();
 }
 
-std::shared_ptr<IAnalysisModule>
-AMCM::RegisterModule(const std::string &base, const std::string &instance_name)
+std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instance_name)
 {
     auto mod = AnalysisModuleRegistry::Get().Create(base);
     mod->SetName(instance_name);
@@ -34,10 +33,8 @@ AMCM::RegisterModule(const std::string &base, const std::string &instance_name)
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
     LOG_DEBUG("CONTROL", "shared_ptr made");
     modules_[instance_name] = ptr;
-    LOG_DEBUG("CONTROL", "mod ptr = " << ptr.get() << ", &mod->_param = "
-                                      << &ptr->GetParamManager());
-    LOG_INFO("CONTROL",
-             "Module " << base << " is registered as " << instance_name);
+    LOG_DEBUG("CONTROL", "mod ptr = " << ptr.get() << ", &mod->_param = " << &ptr->GetParamManager());
+    LOG_INFO("CONTROL", "Module " << base << " is registered as " << instance_name);
     dag->SetParamManagerMap({{instance_name, &ptr->GetParamManager()}});
     return ptr;
 }
@@ -61,13 +58,11 @@ std::vector<std::string> AMCM::ListRegisteredModules() const
 std::string AMCM::GetStatus(const std::string &name) const
 {
     std::lock_guard<std::mutex> lock(status_mutex);
-    if (modules_.count(name) == 0)
-        throw std::runtime_error("Module not found");
+    if (modules_.count(name) == 0) throw std::runtime_error("Module not found");
     return modules_.at(name)->GetStatus();
 }
 
-std::map<std::string, std::map<std::string, double>>
-AMCM::GetAllProgress() const
+std::map<std::string, std::map<std::string, double>> AMCM::GetAllProgress() const
 {
     std::map<std::string, std::map<std::string, double>> result;
     for (const auto &[modname, mod] : modules_)
@@ -86,8 +81,7 @@ void AMCM::RunAModule(const std::string &name)
     auto it = modules_.find(name);
     if (it == modules_.end())
     {
-        LOG_ERROR("CONTROL",
-                  "Cannot found " << name << " module in the registry...");
+        LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
     }
     else
     {
@@ -99,10 +93,7 @@ void AMCM::RunAModule(const std::string &name)
     }
 }
 
-void AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod)
-{
-    RunAModule(mod->Name());
-}
+void AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod) { RunAModule(mod->Name()); }
 
 void AMCM::SequentialRun()
 {
@@ -154,8 +145,7 @@ void AMCM::SaveRunLog() const
         out << YAML::Key << "params" << YAML::Value << params.ToYAMLNode();
         out << YAML::EndMap;
 
-        if (counter++ < 5)
-            filename += ("_" + name);
+        if (counter++ < 5) filename += ("_" + name);
     }
 
     out << YAML::EndSeq;
@@ -163,7 +153,7 @@ void AMCM::SaveRunLog() const
 
     filename += ".yaml";
     std::filesystem::create_directories("run_logs");
-    std::ofstream fout("run_logs/"+filename);
+    std::ofstream fout("run_logs/" + filename);
     fout << out.c_str();
     LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
 }

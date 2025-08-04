@@ -21,11 +21,7 @@ class DAGDebugModule : public IAnalysisModule
         _param.Register<std::string>("input_hist", "hists.root", "root input");
     }
 
-    void Description() const override
-    {
-        LOG_INFO(m_name, "An instance of " << basename
-                                           << ", which is DAG Debug module");
-    }
+    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is DAG Debug module"); }
 
     void Init() override
     {
@@ -41,11 +37,7 @@ class DAGDebugModule : public IAnalysisModule
     void Execute() override {}
     void Finalize() override { SetStatus("Done"); }
 
-    std::string ComputeSnapshotHash() const override
-    {
-        return SnapshotHasher::Compute(_param, GetAllManagers(), basename,
-                                       code_version_hash);
-    }
+    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
 
   private:
     AnalysisManager *mg;

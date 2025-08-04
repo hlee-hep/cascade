@@ -7,36 +7,30 @@
 class CacheManager
 {
   public:
-    static inline bool IsHashCached(const std::string &moduleName,
-                                    const std::string &hash)
+    static inline bool IsHashCached(const std::string &moduleName, const std::string &hash)
     {
         std::string path = ".snapshot_cache/" + moduleName + ".yaml";
         std::ifstream in(path);
-        if (!in)
-            return false;
+        if (!in) return false;
 
         YAML::Node hashes = YAML::Load(in);
         for (const auto &h : hashes)
         {
-            if (h.as<std::string>() == hash)
-                return true;
+            if (h.as<std::string>() == hash) return true;
         }
         return false;
     }
 
-    static inline void AddHash(const std::string &moduleName,
-                               const std::string &hash)
+    static inline void AddHash(const std::string &moduleName, const std::string &hash)
     {
         std::string path = ".snapshot_cache/" + moduleName + ".yaml";
         YAML::Node node;
 
         std::ifstream in(path);
-        if (in)
-            node = YAML::Load(in);
+        if (in) node = YAML::Load(in);
 
         for (const auto &h : node)
-            if (h.as<std::string>() == hash)
-                return;
+            if (h.as<std::string>() == hash) return;
 
         node.push_back(hash);
 

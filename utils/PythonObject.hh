@@ -11,8 +11,7 @@ namespace py = pybind11;
 class PythonObject
 {
   public:
-    PythonObject(const std::string &module_name, const std::string &class_name,
-                 const std::vector<py::object> &args = {})
+    PythonObject(const std::string &module_name, const std::string &class_name, const std::vector<py::object> &args = {})
     {
         EnsureInterpreterInitialized();
         py::module_ mod = py::module_::import(module_name.c_str());
@@ -20,8 +19,7 @@ class PythonObject
         instance_ = cls(*args);
     }
 
-    template <typename... Args>
-    py::object Call(const std::string &method, Args &&...args)
+    template <typename... Args> py::object Call(const std::string &method, Args &&...args)
     {
         py::gil_scoped_acquire acquire;
         return instance_.attr(method.c_str())(std::forward<Args>(args)...);

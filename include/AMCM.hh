@@ -20,13 +20,9 @@ class AMCM
     AMCM();
 
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base);
-    std::shared_ptr<IAnalysisModule>
-    RegisterModule(const std::string &base, const std::string &instance_name);
+    std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instance_name);
     std::vector<std::string> ListRegisteredModules() const;
-    std::vector<std::string> ListAvailableModules() const
-    {
-        return AnalysisModuleRegistry::Get().ListModules();
-    }
+    std::vector<std::string> ListAvailableModules() const { return AnalysisModuleRegistry::Get().ListModules(); }
 
     std::string GetStatus(const std::string &name) const;
     std::map<std::string, std::map<std::string, double>> GetAllProgress() const;

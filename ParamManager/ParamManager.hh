@@ -23,17 +23,12 @@ class __attribute__((visibility("default"))) ParamManager
     std::unordered_map<std::string, std::string> values_;
     std::unordered_map<std::string, std::any> rawValues_;
     std::unordered_map<std::string, std::string> descriptions_;
-    static std::unordered_map<
-        std::type_index, std::function<void(ParamManager *, const std::string &,
-                                            const std::any &)>>
-        casters;
+    static std::unordered_map<std::type_index, std::function<void(ParamManager *, const std::string &, const std::any &)>> casters;
 
   public:
     ParamManager() = default;
 
-    template <typename T>
-    void Register(const std::string &key, const T &value,
-                  const std::string &desc = "")
+    template <typename T> void Register(const std::string &key, const T &value, const std::string &desc = "")
     {
         using RealT = std::decay_t<T>;
 
@@ -66,8 +61,7 @@ class __attribute__((visibility("default"))) ParamManager
 
     template <typename T> void Set(const std::string &key, const T &value)
     {
-        if constexpr (std::is_convertible_v<T, std::string> ||
-                      std::is_arithmetic_v<T>)
+        if constexpr (std::is_convertible_v<T, std::string> || std::is_arithmetic_v<T>)
         {
             std::ostringstream oss;
             oss << value;
@@ -83,18 +77,14 @@ class __attribute__((visibility("default"))) ParamManager
     template <typename T> T Get(const std::string &key) const
     {
         auto it = rawValues_.find(key);
-        if (it == rawValues_.end())
-            throw std::runtime_error("Param '" + key +
-                                     "' not found in rawValues.");
+        if (it == rawValues_.end()) throw std::runtime_error("Param '" + key + "' not found in rawValues.");
 
         if (it->second.type() == typeid(std::string))
         {
             std::istringstream iss(std::any_cast<std::string>(it->second));
             T val;
             iss >> val;
-            if (iss.fail())
-                throw std::runtime_error("Failed to convert param '" + key +
-                                         "' to requested type.");
+            if (iss.fail()) throw std::runtime_error("Failed to convert param '" + key + "' to requested type.");
             return val;
         }
         else
@@ -110,13 +100,11 @@ class __attribute__((visibility("default"))) ParamManager
         bool first = true;
         for (const auto &[k, v] : values_)
         {
-            if (!first)
-                oss << ",";
+            if (!first) oss << ",";
             first = false;
             oss << "\"" << k << "\": {"
                 << "\"value\": \"" << v << "\", "
-                << "\"description\": \"" << EscapeJSON(descriptions_.at(k))
-                << "\"}";
+                << "\"description\": \"" << EscapeJSON(descriptions_.at(k)) << "\"}";
         }
         oss << "}";
         return oss.str();
@@ -141,11 +129,9 @@ class __attribute__((visibility("default"))) ParamManager
 
     template <typename T> static void RegisterAnyCaster()
     {
-        casters[typeid(T)] =
-            [](ParamManager *pm, const std::string &key, const std::any &val)
+        casters[typeid(T)] = [](ParamManager *pm, const std::string &key, const std::any &val)
         {
-            if constexpr (std::is_convertible_v<T, std::string> ||
-                          std::is_arithmetic_v<T>)
+            if constexpr (std::is_convertible_v<T, std::string> || std::is_arithmetic_v<T>)
             {
                 std::ostringstream oss;
                 oss << std::any_cast<T>(val);
@@ -160,10 +146,7 @@ class __attribute__((visibility("default"))) ParamManager
     }
 
     std::any ConvertFromPy(const py::object &obj) const;
-    std::any GetRawAny(const std::string &key) const
-    {
-        return rawValues_.at(key);
-    }
+    std::any GetRawAny(const std::string &key) const { return rawValues_.at(key); }
 
   private:
     static std::string EscapeJSON(const std::string &str)

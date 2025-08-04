@@ -13,17 +13,15 @@
 class SnapshotHasher
 {
   public:
-    inline static std::string Compute(const ParamManager &pm,
-                                      const std::map<std::string, std::unique_ptr<AnalysisManager>> &mgrs,
-                                      const std::string &moduleName,
-                                      const std::string &codeVersion)
+    inline static std::string Compute(const ParamManager &pm, const std::map<std::string, std::unique_ptr<AnalysisManager>> &mgrs,
+                                      const std::string &moduleName, const std::string &codeVersion)
     {
         std::stringstream ss;
 
         ss << "[Module]" << moduleName;
         ss << "[Params]" << pm.DumpJSON();
         ss << "[AM]";
-        for (const auto &[mn,uam] : mgrs)
+        for (const auto &[mn, uam] : mgrs)
         {
             ss << mn;
             ss << "[Cuts]";
@@ -36,7 +34,7 @@ class SnapshotHasher
         }
         ss << "[Code]" << codeVersion;
 
-        LOG_DEBUG("SnapshotHasher",ss.str());
+        LOG_DEBUG("SnapshotHasher", ss.str());
         return sha256(ss.str());
     }
 };

@@ -23,12 +23,7 @@ class HistModule : public IAnalysisModule
         _param.Register("output", "hists.root", "histogram output");
     }
 
-    void Description() const override
-    {
-        LOG_INFO(m_name, "An instance of "
-                             << basename
-                             << ", which is old-style Histogram filler");
-    }
+    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is old-style Histogram filler"); }
 
     void Init() override
     {
@@ -46,21 +41,13 @@ class HistModule : public IAnalysisModule
         for (Long64_t i = 0; i < mg->GetEntries(); i++)
         {
             mg->LoadEntry(i);
-            if (!mg->PassCut())
-                continue;
+            if (!mg->PassCut()) continue;
             mg->FillHists(1.0);
         }
     }
-    void Finalize() override
-    {
-        mg->SaveHists(_param.Get<std::string>("output"));
-    }
+    void Finalize() override { mg->SaveHists(_param.Get<std::string>("output")); }
 
-    std::string ComputeSnapshotHash() const override
-    {
-        return SnapshotHasher::Compute(_param, GetAllManagers(), basename,
-                                       code_version_hash);
-    }
+    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
 
   private:
     AnalysisManager *mg;

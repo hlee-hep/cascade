@@ -18,32 +18,22 @@ class RDFHistModule : public IAnalysisModule
 
         RegisterAnalysisManager("main");
         _param.RegisterCommon();
-        _param.Register<std::string>("config", "config_gen.yaml",
-                                     "configuration file");
-        _param.Register<std::string>("hist_config", "hist.yaml",
-                                     "hist definition file");
-        _param.Register<std::string>("output", "hists.root",
-                                     "histogram output");
+        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
+        _param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
+        _param.Register<std::string>("output", "hists.root", "histogram output");
         _param.Register<std::string>("type", "0", "0-9");
         _param.Register<std::string>("prefix", "signal", "Prefix");
     }
 
-    void Description() const override
-    {
-        LOG_INFO(m_name, "An instance of "
-                             << basename
-                             << ", which is RDF based Histogram filler");
-    }
+    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is RDF based Histogram filler"); }
 
     void Init() override
     {
         SetStatus("Initializing");
         mg = GetAnalysisManager("main");
         mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
-        mg->ApplyRDFFilter("types",
-                           ("Type==" + _param.Get<std::string>("type")));
-        mg->BookRDFHistsFromConfig(_param.Get<std::string>("hist_config"),
-                                   _param.Get<std::string>("prefix"));
+        mg->ApplyRDFFilter("types", ("Type==" + _param.Get<std::string>("type")));
+        mg->BookRDFHistsFromConfig(_param.Get<std::string>("hist_config"), _param.Get<std::string>("prefix"));
 
         if (!RunCheck())
         {
@@ -54,8 +44,7 @@ class RDFHistModule : public IAnalysisModule
 
     void Execute() override
     {
-        if (GetStatus() == "Skipped")
-            return;
+        if (GetStatus() == "Skipped") return;
 
         SetStatus("Running");
         mg->SaveHistsRDF(_param.Get<std::string>("output"));
@@ -63,20 +52,14 @@ class RDFHistModule : public IAnalysisModule
 
     void Finalize() override
     {
-        if (GetStatus() == "Skipped")
-            return;
+        if (GetStatus() == "Skipped") return;
 
-        mg->WriteMetaData(_param.Get<std::string>("output"), _hash, basename,
-                          _param.DumpJSON());
+        mg->WriteMetaData(_param.Get<std::string>("output"), _hash, basename, _param.DumpJSON());
         CacheManager::AddHash(basename, _hash);
         SetStatus("Done");
     }
 
-    std::string ComputeSnapshotHash() const override
-    {
-        return SnapshotHasher::Compute(_param, GetAllManagers(), basename,
-                                       code_version_hash);
-    }
+    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
 
   private:
     AnalysisManager *mg;

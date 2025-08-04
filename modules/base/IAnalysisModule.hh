@@ -31,26 +31,18 @@ class IAnalysisModule
     virtual std::string Name() const { return m_name; }
     virtual std::string BaseName() const { return basename; }
     virtual std::string GetCodeHash() const { return code_version_hash; }
-    virtual void SetParamFromPy(const std::string &key, py::object val)
-    {
-        _param.SetParamFromAny(key, _param.ConvertFromPy(val));
-    }
+    virtual void SetParamFromPy(const std::string &key, py::object val) { _param.SetParamFromAny(key, _param.ConvertFromPy(val)); }
     virtual void SetParamsFromDict(const py::dict &d)
     {
         for (auto item : d)
-            SetParamFromPy(py::str(item.first),
-                           py::reinterpret_borrow<py::object>(item.second));
+            SetParamFromPy(py::str(item.first), py::reinterpret_borrow<py::object>(item.second));
     }
     virtual void LoadParamsFromYAML(const YAML::Node &node)
     {
         for (const auto &it : node)
-            _param.Set<std::string>(it.first.as<std::string>(),
-                                    it.second.as<std::string>());
+            _param.Set<std::string>(it.first.as<std::string>(), it.second.as<std::string>());
     }
-    virtual std::string GetParametersAsJSON() const
-    {
-        return _param.DumpJSON();
-    }
+    virtual std::string GetParametersAsJSON() const { return _param.DumpJSON(); }
     virtual std::string GetStatus() const { return _status; }
     virtual ParamManager &GetParamManager() { return _param; }
     const auto &GetAllManagers() const { return _mgr; }
@@ -70,10 +62,7 @@ class IAnalysisModule
         return it != _mgr.end() ? it->second.get() : nullptr;
     }
 
-    AnalysisManager *am(const std::string &name = "main") const
-    {
-        return GetAnalysisManager(name);
-    }
+    AnalysisManager *am(const std::string &name = "main") const { return GetAnalysisManager(name); }
     virtual void SetStatus(const std::string &s)
     {
         _status = s;
@@ -91,9 +80,7 @@ class IAnalysisModule
     {
         if (_param.Get<bool>("dry_run"))
         {
-            LOG_INFO(
-                Name(),
-                "DRY run is enabled. variables and setting will be shown.");
+            LOG_INFO(Name(), "DRY run is enabled. variables and setting will be shown.");
             for (auto &[_, mg] : _mgr)
             {
                 mg->PrintConfig();
@@ -111,8 +98,7 @@ class IAnalysisModule
 
         _hash = ComputeSnapshotHash();
         bool dupl = CacheManager::IsHashCached(basename, _hash);
-        if (dupl)
-            LOG_ERROR(Name(), "Duplication of hash is detected.");
+        if (dupl) LOG_ERROR(Name(), "Duplication of hash is detected.");
         return !dupl;
     }
 

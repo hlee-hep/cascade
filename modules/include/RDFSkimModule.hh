@@ -17,16 +17,11 @@ class RDFSkimModule : public IAnalysisModule
         code_version_hash = "@VERSION_HASH@";
 
         RegisterAnalysisManager("main");
-        _param.Register<std::string>("config", "config_gen.yaml",
-                                     "configuration file");
+        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
         _param.Register<std::string>("output", "skim.root", "root output");
     }
 
-    void Description() const override
-    {
-        LOG_INFO(m_name, "An instance of " << basename
-                                           << ", which is RDF based Skimmer");
-    }
+    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is RDF based Skimmer"); }
 
     void Init() override
     {
@@ -40,16 +35,11 @@ class RDFSkimModule : public IAnalysisModule
     }
     void Finalize() override
     {
-        mg->SnapshotRDF("test", _param.Get<std::string>("output"),
-                        TreeOpt::OM::kAppend);
+        mg->SnapshotRDF("test", _param.Get<std::string>("output"), TreeOpt::OM::kAppend);
         SetStatus("Done");
     }
 
-    std::string ComputeSnapshotHash() const override
-    {
-        return SnapshotHasher::Compute(_param, GetAllManagers(), basename,
-                                       code_version_hash);
-    }
+    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
 
   private:
     AnalysisManager *mg;

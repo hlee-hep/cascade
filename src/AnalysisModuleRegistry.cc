@@ -7,14 +7,9 @@ AnalysisModuleRegistry &AnalysisModuleRegistry::Get()
     return instance;
 }
 
-void AnalysisModuleRegistry::Register(const std::string &name,
-                                      ModuleFactory factory)
-{
-    factories_[name] = std::move(factory);
-}
+void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory) { factories_[name] = std::move(factory); }
 
-std::unique_ptr<IAnalysisModule>
-AnalysisModuleRegistry::Create(const std::string &name) const
+std::unique_ptr<IAnalysisModule> AnalysisModuleRegistry::Create(const std::string &name) const
 {
     auto it = factories_.find(name);
     if (it == factories_.end())
