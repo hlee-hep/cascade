@@ -16,7 +16,6 @@ class DAGDebugModule : public IAnalysisModule
         basename = "@BASENAME@";
         code_version_hash = "@VERSION_HASH@";
 
-        RegisterAnalysisManager("main");
         _param.Register<std::string>("input", "skim.root", "root input");
         _param.Register<std::string>("input_hist", "hists.root", "root input");
     }
@@ -25,7 +24,6 @@ class DAGDebugModule : public IAnalysisModule
 
     void Init() override
     {
-        SetStatus("Running");
         mg = GetAnalysisManager("main");
         LOG_INFO(m_name, _param.Get<std::string>("input_hist"));
         TFile *file = TFile::Open(_param.Get<std::string>("input").c_str());
@@ -35,9 +33,7 @@ class DAGDebugModule : public IAnalysisModule
             LOG_INFO(m_name, "DAGTest is completed." << file->GetName());
     }
     void Execute() override {}
-    void Finalize() override { SetStatus("Done"); }
-
-    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
+    void Finalize() override {}
 
   private:
     AnalysisManager *mg;

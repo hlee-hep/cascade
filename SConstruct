@@ -35,7 +35,7 @@ def generate_init_py_head(target, source, env):
     lines = ["# Auto-generated cascade __init__.py\n"]
     for fname in sorted(files):
         modulename = fname[:-3]
-        lines.append(f"from ._cascade import AMCM, log_level, set_log_level, set_log_file")
+        lines.append(f"from ._cascade import AMCM, log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log")
         lines.append(f"from .{modulename} import {modulename}")
     with open(str(target[0]), "w") as f:
         f.write("\n".join(lines) + "\n")

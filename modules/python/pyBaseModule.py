@@ -1,4 +1,4 @@
-from ROOT import logger
+from cascade import is_interrupted, log, log_level
 
 class pyBaseModule:
     def __init__(self):
@@ -7,7 +7,12 @@ class pyBaseModule:
         self.code_version_hash = ""
         self.basename = ""
         self.m_name = ""
-        self.log = logger.Logger.Get()
+
+    def check_interrupt(self):
+        if is_interrupted():
+            self.set_status("Interrupted")
+            return True
+        return False
 
     def set_param(self, key, val):
         self.params[key] = val
@@ -24,7 +29,7 @@ class pyBaseModule:
 
     def set_status(self, status):
         self.status = status
-        self.log.Log(logger.LogLevel.INFO, self.m_name,"Status : "+status)
+        log(log_level.INFO, self.m_name,"Status : "+status)
 
     def get_status(self):
         return self.status
@@ -41,13 +46,32 @@ class pyBaseModule:
     def get_parameters(self):
         return self.params
 
+    def get_code_hash(self):
+        return self.code_version_hash
+
     def print_description(self):
         raise NotImplementedError("PythonModuleBase: print_description() must be implemented by subclass")
 
     def run(self):
+        self.set_status("Initializing")
         self.init()
+        
+        if self.check_interrupt():
+            return
+        
+        self.set_status("Running")
         self.execute()
+        
+        if self.check_interrupt():
+            return
+        
+        self.set_status("Finalizing")
         self.finalize()
+        
+        if self.check_interrupt():
+            return
+        else:
+            self.set_status("Done")
 
     def init(self):
         raise NotImplementedError("PythonModuleBase: init() must be implemented by subclass")

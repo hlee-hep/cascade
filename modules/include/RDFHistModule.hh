@@ -16,8 +16,6 @@ class RDFHistModule : public IAnalysisModule
         basename = "@BASENAME@";
         code_version_hash = "@VERSION_HASH@";
 
-        RegisterAnalysisManager("main");
-        _param.RegisterCommon();
         _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
         _param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
         _param.Register<std::string>("output", "hists.root", "histogram output");
@@ -29,37 +27,15 @@ class RDFHistModule : public IAnalysisModule
 
     void Init() override
     {
-        SetStatus("Initializing");
         mg = GetAnalysisManager("main");
         mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
         mg->ApplyRDFFilter("types", ("Type==" + _param.Get<std::string>("type")));
         mg->BookRDFHistsFromConfig(_param.Get<std::string>("hist_config"), _param.Get<std::string>("prefix"));
-
-        if (!RunCheck())
-        {
-            SetStatus("Skipped");
-            return;
-        }
     }
 
-    void Execute() override
-    {
-        if (GetStatus() == "Skipped") return;
+    void Execute() override { mg->SaveHistsRDF(_param.Get<std::string>("output")); }
 
-        SetStatus("Running");
-        mg->SaveHistsRDF(_param.Get<std::string>("output"));
-    }
-
-    void Finalize() override
-    {
-        if (GetStatus() == "Skipped") return;
-
-        mg->WriteMetaData(_param.Get<std::string>("output"), _hash, basename, _param.DumpJSON());
-        CacheManager::AddHash(basename, _hash);
-        SetStatus("Done");
-    }
-
-    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
+    void Finalize() override { mg->WriteMetaData(_param.Get<std::string>("output"), _hash, basename, _param.DumpJSON()); }
 
   private:
     AnalysisManager *mg;

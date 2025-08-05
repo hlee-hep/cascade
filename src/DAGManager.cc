@@ -46,8 +46,8 @@ void DAGManager::ExecuteNode(const std::string &name)
         {
             if (!paramMap.count(link.fromNode) || !paramMap.count(link.toNode))
                 throw std::runtime_error("ParamManager not found for node in link: " + link.fromNode + " or " + link.toNode);
-            const auto &val = paramMap.at(link.fromNode)->GetRawAny(link.fromKey);
-            paramMap[link.toNode]->SetParamFromAny(link.toKey, val);
+            const auto val = paramMap.at(link.fromNode)->Get<ParamValue>(link.fromKey);
+            paramMap[link.toNode]->SetParamVariant(link.toKey, val);
         }
     }
     node.task();

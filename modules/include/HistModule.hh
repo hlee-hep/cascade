@@ -16,11 +16,10 @@ class HistModule : public IAnalysisModule
         basename = "@BASENAME@";
         code_version_hash = "@VERSION_HASH@";
 
-        RegisterAnalysisManager("main");
-        _param.Register("config", "config_gen.yaml", "configuration file");
-        _param.Register("cut_config", "cut.yaml", "cut list file");
-        _param.Register("hist_config", "hist.yaml", "hist definition file");
-        _param.Register("output", "hists.root", "histogram output");
+        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
+        _param.Register<std::string>("cut_config", "cut.yaml", "cut list file");
+        _param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
+        _param.Register<std::string>("output", "hists.root", "histogram output");
     }
 
     void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is old-style Histogram filler"); }
@@ -46,8 +45,6 @@ class HistModule : public IAnalysisModule
         }
     }
     void Finalize() override { mg->SaveHists(_param.Get<std::string>("output")); }
-
-    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
 
   private:
     AnalysisManager *mg;

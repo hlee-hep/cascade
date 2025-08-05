@@ -111,7 +111,10 @@ std::string Logger::HighlightStatus(std::string msg)
 {
     const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> status_map = {{"Status : Initializing", {"magenta", "bold"}},
                                                                                                  {"Status : Running", {"yellow", "bold"}},
+                                                                                                 {"Status : Finalizing", {"cyan", "bold"}},
                                                                                                  {"Status : Skipped", {"blue", ""}},
+                                                                                                 {"Status : Interrupted", {"red", ""}},
+                                                                                                 {"Status : Failed", {"red", ""}},
                                                                                                  {"Status : Done", {"green", ""}}};
     for (const auto &[key, style] : status_map)
     {

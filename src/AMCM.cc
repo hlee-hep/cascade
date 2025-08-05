@@ -1,5 +1,6 @@
 #include "AMCM.hh"
 #include "AnalysisModuleRegistry.hh"
+#include "InterruptManager.hh"
 #include "Logger.hh"
 #include <chrono>
 #include <filesystem>
@@ -15,13 +16,7 @@ namespace py = pybind11;
 
 AMCM::AMCM()
 {
-    ParamManager::RegisterAnyCaster<int>();
-    ParamManager::RegisterAnyCaster<double>();
-    ParamManager::RegisterAnyCaster<bool>();
-    ParamManager::RegisterAnyCaster<std::string>();
-    ParamManager::RegisterAnyCaster<std::vector<int>>();
-    ParamManager::RegisterAnyCaster<std::vector<double>>();
-    ParamManager::RegisterAnyCaster<std::vector<std::string>>();
+    InterruptManager::Init();
     dag = std::make_unique<DAGManager>();
 }
 
@@ -55,6 +50,22 @@ std::vector<std::string> AMCM::ListRegisteredModules() const
     return names;
 }
 
+std::shared_ptr<IAnalysisModule> AMCM::GetModule(const std::string &name)
+{
+    auto it = modules_.find(name);
+    
+    if (it == modules_.end())
+    {
+        LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
+        return nullptr;
+    }
+    else
+    {
+        auto mod = it->second;
+        return mod;
+    }
+}
+
 std::string AMCM::GetStatus(const std::string &name) const
 {
     std::lock_guard<std::mutex> lock(status_mutex);
@@ -86,9 +97,7 @@ void AMCM::RunAModule(const std::string &name)
     else
     {
         auto mod = it->second;
-        mod->Init();
-        mod->Execute();
-        mod->Finalize();
+        mod->Run();
         executed_modules_.push_back(mod);
     }
 }
@@ -119,6 +128,7 @@ void AMCM::RunDAG() { dag->Execute(); }
 
 void AMCM::SaveRunLog() const
 {
+    //DEPRECATED//
     std::time_t t = std::time(nullptr);
     std::tm *now = std::localtime(&t);
     char buf[20];

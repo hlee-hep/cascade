@@ -4,6 +4,7 @@
 #include "Logger.hh"
 #include "ParamManager.hh"
 #include "SnapshotHasher.hh"
+#include "InterruptManager.hh"
 #include "sha256.hh"
 #include <memory>
 #include <pybind11/pybind11.h>
@@ -21,34 +22,98 @@ class IAnalysisModule
   public:
     virtual ~IAnalysisModule() = default;
 
-    virtual void Description() const = 0;
-    virtual void Init() = 0;
-    virtual void Execute() = 0;
-    virtual void Finalize() = 0;
-    virtual std::string ComputeSnapshotHash() const = 0;
+    virtual void Run()
+    {
+        RegisterAnalysisManager("main");
+        SetStatus("Initializing");
+        Init();
+        if(InterruptManager::IsInterrupted())
+        {
+            SetStatus("Interrupted");
+            return;
+        }
+        if (!RunCheck())
+        {
+            SetStatus("Skipped");
+            return;
+        }
+        SetStatus("Running");
+        try
+        {
+            Execute();
+        }
+        catch (const std::exception &e)
+        {
+            if (InterruptManager::IsInterrupted()) 
+            {
+                SetStatus("Interrupted");
+                LOG_WARN(Name(), "Execution interrupted: " << e.what());
+            } 
+            else
+            {
+                SetStatus("Failed");
+                LOG_ERROR(Name(), "Module failed: " << e.what());
+                throw;
+            }
+            return;
+        }
+        if(InterruptManager::IsInterrupted())
+        {
+            SetStatus("Interrupted");
+            return;
+        }
+        SetStatus("Finalizing");
+        Finalize();
+        
+        if (!InterruptManager::IsInterrupted())
+        {
+            CacheManager::AddHash(basename, _hash);
+            SetStatus("Done");
+        } 
+        else 
+            SetStatus("Interrupted");
+    }
 
-    virtual void SetName(const std::string &name) { m_name = name; }
-    virtual std::string Name() const { return m_name; }
-    virtual std::string BaseName() const { return basename; }
-    virtual std::string GetCodeHash() const { return code_version_hash; }
-    virtual void SetParamFromPy(const std::string &key, py::object val) { _param.SetParamFromAny(key, _param.ConvertFromPy(val)); }
-    virtual void SetParamsFromDict(const py::dict &d)
+    virtual void Description() const = 0;
+
+    std::string GetParamsToJSON() { return _param.DumpJSON(); }
+
+    void SetName(const std::string &name) { m_name = name; }
+    std::string Name() const { return m_name; }
+    std::string BaseName() const { return basename; }
+    std::string GetCodeHash() const { return code_version_hash; }
+
+    void SetParamFromPy(const std::string &key, py::object val) { _param.SetParamFromPy(key, val); }
+    void SetParamsFromDict(const py::dict &d)
     {
         for (auto item : d)
             SetParamFromPy(py::str(item.first), py::reinterpret_borrow<py::object>(item.second));
     }
-    virtual void LoadParamsFromYAML(const YAML::Node &node)
+    void SetParamsFromYAML(const std::string &yamlPath)
     {
-        for (const auto &it : node)
-            _param.Set<std::string>(it.first.as<std::string>(), it.second.as<std::string>());
+        const YAML::Node node = YAML::LoadFile(yamlPath.c_str());
+        _param.SetParamsFromYAML(node);
     }
-    virtual std::string GetParametersAsJSON() const { return _param.DumpJSON(); }
-    virtual std::string GetStatus() const { return _status; }
-    virtual ParamManager &GetParamManager() { return _param; }
+    void DumpParamsToYAML(const std::string &filepath) const
+    {
+        YAML::Emitter out;
+        out.SetIndent(4);
+        out.SetMapFormat(YAML::Block);
+        out.SetSeqFormat(YAML::Flow);
+        out << _param.ToYAMLNode();
+        std::ofstream fout(filepath);
+        fout << out.c_str();
+    }
+    std::string GetStatus() const { return _status; }
+    ParamManager &GetParamManager() { return _param; }
     const auto &GetAllManagers() const { return _mgr; }
-
+    void SetStatus(const std::string &s) { _status = s; LOG_INFO(Name(), "Status : " << s); }
   protected:
-    virtual void RegisterAnalysisManager(const std::string &name = "main")
+    virtual void Init() = 0;
+    virtual void Execute() = 0;
+    virtual void Finalize() = 0;
+
+    void RegisterAnalysisManager(const std::string &name = "main")
     {
         auto it = _mgr.find(name);
         if (it != _mgr.end())
@@ -56,18 +121,17 @@ class IAnalysisModule
         else
             _mgr[name] = std::make_unique<AnalysisManager>();
     }
-    virtual AnalysisManager *GetAnalysisManager(const std::string &name) const
+
+    AnalysisManager *GetAnalysisManager(const std::string &name) const
     {
         auto it = _mgr.find(name);
         return it != _mgr.end() ? it->second.get() : nullptr;
     }
 
     AnalysisManager *am(const std::string &name = "main") const { return GetAnalysisManager(name); }
-    virtual void SetStatus(const std::string &s)
-    {
-        _status = s;
-        LOG_INFO(Name(), "Status : " << s);
-    }
+
+
+
     std::string _status = "Pending";
     ParamManager _param;
     std::string _hash;
@@ -76,7 +140,12 @@ class IAnalysisModule
     std::string m_name = "";
     std::string code_version_hash = "";
 
-    virtual bool RunCheck()
+  private:
+    std::map<std::string, std::unique_ptr<AnalysisManager>> _mgr;
+
+    std::string ComputeSnapshotHash() const { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
+
+    bool RunCheck()
     {
         if (_param.Get<bool>("dry_run"))
         {
@@ -101,7 +170,4 @@ class IAnalysisModule
         if (dupl) LOG_ERROR(Name(), "Duplication of hash is detected.");
         return !dupl;
     }
-
-  private:
-    std::map<std::string, std::unique_ptr<AnalysisManager>> _mgr;
 };

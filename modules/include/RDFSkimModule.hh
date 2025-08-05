@@ -16,7 +16,6 @@ class RDFSkimModule : public IAnalysisModule
         basename = "@BASENAME@";
         code_version_hash = "@VERSION_HASH@";
 
-        RegisterAnalysisManager("main");
         _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
         _param.Register<std::string>("output", "skim.root", "root output");
     }
@@ -28,18 +27,8 @@ class RDFSkimModule : public IAnalysisModule
         mg = GetAnalysisManager("main");
         mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
     }
-    void Execute() override
-    {
-        SetStatus("Running");
-        LOG_INFO(m_name, "Not implemented yet!");
-    }
-    void Finalize() override
-    {
-        mg->SnapshotRDF("test", _param.Get<std::string>("output"), TreeOpt::OM::kAppend);
-        SetStatus("Done");
-    }
-
-    std::string ComputeSnapshotHash() const override { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
+    void Execute() override { LOG_INFO(m_name, "Not implemented yet!"); }
+    void Finalize() override { mg->SnapshotRDF("test", _param.Get<std::string>("output"), TreeOpt::OM::kAppend); }
 
   private:
     AnalysisManager *mg;
