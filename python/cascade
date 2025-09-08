@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Cascade CLI — ultra light:
+- macro-run 
+- shell     
+"""
+import argparse, sys, os, json, tempfile, shlex, subprocess, signal, importlib
+from typing import Any, List, Dict, Tuple, Optional
+
+# -------- optional imports --------
+try:
+    from cascade import pyAMCM
+except Exception:
+    pyAMCM = None
+
+# ------------ logging  ------------
+def _log(level: str, msg: str) -> None:
+    stream = sys.stderr if level in ("WARN", "ERROR") else sys.stdout
+    print(f"[{level}] {msg}", file=stream)
+
+# ------------ SIGINT handler ------------
+def _install_sigint_handler() -> None:
+    def handler(sig, frame):
+        _log("WARN", "Interrupt requested (SIGINT). Exiting soon…")
+    signal.signal(signal.SIGINT, handler)
+
+# ------------ utils ------------
+def _parse_kv(s: str) -> Tuple[str, Any]:
+    if "=" not in s:
+        raise argparse.ArgumentTypeError(f"--set expects k=v, got '{s}'")
+    k, v = s.split("=", 1)
+    v = v.strip()
+    if v.lower() in ("true", "false"):
+        return k, v.lower() == "true"
+    try:
+        return k, int(v)
+    except ValueError:
+        pass
+    try:
+        return k, float(v)
+    except ValueError:
+        pass
+    try:
+        return k, json.loads(v)
+    except Exception:
+        pass
+    return k, v
+
+def _import_class(dotted: str) -> Any:
+    """'pkg.mod:Class' or 'pkg.mod.Class'"""
+    if ":" in dotted:
+        modname, clsname = dotted.split(":", 1)
+    else:
+        parts = dotted.split(".")
+        modname, clsname = ".".join(parts[:-1]), parts[-1]
+    mod = importlib.import_module(modname)
+    return getattr(mod, clsname)
+
+# ------------ ROOT mode ------------
+def _root_invoke(macro: str,
+                 json_params_path: Optional[str],
+                 extra_args: List[str],
+                 root_exe: str = "root",
+                 use_plus: bool = False) -> None:
+    if not os.path.exists(macro):
+        raise FileNotFoundError(f"macro not found: {macro}")
+    macro_spec = f'{macro}{"+" if use_plus else ""}'
+    arglist: List[str] = []
+    if json_params_path is not None:
+        arglist.append(json_params_path)
+    arglist.extend(extra_args or [])
+    quoted_with_dq = ",".join(f'"{str(a)}"' for a in arglist)
+    cmd = [root_exe, "-l", "-q", f'{macro_spec}({quoted_with_dq})']
+    _log("INFO", "[ROOT] " + " ".join(shlex.quote(c) for c in cmd))
+    completed = subprocess.run(cmd)
+    if completed.returncode != 0:
+        _log("ERROR", f"ROOT macro exited with code {completed.returncode}")
+        raise SystemExit(completed.returncode)
+
+def cmd_macro_run(args) -> None:
+    params: Dict[str, Any] = {}
+    if args.yaml:
+        params["_yaml_path"] = os.path.abspath(args.yaml)
+    if args.set:
+        params.update(dict(_parse_kv(s) for s in args.set))
+    json_path: Optional[str] = None
+    if params:
+        fd, json_path = tempfile.mkstemp(prefix="cascade_params_", suffix=".json")
+        os.close(fd)
+        with open(json_path, "w", encoding="utf-8") as jf:
+            json.dump(params, jf, ensure_ascii=False, indent=2)
+        _log("DEBUG", f"Wrote temporary params JSON: {json_path}")
+    try:
+        _root_invoke(
+            macro=args.macro,
+            json_params_path=json_path,
+            extra_args=args.extra or [],
+            root_exe=args.root_exe,
+            use_plus=not args.no_plus
+        )
+    finally:
+        if json_path and os.path.exists(json_path):
+            os.remove(json_path)
+            _log("DEBUG", f"Removed temporary file: {json_path}")
+
+# ------------ Python interactive shell (ctrl) ------------
+def _new_ctrl():
+    if pyAMCM is None:
+        raise SystemExit("Cannot found cascade.pyAMCM")
+    return pyAMCM()
+
+def _apply_params_generic(mod, sets: Optional[List[str]], yaml_path: Optional[str]) -> None:
+    if yaml_path and hasattr(mod, "set_param_from_yaml"):
+        mod.set_param_from_yaml(yaml_path)
+        _log("DEBUG", f"Applied YAML params: {yaml_path}")
+    if sets:
+        kv = dict(_parse_kv(s) for s in sets)
+        if hasattr(mod, "set_param_from_dict"):
+            mod.set_param_from_dict(kv)
+        elif hasattr(mod, "set_parameters"):
+            mod.set_parameters(kv)
+        elif hasattr(mod, "set_param"):
+            for k, v in kv.items():
+                mod.set_param(k, v)
+        else:
+            raise TypeError("Module has no parameter setting method.")
+        _log("DEBUG", f"Applied inline params: {kv}")
+
+def cmd_shell(args) -> None:
+    ctrl = _new_ctrl()
+
+    if args.python:
+        cls = _import_class(args.python)
+        obj = cls()
+        name = args.name or cls.__name__
+        ctrl.register_python_module(name, obj)
+        mod = ctrl.get_python_module(name)
+        _apply_params_generic(mod, args.set, args.yaml)
+        if args.run:
+            _log("INFO", f"Running Python module before shell: {name}")
+            ctrl.run_module(name)
+
+    banner = (
+        "Cascade Python shell\n"
+        " - variable: ctrl (pyAMCM)\n"
+        " - helper  : _import_class('pkg.mod:Class'), _apply_params_generic(mod, sets, yaml)\n"
+        "EXIT : Ctrl-D or exit()\n"
+    )
+    try:
+        from IPython import embed
+        embed(user_ns={
+            "ctrl": ctrl,
+            "_import_class": _import_class,
+            "_apply_params_generic": _apply_params_generic,
+        }, banner1=banner)
+    except Exception:
+        import code
+        ns = {"ctrl": ctrl, "_import_class": _import_class, "_apply_params_generic": _apply_params_generic}
+        code.interact(banner, local=ns)
+
+# ------------ argparse ------------
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="cascade", description="Cascade ultra-light CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    # root
+    sr = sub.add_parser("macro-run", help="[root] run a ROOT macro")
+    sr.add_argument("--macro", required=True, help="Path to ROOT macro (e.g., macros/My.C)")
+    sr.add_argument("--yaml", help="YAML config path (packed into JSON as _yaml_path)")
+    sr.add_argument("--set", action="append", help="k=v (repeatable)")
+    sr.add_argument("--extra", action="append", help="extra string args to macro", default=[])
+    sr.add_argument("--root-exe", default="root", help="ROOT executable name/path")
+    sr.add_argument("--no-plus", action="store_true", help="Do not append '+' to macro")
+    sr.set_defaults(func=cmd_macro_run)
+
+    # interactive shell with ctrl
+    sp = sub.add_parser("shell", help="[python] interactive shell with ctrl=pyAMCM()")
+    sp.add_argument("--python", help="(optional) Python class to preload (pkg.mod:Class)")
+    sp.add_argument("--name", help="Alias for preloaded Python module")
+    sp.add_argument("--yaml", help="YAML config for the preloaded module")
+    sp.add_argument("--set", action="append", help="k=v (repeatable) for the preloaded module")
+    sp.add_argument("--run", action="store_true", help="Run the preloaded module before entering shell")
+    sp.set_defaults(func=cmd_shell)
+
+    return p
+
+def main(argv=None) -> None:
+    _install_sigint_handler()
+    argv = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        _log("WARN", "Interrupted")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log("ERROR", f"{e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

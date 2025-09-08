@@ -1,10 +1,10 @@
 #pragma once
 #include "AnalysisManager.hh"
 #include "CacheManager.hh"
+#include "InterruptManager.hh"
 #include "Logger.hh"
 #include "ParamManager.hh"
 #include "SnapshotHasher.hh"
-#include "InterruptManager.hh"
 #include "sha256.hh"
 #include <memory>
 #include <pybind11/pybind11.h>
@@ -27,7 +27,7 @@ class IAnalysisModule
         RegisterAnalysisManager("main");
         SetStatus("Initializing");
         Init();
-        if(InterruptManager::IsInterrupted())
+        if (InterruptManager::IsInterrupted())
         {
             SetStatus("Interrupted");
             return;
@@ -44,11 +44,11 @@ class IAnalysisModule
         }
         catch (const std::exception &e)
         {
-            if (InterruptManager::IsInterrupted()) 
+            if (InterruptManager::IsInterrupted())
             {
                 SetStatus("Interrupted");
                 LOG_WARN(Name(), "Execution interrupted: " << e.what());
-            } 
+            }
             else
             {
                 SetStatus("Failed");
@@ -57,20 +57,20 @@ class IAnalysisModule
             }
             return;
         }
-        if(InterruptManager::IsInterrupted())
+        if (InterruptManager::IsInterrupted())
         {
             SetStatus("Interrupted");
             return;
         }
         SetStatus("Finalizing");
         Finalize();
-        
+
         if (!InterruptManager::IsInterrupted())
         {
             CacheManager::AddHash(basename, _hash);
             SetStatus("Done");
-        } 
-        else 
+        }
+        else
             SetStatus("Interrupted");
     }
 
@@ -107,7 +107,12 @@ class IAnalysisModule
     std::string GetStatus() const { return _status; }
     ParamManager &GetParamManager() { return _param; }
     const auto &GetAllManagers() const { return _mgr; }
-    void SetStatus(const std::string &s) { _status = s; LOG_INFO(Name(), "Status : " << s); }
+    void SetStatus(const std::string &s)
+    {
+        _status = s;
+        LOG_INFO(Name(), "Status : " << s);
+    }
+
   protected:
     virtual void Init() = 0;
     virtual void Execute() = 0;
@@ -129,8 +134,6 @@ class IAnalysisModule
     }
 
     AnalysisManager *am(const std::string &name = "main") const { return GetAnalysisManager(name); }
-
-
 
     std::string _status = "Pending";
     ParamManager _param;

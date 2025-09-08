@@ -21,7 +21,7 @@ PYBIND11_MODULE(_cascade, m)
         .def("get_list_available_modules", &AMCM::ListAvailableModules)
         .def("get_list_registered_modules", &AMCM::ListRegisteredModules)
         .def("get_status", &AMCM::GetStatus)
-        .def("get_module",&AMCM::GetModule, py::return_value_policy::reference_internal)
+        .def("get_module", &AMCM::GetModule, py::return_value_policy::reference_internal)
         .def("get_all_progress", &AMCM::GetAllProgress)
         .def("save_run_log", &AMCM::SaveRunLog)
         .def("run_module", py::overload_cast<const std::string &>(&AMCM::RunAModule))
@@ -39,7 +39,7 @@ PYBIND11_MODULE(_cascade, m)
         .value("NONE", logger::LogLevel::NONE);
     m.def("set_log_level", [](logger::LogLevel level) { logger::Logger::Get().SetLogLevel(level); });
     m.def("set_log_file", [](const std::string &path) { logger::Logger::Get().InitLogFile(path); });
-    m.def("log", [](logger::LogLevel level, const std::string &mod, const std::string &msg) {logger::Logger::Get().Log(level,mod,msg);});
+    m.def("log", [](logger::LogLevel level, const std::string &mod, const std::string &msg) { logger::Logger::Get().Log(level, mod, msg); });
     m.def("init_interrupt", &InterruptManager::Init);
     m.def("is_interrupted", &InterruptManager::IsInterrupted);
     py::class_<DAGManager>(m, "DAGManager")
@@ -57,5 +57,5 @@ PYBIND11_MODULE(_cascade, m)
         .def("name", &IAnalysisModule::Name)
         .def("get_basename", &IAnalysisModule::BaseName)
         .def("get_status", &IAnalysisModule::GetStatus)
-        .def("get_code_hash",&IAnalysisModule::GetCodeHash);
+        .def("get_code_hash", &IAnalysisModule::GetCodeHash);
 }

@@ -79,11 +79,13 @@ class __attribute__((visibility("default"))) ParamManager
 
         if (py::isinstance<py::list>(obj))
         {
-            if (py::len(obj) == 0) return std::vector<std::string>{};
-            py::object first = obj[0];
-            if (py::isinstance<py::str>(first)) return obj.cast<std::vector<std::string>>();
-            if (py::isinstance<py::int_>(first)) return obj.cast<std::vector<int>>();
-            if (py::isinstance<py::float_>(first)) return obj.cast<std::vector<double>>();
+            py::list lst = obj.cast<py::list>();
+            if (lst.empty()) return std::vector<std::string>{};
+
+            py::object first = lst[0];
+            if (py::isinstance<py::str>(first)) return lst.cast<std::vector<std::string>>();
+            if (py::isinstance<py::int_>(first)) return lst.cast<std::vector<int>>();
+            if (py::isinstance<py::float_>(first)) return lst.cast<std::vector<double>>();
         }
         throw std::runtime_error("Unsupported py::object for ParamManager::ConvertFromPy");
     }

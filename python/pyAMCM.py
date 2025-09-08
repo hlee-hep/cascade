@@ -65,8 +65,7 @@ class pyAMCM:
 
     def get_list_registered_modules(self):
         modules = self.ctrl.get_list_registered_modules()
-        for k, _ in self.python_modules:
-            modules.append(k)
+        modules.extend(self.python_modules.keys())
         return modules
 
     def get_python_module(self, name):

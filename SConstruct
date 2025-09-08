@@ -1,4 +1,4 @@
-import os, subprocess, hashlib
+import os, subprocess, hashlib, stat
 from pathlib import Path
 from SCons.Script import Environment, Variables
 
@@ -41,6 +41,12 @@ def generate_init_py_head(target, source, env):
         f.write("\n".join(lines) + "\n")
     print(f"[SCons] __init__.py for cascade generated in {target_dir}")
     return 0
+
+def make_executable(target, source, env):
+    for t in target:
+        path = str(t)
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 include_dir = Path("modules/include")
 module_headers = list(include_dir.glob("*Module.hh"))
@@ -148,6 +154,11 @@ cascade_dir = os.path.join(env['LIBDIR'], "cascade")
 cascade_files = Glob("python/*.py")
 py_install = env.Install(cascade_dir, cascade_files)
 
+cascade_cli_dir = os.path.join(env['PREFIX'],"bin")
+cascade_cli = Glob("python/cascade")
+cli_install = env.Install(cascade_cli_dir, cascade_cli)
+env.AddPostAction(cli_install,make_executable)
+
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
 cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
 
@@ -160,7 +171,7 @@ pymodule_init_target = os.path.join(pymodule_dir, "__init__.py")
 pymodule_init = env.Command(pymodule_init_target, pymodule_install, generate_init_py)
 
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init
+install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init + cli_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
 
 env.Alias("install", install_targets)

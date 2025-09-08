@@ -53,7 +53,7 @@ std::vector<std::string> AMCM::ListRegisteredModules() const
 std::shared_ptr<IAnalysisModule> AMCM::GetModule(const std::string &name)
 {
     auto it = modules_.find(name);
-    
+
     if (it == modules_.end())
     {
         LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
@@ -128,7 +128,7 @@ void AMCM::RunDAG() { dag->Execute(); }
 
 void AMCM::SaveRunLog() const
 {
-    //DEPRECATED//
+    // DEPRECATED//
     std::time_t t = std::time(nullptr);
     std::tm *now = std::localtime(&t);
     char buf[20];

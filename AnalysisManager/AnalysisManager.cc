@@ -788,7 +788,7 @@ void AnalysisManager::SnapshotRDF(const std::string &treeName, const std::string
                                  });
     // ROOT::RDF::Experimental::AddProgressBar(*rdf_node);
     ROOT::RDF::RSnapshotOptions opts;
-    opts.fLazy = true;
+    opts.fLazy = false;
     if (option == TreeOpt::OM::kRecreate)
         rdf_node->Snapshot(treeName, fileName, GetDefinedVarNames(), opts);
     else if (option == TreeOpt::OM::kAppend)

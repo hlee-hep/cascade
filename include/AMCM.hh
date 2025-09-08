@@ -24,7 +24,7 @@ class AMCM
     std::vector<std::string> ListRegisteredModules() const;
     std::vector<std::string> ListAvailableModules() const { return AnalysisModuleRegistry::Get().ListModules(); }
 
-    std::shared_ptr<IAnalysisModule> GetModule(const std::string& name);
+    std::shared_ptr<IAnalysisModule> GetModule(const std::string &name);
     std::string GetStatus(const std::string &name) const;
     std::map<std::string, std::map<std::string, double>> GetAllProgress() const;
     void SaveRunLog() const;

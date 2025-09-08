@@ -1,5 +1,6 @@
 build/
 gui/
 framework_test/
+PlotManager_deprecated/
 include/json.hpp
 .sconsign.dblite
