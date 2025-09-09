@@ -120,11 +120,20 @@ struct RatioSpec
     std::optional<std::string> DenominatorOverlayLabel; //
 };
 
-struct ThemeSpec
+struct ThemeSpec // global 
 {
     int Font = 42;
-    float LabelSize = 0.045f;
-    float TitleSize = 0.050f;
+    float TextSize = 0.05;
+    float LabelSize = 0.050f;
+    float TitleSize = 0.065f;
+    float TitleOffset = 1.1f;
+    float LabelOffset = 0.015f;
+    float TickLengthY = 0.02;
+    float TickLengthX = 0.03;
+    float PadTopMargin = 0.1;
+    float PadRightMargin = 0.1;
+    float PadLeftMargin = 0.15;
+    float PadBottomMargin = 0.15;
     bool LogY = false;
 };
 
@@ -137,7 +146,7 @@ struct BandSpec
     float Alpha = 1;
 };
 
-struct LayoutSpec
+struct LayoutSpec //not global
 {
     int CanvW = 800, CanvH = 700;
     double RatioSplit = 0.30;
@@ -152,7 +161,7 @@ struct LayoutSpec
 
 struct PlotSpec
 {
-    std::string XTitle, YTitle = "Events", Title;
+    std::string XTitle, YTitle = "Events";
     ThemeSpec Theme;
     LayoutSpec Layout;
     LegendSpec Legend;
@@ -170,11 +179,6 @@ struct PlotSpec
     PlotSpec &Y(const std::string &s)
     {
         YTitle = s;
-        return *this;
-    }
-    PlotSpec &TitleText(const std::string &s)
-    {
-        Title = s;
         return *this;
     }
     PlotSpec &LogY(bool on)
@@ -262,15 +266,25 @@ class PlotManager
   public:
     using MutateSpecHook = std::function<void(PlotSpec &)>;
     using PostRenderHook = std::function<void(TCanvas &)>;
+    using LegendHook = std::function<void(TLegend &)>;
+    using PadsHook = std::function<void(TPad&, TPad*)>;
+    using FrameHook = std::function<void(TH1 &)>;
 
     void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
     void OnPostRender(PostRenderHook f) { m_PostHook = std::move(f); }
+    void OnLegend(LegendHook f){ m_LegendHook = std::move(f); }
+    void OnPads(PadsHook f){ m_PadsHook = std::move(f); }
+    void OnMainFrame(FrameHook f){ m_MainFrameHook = std::move(f); }
+    void OnRatioFrame(FrameHook f){ m_RatioFrameHook = std::move(f); }
     TCanvas *Draw(PlotSpec spec, const std::string &canvasName = "c1");
 
   private:
     MutateSpecHook m_MutateHook;
     PostRenderHook m_PostHook;
-
+    LegendHook m_LegendHook;
+    PadsHook m_PadsHook;
+    FrameHook m_MainFrameHook;
+    FrameHook m_RatioFrameHook;
     // helpers
     static void ApplyStyleHist_(TH1 *h, const ColorSpec &c);
     static void ApplyStyleGraph_(TGraph *g, const ColorSpec &c);

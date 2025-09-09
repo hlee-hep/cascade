@@ -3,6 +3,7 @@
 #include <TLegendEntry.h>
 #include <TROOT.h>
 #include <cstdio>
+#include <iostream>
 
 // ===== style =====
 void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
@@ -136,10 +137,10 @@ TGraphAsymmErrors *PlotManager::MakeBandFromHist_(const TH1 *hs)
         else
         {
             double sw2 = (hs->GetSumw2()->fN > 0) ? hs->GetSumw2()->At(i) : sw;
-            double n_eff = (sw * sw) / std::max(sw2, 1e-12);
+            double nEff = (sw * sw) / std::max(sw2, 1e-12);
             double alpha = 1.0 - 0.682689492;
-            double elow = (sw / n_eff) * (n_eff - ROOT::Math::gamma_quantile(alpha / 2, n_eff, 1.0));
-            double eup = (sw / n_eff) * (ROOT::Math::gamma_quantile_c(alpha / 2., n_eff + 1, 1.0) - n_eff);
+            double elow = (sw / nEff) * (nEff - ROOT::Math::gamma_quantile(alpha / 2, nEff, 1.0));
+            double eup = (sw / nEff) * (ROOT::Math::gamma_quantile_c(alpha / 2., nEff + 1, 1.0) - nEff);
             const double ex = hs->GetXaxis()->GetBinWidth(i) / 2.0;
             g->SetPoint(i - 1, x, sw);
             g->SetPointError(i - 1, ex, ex, elow, eup);
@@ -171,24 +172,38 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
 void PlotManager::SetupStyle_(const ThemeSpec &th)
 {
     gStyle->SetOptStat(0);
+    gStyle->SetPadTopMargin(th.PadTopMargin);
+    gStyle->SetPadBottomMargin(th.PadBottomMargin);
+    gStyle->SetPadLeftMargin(th.PadLeftMargin);
+    gStyle->SetPadRightMargin(th.PadRightMargin);
     gStyle->SetTextFont(th.Font);
+    gStyle->SetTextSize(th.TextSize);
     gStyle->SetTitleFont(th.Font, "XYZ");
     gStyle->SetLabelFont(th.Font, "XYZ");
     gStyle->SetTitleSize(th.TitleSize, "XYZ");
     gStyle->SetLabelSize(th.LabelSize, "XYZ");
+    gStyle->SetLabelOffset(th.LabelOffset, "XYZ");
+    gStyle->SetTitleOffset(th.TitleOffset, "XYZ");
+    gStyle->SetTitleOffset(th.TitleOffset, "XYZ");
     gStyle->SetPadTickX(1);
     gStyle->SetPadTickY(1);
+    gStyle->SetTickLength(th.TickLengthX, "X");
+    gStyle->SetTickLength(th.TickLengthY, "Y");
+    gStyle->SetOptTitle(0);
+    gStyle->SetErrorX(0.);
+    gStyle->SetEndErrorSize(0.);
 }
 
 void PlotManager::TuneAxes_(TH1 *f, const PlotSpec &spec, double ymin, double ymax)
 {
-    f->SetTitle(spec.Title.c_str());
+    //f->SetTitle(spec.Title.c_str());
     f->GetXaxis()->SetTitle(spec.XTitle.c_str());
     f->GetYaxis()->SetTitle(spec.YTitle.c_str());
-    f->GetYaxis()->SetRangeUser(ymin, ymax);
-    f->GetXaxis()->SetTitleOffset(1.05);
-    f->GetYaxis()->SetTitleOffset(1.30);
-    f->Draw("AXIS");
+    f->SetMinimum(ymin);
+    f->SetMaximum(ymax);
+    //f->GetXaxis()->SetTitleOffset(1.1);
+    //f->GetYaxis()->SetTitleOffset(1.1);
+    //f->Draw("AXIS");
 }
 
 // ===== plan =====
@@ -401,7 +416,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
     {
         padTop = new TPad((canvasName + "_full").c_str(), "", 0.0, 0.0, 1.0, 1.0);
         padTop->SetTicks(1, 1);
-        padTop->SetBottomMargin(0.12);
+        //padTop->SetBottomMargin(spec.Layout.TopPadBottomMargin);
         padTop->Draw();
         padTop->cd();
     }
@@ -412,7 +427,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
     TH1 *frame = plan.Frame; // already kCanDelete=true
     frame->SetDirectory(nullptr);
     frame->SetBit(kCanDelete, true);
-    TuneAxes_(frame, spec, yMin, yMax);
+    //TuneAxes_(frame, spec, yMin, yMax);
 
     // stack
     THStack *hs = new THStack();
@@ -449,13 +464,21 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
 
     for (auto &s : plan.Stacks)
         SafeAddToStack(s.H, s.Label.c_str());
-    if (!plan.Stacks.empty()) hs->Draw("HIST");
-    if (spec.Ratio.Enable) hs->GetXaxis()->SetLabelSize(0);
-
-    if (!padTop->GetListOfPrimitives())
+    if (!plan.Stacks.empty()) 
+    {
+        hs->Draw("HIST");
+        TuneAxes_(hs->GetHistogram(),spec,yMin,yMax);
+        hs->SetMinimum(yMin);
+        hs->SetMaximum(yMax);
+        if (spec.Ratio.Enable) hs->GetXaxis()->SetLabelSize(0);
+        if(m_MainFrameHook) m_MainFrameHook(*(hs->GetHistogram()));
+    }
+    else
     {
         frame->Draw("AXIS");
+        TuneAxes_(frame,spec,yMin,yMax);
         if (spec.Ratio.Enable) frame->GetXaxis()->SetLabelSize(0);
+        if(m_MainFrameHook) m_MainFrameHook(*frame);
     }
     // band
     if (plan.StackBand)
@@ -534,6 +557,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
             addLegend(ov.Label.c_str(), ov.Color, opt.c_str());
         }
         leg->Draw("SAME");
+        if(m_LegendHook) m_LegendHook(*leg);
     }
     else
     {
@@ -609,6 +633,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
                     ln->SetBit(kCanDelete, true);
                     ln->Draw("SAME");
                 }
+                if(m_RatioFrameHook) m_RatioFrameHook(*r);
             }
         }
         else
@@ -620,8 +645,11 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
             ax->GetXaxis()->SetTitle(spec.XTitle.c_str());
             ax->GetYaxis()->SetTitle(spec.Ratio.YLabel.c_str());
             ax->Draw("AXIS");
+            if(m_RatioFrameHook) m_RatioFrameHook(*ax);
         }
     }
+
+    if(m_PadsHook) m_PadsHook(*padTop,padBot);
 
     canvas->cd();
     canvas->Update();

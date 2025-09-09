@@ -1,6 +1,7 @@
 import os, subprocess, hashlib, stat
 from pathlib import Path
 from SCons.Script import Environment, Variables
+import SCons.Util
 
 def hash_file(path):
     if not os.path.exists(path):
@@ -102,19 +103,12 @@ env['LIBDIR'] = os.path.join(env['PREFIX'], 'lib')
 pybind_flags = os.popen("python3 -m pybind11 --includes").read().strip().split()
 pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 
-# YAML
-yaml_flags = os.popen("pkg-config --cflags yaml-cpp").read().strip().split()
-yaml_libs = os.popen("pkg-config --libs yaml-cpp").read().strip().split()
-
-# ROOT
-root_cflags = os.popen("root-config --cflags").read().strip().split()
-root_libs = os.popen("root-config --libs").read().strip().split()
-
-env.Append(CXXFLAGS=["-std=c++17","-O2","-fvisibility=default"] + root_cflags + yaml_flags)
+env.ParseConfig('root-config --cflags --libs')
+env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
+env.Append(CXXFLAGS=["-std=c++17","-O2","-fvisibility=default"])
 env.Append(CPPPATH=pybind_includes)
-env.Append(LINKFLAGS=root_libs)
-env.Append(LIBS=yaml_libs)
 env.Append(LIBS=["ssl","crypto"])
+env.Append(RPATH=[env['LIBDIR'], '$ORIGIN', '$ORIGIN/..'])
 VariantDir("build/src", "src", duplicate=0)
 VariantDir("build/utils", "utils", duplicate=0)
 VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
@@ -123,7 +117,7 @@ VariantDir("build/ParamManager", "ParamManager", duplicate=0)
 VariantDir("build/modules", "modules", duplicate=0)
 VariantDir("build/python", "python", duplicate=0)
 VariantDir("build/main", "main", duplicate=0)
-TOP = os.getcwd()  
+TOP = os.getcwd()
 
 env.Append(CPPPATH=[
     os.path.join(TOP, "build/modules/include"),
@@ -135,6 +129,47 @@ env.Append(CPPPATH=[
     os.path.join(TOP, "include"),
     os.path.join(TOP, "utils"),
 ])
+
+
+
+
+
+env.Tool('compilation_db')
+compdb = env.CompilationDatabase('compile_commands.json')
+AlwaysBuild(compdb)
+
+
+
+def tidy_action(target, source, env):
+    import subprocess, shlex, os
+    build_dir = os.path.abspath('build')
+    tidy = env.WhereIs('clang-tidy') or 'clang-tidy'
+    base = f"{tidy} -p {build_dir} --quiet"
+    if os.path.exists('.clang-tidy'):
+        base += " --config-file=.clang-tidy"
+    failed = []
+    for s in source:
+        s = str(s)
+        if s.endswith(('.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp')):
+            cmd = f"{base} {shlex.quote(s)}"
+            print(f"[clang-tidy] {cmd}")
+            if subprocess.call(cmd, shell=True) != 0:
+                failed.append(s)
+    return 0 if not failed else 1
+
+Tidy = Builder(action=Action(tidy_action, cmdstr='[TIDY] $SOURCE'))
+env.Append(BUILDERS={'Tidy': Tidy})
+
+all_srcs = []
+all_srcs += Glob('src/*.cc') + Glob('src/*.hh')
+all_srcs += Glob('AnalysisManager/*.cc') + Glob('AnalysisManager/*.hh')
+all_srcs += Glob('PlotManager/*.cc') + Glob('PlotManager/*.hh')
+all_srcs += Glob('ParamManager/*.cc') + Glob('ParamManager/*.hh')
+all_srcs += Glob('modules/src/*.cc') + Glob('modules/include/*.hh')
+
+env.Alias('tidy', env.Tidy('tidy.log', all_srcs))
+Depends('tidy', compdb)
+Depends('tidy', '.clang-tidy')
 
 
 
@@ -173,6 +208,13 @@ pymodule_init = env.Command(pymodule_init_target, pymodule_install, generate_ini
 # cppinstall
 install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init + cli_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
+
+install_targets = SCons.Util.unique(install_targets)
+build_targets = SCons.Util.unique(build_targets)
+
+Depends(compdb, build_targets)
+env.Alias('compdb', compdb)
+
 
 env.Alias("install", install_targets)
 Default(build_targets + install_targets)
