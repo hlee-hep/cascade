@@ -38,6 +38,55 @@ struct ColorSpec
     int MarkerStyle = 20;
     int LineWidth = 2;
     int FillStyle = 1001;
+
+    ColorSpec() = default;
+    ColorSpec(int line, int fill, int marker, int markerStyle = 20, int lineWidth = 2, int fillStyle = 1001)
+        : Line(line), Fill(fill), Marker(marker), MarkerStyle(markerStyle), LineWidth(lineWidth), FillStyle(fillStyle)
+    {
+    }
+
+    // fluent setters
+    ColorSpec &SetLine(int v)
+    {
+        Line = v;
+        return *this;
+    }
+    ColorSpec &SetFill(int v)
+    {
+        Fill = v;
+        return *this;
+    }
+    ColorSpec &SetMarker(int v)
+    {
+        Marker = v;
+        return *this;
+    }
+    ColorSpec &SetMarkerStyle(int v)
+    {
+        MarkerStyle = v;
+        return *this;
+    }
+    ColorSpec &SetLineWidth(int v)
+    {
+        LineWidth = v;
+        return *this;
+    }
+    ColorSpec &SetFillStyle(int v)
+    {
+        FillStyle = v;
+        return *this;
+    }
+
+    ColorSpec &Set(int line, int fill, int marker, int markerStyle = 20, int lineWidth = 2, int fillStyle = 1001)
+    {
+        Line = line;
+        Fill = fill;
+        Marker = marker;
+        MarkerStyle = markerStyle;
+        LineWidth = lineWidth;
+        FillStyle = fillStyle;
+        return *this;
+    }
 };
 
 struct DrawSpec
@@ -48,6 +97,52 @@ struct DrawSpec
     bool NormBinWidth = false;
     bool Visible = true;
     std::string LegendOption;
+    DrawSpec() = default;
+
+    // fluent setters
+    DrawSpec &SetOpt(std::string v)
+    {
+        DrawOpt = std::move(v);
+        return *this;
+    }
+
+    DrawSpec &SetRebin(int r)
+    {
+        Rebin = r;
+        return *this;
+    }
+    DrawSpec &ClearRebin()
+    {
+        Rebin.reset();
+        return *this;
+    }
+
+    DrawSpec &SetScale(double s)
+    {
+        Scale = s;
+        return *this;
+    }
+    DrawSpec &ClearScale()
+    {
+        Scale.reset();
+        return *this;
+    }
+
+    DrawSpec &SetNormBinWidth(bool b = true)
+    {
+        NormBinWidth = b;
+        return *this;
+    }
+    DrawSpec &SetVisible(bool v = true)
+    {
+        Visible = v;
+        return *this;
+    }
+    DrawSpec &SetLegendOpt(std::string v)
+    {
+        LegendOption = std::move(v);
+        return *this;
+    }
 };
 
 struct StackItemSpec
@@ -56,6 +151,31 @@ struct StackItemSpec
     std::string Label;
     ColorSpec Color;
     DrawSpec Draw;
+
+    StackItemSpec() = default;
+    StackItemSpec(TH1 *h, std::string lab, ColorSpec c, DrawSpec d = {}) : H(h), Label(std::move(lab)), Color(std::move(c)), Draw(std::move(d)) {}
+
+    // fluent setters
+    StackItemSpec &SetHist(TH1 *h)
+    {
+        H = h;
+        return *this;
+    }
+    StackItemSpec &SetLabel(std::string v)
+    {
+        Label = std::move(v);
+        return *this;
+    }
+    StackItemSpec &SetColor(const ColorSpec &c)
+    {
+        Color = c;
+        return *this;
+    }
+    StackItemSpec &SetDraw(const DrawSpec &d)
+    {
+        Draw = d;
+        return *this;
+    }
 };
 
 struct OverlaySpec
@@ -120,7 +240,7 @@ struct RatioSpec
     std::optional<std::string> DenominatorOverlayLabel; //
 };
 
-struct ThemeSpec // global 
+struct ThemeSpec // global
 {
     int Font = 42;
     float TextSize = 0.05;
@@ -131,7 +251,7 @@ struct ThemeSpec // global
     float TickLengthY = 0.02;
     float TickLengthX = 0.03;
     float PadTopMargin = 0.1;
-    float PadRightMargin = 0.1;
+    float PadRightMargin = 0.02;
     float PadLeftMargin = 0.15;
     float PadBottomMargin = 0.15;
     bool LogY = false;
@@ -146,7 +266,7 @@ struct BandSpec
     float Alpha = 1;
 };
 
-struct LayoutSpec //not global
+struct LayoutSpec // not global
 {
     int CanvW = 800, CanvH = 700;
     double RatioSplit = 0.30;
@@ -267,16 +387,16 @@ class PlotManager
     using MutateSpecHook = std::function<void(PlotSpec &)>;
     using PostRenderHook = std::function<void(TCanvas &)>;
     using LegendHook = std::function<void(TLegend &)>;
-    using PadsHook = std::function<void(TPad&, TPad*)>;
+    using PadsHook = std::function<void(TPad &, TPad *)>;
     using FrameHook = std::function<void(TH1 &)>;
 
     void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
     void OnPostRender(PostRenderHook f) { m_PostHook = std::move(f); }
-    void OnLegend(LegendHook f){ m_LegendHook = std::move(f); }
-    void OnPads(PadsHook f){ m_PadsHook = std::move(f); }
-    void OnMainFrame(FrameHook f){ m_MainFrameHook = std::move(f); }
-    void OnRatioFrame(FrameHook f){ m_RatioFrameHook = std::move(f); }
-    TCanvas *Draw(PlotSpec spec, const std::string &canvasName = "c1");
+    void OnLegend(LegendHook f) { m_LegendHook = std::move(f); }
+    void OnPads(PadsHook f) { m_PadsHook = std::move(f); }
+    void OnMainFrame(FrameHook f) { m_MainFrameHook = std::move(f); }
+    void OnRatioFrame(FrameHook f) { m_RatioFrameHook = std::move(f); }
+    TCanvas *Draw(PlotSpec& spec, const std::string &canvasName = "c1");
 
   private:
     MutateSpecHook m_MutateHook;

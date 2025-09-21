@@ -196,14 +196,14 @@ void PlotManager::SetupStyle_(const ThemeSpec &th)
 
 void PlotManager::TuneAxes_(TH1 *f, const PlotSpec &spec, double ymin, double ymax)
 {
-    //f->SetTitle(spec.Title.c_str());
+    // f->SetTitle(spec.Title.c_str());
     f->GetXaxis()->SetTitle(spec.XTitle.c_str());
     f->GetYaxis()->SetTitle(spec.YTitle.c_str());
     f->SetMinimum(ymin);
     f->SetMaximum(ymax);
-    //f->GetXaxis()->SetTitleOffset(1.1);
-    //f->GetYaxis()->SetTitleOffset(1.1);
-    //f->Draw("AXIS");
+    // f->GetXaxis()->SetTitleOffset(1.1);
+    // f->GetYaxis()->SetTitleOffset(1.1);
+    // f->Draw("AXIS");
 }
 
 // ===== plan =====
@@ -352,13 +352,13 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
 std::string PlotManager::AutoLegendOpt_(const PlanOverlayItem &it)
 {
     if (!it.Draw.LegendOption.empty()) return it.Draw.LegendOption;
-    if (it.Kind == ItemKind::Hist) return it.IsData ? "P" : (it.Color.Fill ? "F" : "L");
+    if (it.Kind == ItemKind::Hist) return it.IsData ? "P" : "F";
     if (it.Kind == ItemKind::Graph) return "P";
     return "P";
 }
 
 // ===== main draw =====
-TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
+TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
 {
     if (m_MutateHook) m_MutateHook(spec);
 
@@ -416,7 +416,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
     {
         padTop = new TPad((canvasName + "_full").c_str(), "", 0.0, 0.0, 1.0, 1.0);
         padTop->SetTicks(1, 1);
-        //padTop->SetBottomMargin(spec.Layout.TopPadBottomMargin);
+        // padTop->SetBottomMargin(spec.Layout.TopPadBottomMargin);
         padTop->Draw();
         padTop->cd();
     }
@@ -427,7 +427,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
     TH1 *frame = plan.Frame; // already kCanDelete=true
     frame->SetDirectory(nullptr);
     frame->SetBit(kCanDelete, true);
-    //TuneAxes_(frame, spec, yMin, yMax);
+    // TuneAxes_(frame, spec, yMin, yMax);
 
     // stack
     THStack *hs = new THStack();
@@ -464,21 +464,21 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
 
     for (auto &s : plan.Stacks)
         SafeAddToStack(s.H, s.Label.c_str());
-    if (!plan.Stacks.empty()) 
+    if (!plan.Stacks.empty())
     {
         hs->Draw("HIST");
-        TuneAxes_(hs->GetHistogram(),spec,yMin,yMax);
+        TuneAxes_(hs->GetHistogram(), spec, yMin, yMax);
         hs->SetMinimum(yMin);
         hs->SetMaximum(yMax);
         if (spec.Ratio.Enable) hs->GetXaxis()->SetLabelSize(0);
-        if(m_MainFrameHook) m_MainFrameHook(*(hs->GetHistogram()));
+        if (m_MainFrameHook) m_MainFrameHook(*(hs->GetHistogram()));
     }
     else
     {
         frame->Draw("AXIS");
-        TuneAxes_(frame,spec,yMin,yMax);
+        TuneAxes_(frame, spec, yMin, yMax);
         if (spec.Ratio.Enable) frame->GetXaxis()->SetLabelSize(0);
-        if(m_MainFrameHook) m_MainFrameHook(*frame);
+        if (m_MainFrameHook) m_MainFrameHook(*frame);
     }
     // band
     if (plan.StackBand)
@@ -557,7 +557,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
             addLegend(ov.Label.c_str(), ov.Color, opt.c_str());
         }
         leg->Draw("SAME");
-        if(m_LegendHook) m_LegendHook(*leg);
+        if (m_LegendHook) m_LegendHook(*leg);
     }
     else
     {
@@ -633,7 +633,7 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
                     ln->SetBit(kCanDelete, true);
                     ln->Draw("SAME");
                 }
-                if(m_RatioFrameHook) m_RatioFrameHook(*r);
+                if (m_RatioFrameHook) m_RatioFrameHook(*r);
             }
         }
         else
@@ -645,11 +645,11 @@ TCanvas *PlotManager::Draw(PlotSpec spec, const std::string &canvasName)
             ax->GetXaxis()->SetTitle(spec.XTitle.c_str());
             ax->GetYaxis()->SetTitle(spec.Ratio.YLabel.c_str());
             ax->Draw("AXIS");
-            if(m_RatioFrameHook) m_RatioFrameHook(*ax);
+            if (m_RatioFrameHook) m_RatioFrameHook(*ax);
         }
     }
 
-    if(m_PadsHook) m_PadsHook(*padTop,padBot);
+    if (m_PadsHook) m_PadsHook(*padTop, padBot);
 
     canvas->cd();
     canvas->Update();
