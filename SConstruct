@@ -91,7 +91,7 @@ for mod in pymodules:
         patch_file(py_input, py_output, substitutions)
 
 vars = Variables()
-vars.Add('PREFIX', 'install directory', '/home/hobinlee/.local')
+vars.Add('PREFIX', 'install directory', '~/.local')
 
 env = Environment(ENV=os.environ, variables=vars)
 env.Append()
