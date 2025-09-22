@@ -205,8 +205,27 @@ py_install += pymodule_install
 pymodule_init_target = os.path.join(pymodule_dir, "__init__.py")
 pymodule_init = env.Command(pymodule_init_target, pymodule_install, generate_init_py)
 
+
+env['INCLUDEDIR'] = os.path.join(env['PREFIX'], 'include', 'cascade')
+
+hdr_install = []
+
+if os.path.isdir('build/modules/include'):
+    hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('build/modules/include/*.hh'))
+
+if os.path.isdir('modules'):
+    hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('modules/base/*.hh'))
+if os.path.isdir('include'):
+    hdr_install += env.Install(env['INCLUDEDIR'], Glob('include/*.hh'))
+
+for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
+    if os.path.isdir(sub):
+        globs = Glob(f'{sub}/*.hh')
+        if globs:
+            hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
+
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init + cli_install
+install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init + cli_install + hdr_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)

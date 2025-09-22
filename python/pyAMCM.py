@@ -61,6 +61,16 @@ class pyAMCM:
             for name, obj in inspect.getmembers(mod, inspect.isclass):
                 if issubclass(obj, pyBaseModule) and obj is not pyBaseModule:
                     modules.append(name)
+
+        pkg = importlib.import_module("cascade.pyplugin")
+        for _, modname, _ in pkgutil.iter_modules(pkg.__path__, "cascade.pyplugin" + "."):
+            try:
+                mod = importlib.import_module(modname)
+            except Exception:
+                continue
+            for name, obj in inspect.getmembers(mod, inspect.isclass):
+                if issubclass(obj, pyBaseModule) and obj is not pyBaseModule:
+                    modules.append(name)
         return modules
 
     def get_list_registered_modules(self):

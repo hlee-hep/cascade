@@ -11,13 +11,14 @@
 #include <pybind11/stl.h>
 #include <thread>
 #include <yaml-cpp/yaml.h>
-
+#include <dlfcn.h>
 namespace py = pybind11;
 
 AMCM::AMCM()
 {
     InterruptManager::Init();
     dag = std::make_unique<DAGManager>();
+    LoadPlugins(std::string(std::getenv("HOME")) + "/.local/lib/cascade/plugin");
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instance_name)
@@ -166,4 +167,18 @@ void AMCM::SaveRunLog() const
     std::ofstream fout("run_logs/" + filename);
     fout << out.c_str();
     LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
+}
+
+void AMCM::LoadPlugins(const std::string& path) 
+{
+    namespace fs = std::filesystem;
+    for (auto& p : fs::directory_iterator(path)) 
+    {
+        if (p.path().extension() == ".so")
+        {
+            void* handle = dlopen(p.path().c_str(), RTLD_NOW);
+            if (!handle)
+                std::cerr << "dlopen failed: " << dlerror() << std::endl;
+        }
+    }
 }
