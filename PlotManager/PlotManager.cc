@@ -4,7 +4,7 @@
 #include <TROOT.h>
 #include <cstdio>
 #include <iostream>
-
+#include <TArrow.h>
 // ===== style =====
 void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
 {
@@ -164,7 +164,13 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
     }
     // r->Divide(den);
     TGraphAsymmErrors *g = new TGraphAsymmErrors();
+    g->SetLineWidth(2);
     g->Divide(r, den, "pois");
+    for(int i = 0 ;i < g->GetN() ; i++)
+    {
+        g->SetPointEXhigh(i,0.0);
+        g->SetPointEXlow(i,0.0);
+    }
     return {r, g};
 }
 
@@ -294,11 +300,11 @@ void PlotManager::ComputeYMax_(const PlotSpec &spec, RenderPlan &plan)
     double yMax = 0.0;
     auto up = [&](double v) { yMax = std::max(yMax, v); };
 
-    if (plan.StackSum) up(plan.StackSum->GetMaximum());
+    if (plan.StackSum) up(plan.StackSum->GetMaximum()+plan.StackSum->GetBinError(plan.StackSum->GetMaximumBin()));
 
     for (auto &ov : plan.Overlays)
     {
-        if (ov.Kind == ItemKind::Hist && ov.H) up(ov.H->GetMaximum());
+        if (ov.Kind == ItemKind::Hist && ov.H) up(ov.H->GetMaximum() + ov.H->GetBinErrorUp(ov.H->GetMaximumBin()));
         if (ov.Kind == ItemKind::Graph && ov.G)
         {
             double xmin, xmax, ymin, ymax;
@@ -313,7 +319,7 @@ void PlotManager::ComputeYMax_(const PlotSpec &spec, RenderPlan &plan)
         }
     }
     if (yMax <= 0.0) yMax = 1.0;
-    yMax *= (spec.Theme.LogY ? 10.0 : 1.35);
+    yMax *= (spec.Theme.LogY ? 10.0 : 1.5);
     plan.YMax = yMax;
 }
 
@@ -493,6 +499,11 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
     }
 
     // overlays
+    double overlayYMax = -1;
+    double cutMax = yMax/1.45;
+    double binWidth = -1;
+    if(!plan.Stacks.empty())
+        binWidth = static_cast<TH1*>(hs->GetStack()->Last())->GetBinWidth(1);
     for (auto &ov : plan.Overlays)
     {
         if (ov.Kind == ItemKind::Hist && ov.H)
@@ -501,8 +512,31 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             SanitizeUser(h);
             const bool is2d = IsTH2_(h);
             const std::string opt = ov.Draw.DrawOpt.empty() ? (is2d ? "COLZ" : (ov.IsData ? "E1" : "HIST")) : ov.Draw.DrawOpt;
-            if (ov.IsData) h->SetBinErrorOption(TH1::kPoisson);
+            if (ov.IsData)
+            {
+                h->SetBinErrorOption(TH1::kPoisson);
+                for(int i = 1 ; i < h->GetNbinsX(); i++)
+                {
+                    if(h->GetBinContent(i) == 0)
+                        h->SetBinError(i,0.);
+                }
+            }
+            else
+            {
+                if(ov.Draw.Scale && *ov.Draw.Scale < 0 && !plan.Stacks.empty())
+                    h->Scale(static_cast<TH1*>(hs->GetStack()->Last())->Integral()/h->Integral());
+            }
+
             h->Draw((opt + " SAME").c_str());
+             
+            if(h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()) > yMax/1.5)
+            {
+                overlayYMax = h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin());
+                cutMax = (h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()))*1.05;
+            }
+
+            if(binWidth < 0)
+                binWidth = h->GetBinWidth(1);
         }
         else if (ov.Kind == ItemKind::Graph && ov.G)
         {
@@ -517,7 +551,31 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             ov.GAE->Draw((opt + " SAME").c_str());
         }
     }
+    
+    if(overlayYMax > 0)
+    {   
+        if (!plan.Stacks.empty()) hs->SetMaximum(1.5*overlayYMax);
+        else frame->SetMaximum(1.5*overlayYMax);
+    }
 
+    if(spec.Cut.upCut)
+    {
+        auto *cline = new TLine(*spec.Cut.upCut,0,*spec.Cut.upCut,cutMax);
+        auto *carrow = new TArrow(*spec.Cut.upCut,cutMax,*spec.Cut.upCut - spec.Cut.arrowLength*binWidth,cutMax,0.025,"|>");
+        cline->SetLineWidth(2);
+        carrow->SetLineWidth(2);
+        cline->Draw("SAME");
+        carrow->Draw();
+    }
+    if(spec.Cut.dnCut)
+    {
+        auto *cline = new TLine(*spec.Cut.dnCut,0,*spec.Cut.dnCut,cutMax);
+        auto *carrow = new TArrow(*spec.Cut.dnCut,cutMax,*spec.Cut.dnCut + spec.Cut.arrowLength*binWidth,cutMax,0.025,"|>");
+        cline->SetLineWidth(2);
+        carrow->SetLineWidth(2);
+        cline->Draw("SAME");
+        carrow->Draw();
+    }
     // legend
     TLegend *leg = new TLegend(spec.Legend.X1, spec.Legend.Y1, spec.Legend.X2, spec.Legend.Y2);
     leg->SetBit(kCanDelete, true);
@@ -563,6 +621,25 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
     {
         delete leg;
         leg = nullptr;
+    }
+    //latex
+    TLatex *latExp = new TLatex();
+    TLatex *latLumi = new TLatex();
+    if(spec.Sample.Enable)
+    {
+        latExp->DrawLatexNDC(spec.Sample.XExp,spec.Sample.YExp, Form("#bf{#it{%s}}  %s",spec.Sample.Experiment.c_str(),spec.Sample.Comment.c_str()));
+        if(spec.Sample.Lumi > 0)
+            latLumi->DrawLatexNDC(spec.Sample.XLumi,spec.Sample.YLumi, Form("#scale[0.5]{#int}#scale[0.8]{#it{L}dt = %g %s}",spec.Sample.Lumi,spec.Sample.LumiUnit.c_str()));
+
+        if(m_ExpHook) m_ExpHook(*latExp);
+        if(m_LumiHook) m_ExpHook(*latLumi);
+    }
+    else
+    {
+        delete latExp;
+        delete latLumi;
+        latExp = nullptr;
+        latLumi = nullptr;
     }
 
     TGraphAsymmErrors *gr = new TGraphAsymmErrors();
@@ -632,6 +709,19 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
                     ln->SetLineColor(kGray + 2);
                     ln->SetBit(kCanDelete, true);
                     ln->Draw("SAME");
+                }
+                
+                if (spec.Ratio.Arrow)
+                {
+                    for(int i = 0 ;i < g->GetN() ; i++)
+                    {
+                        if(g->GetPointY(i)>spec.Ratio.YMax)
+                        {
+                            double xarr = g->GetPointX(i);
+                            auto* arr = new TArrow(xarr,1.95,xarr,2,0.015,"|>");
+                            arr->Draw();
+                        }
+                    }
                 }
                 if (m_RatioFrameHook) m_RatioFrameHook(*r);
             }

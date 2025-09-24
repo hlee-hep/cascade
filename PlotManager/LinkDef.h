@@ -3,6 +3,8 @@
 #pragma link C++ enum RatioRole;
 
 #pragma link C++ struct ColorSpec;
+#pragma link C++ struct CutSpec;
+#pragma link C++ struct SampleSpec;
 #pragma link C++ struct DrawSpec;
 #pragma link C++ struct StackItemSpec;
 #pragma link C++ struct OverlaySpec;
@@ -12,6 +14,5 @@
 #pragma link C++ struct BandSpec;
 #pragma link C++ struct LayoutSpec;
 #pragma link C++ struct PlotSpec;
-
 #pragma link C++ class PlotManager;
 #endif

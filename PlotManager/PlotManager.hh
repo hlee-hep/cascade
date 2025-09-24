@@ -10,7 +10,7 @@
 #include <TLine.h>
 #include <TPad.h>
 #include <TStyle.h>
-
+#include <TLatex.h>
 #include <algorithm>
 #include <functional>
 #include <optional>
@@ -87,6 +87,22 @@ struct ColorSpec
         FillStyle = fillStyle;
         return *this;
     }
+};
+struct CutSpec
+{
+    std::optional<double> upCut;
+    std::optional<double> dnCut;
+    double arrowLength = 1.0;  //bin 
+};
+
+struct SampleSpec
+{
+    bool Enable = true;
+    std::string Experiment = "Belle II";
+    std::string Comment = "";
+    double Lumi = 427.9;
+    std::string LumiUnit = "fb^{-1}";
+    double XExp = 0.24, YExp = 0.92, XLumi = 0.88, YLumi = 0.92;
 };
 
 struct DrawSpec
@@ -237,6 +253,7 @@ struct RatioSpec
     double YMin = 0.0, YMax = 2.0;
     bool UnityLine = true;
     bool MCError = true;
+    bool Arrow = true;
     std::optional<std::string> DenominatorOverlayLabel; //
 };
 
@@ -287,6 +304,8 @@ struct PlotSpec
     LegendSpec Legend;
     BandSpec Band;
     RatioSpec Ratio;
+    CutSpec Cut;
+    SampleSpec Sample; 
     std::vector<StackItemSpec> Stacks;
     std::vector<OverlaySpec> Overlays;
 
@@ -389,10 +408,12 @@ class PlotManager
     using LegendHook = std::function<void(TLegend &)>;
     using PadsHook = std::function<void(TPad &, TPad *)>;
     using FrameHook = std::function<void(TH1 &)>;
-
+    using LatexHook = std::function<void(TLatex &)>;
     void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
     void OnPostRender(PostRenderHook f) { m_PostHook = std::move(f); }
     void OnLegend(LegendHook f) { m_LegendHook = std::move(f); }
+    void OnExp(LatexHook f) { m_ExpHook = std::move(f); }
+    void OnLumi(LatexHook f) { m_LumiHook = std::move(f); }
     void OnPads(PadsHook f) { m_PadsHook = std::move(f); }
     void OnMainFrame(FrameHook f) { m_MainFrameHook = std::move(f); }
     void OnRatioFrame(FrameHook f) { m_RatioFrameHook = std::move(f); }
@@ -402,6 +423,8 @@ class PlotManager
     MutateSpecHook m_MutateHook;
     PostRenderHook m_PostHook;
     LegendHook m_LegendHook;
+    LatexHook m_ExpHook;
+    LatexHook m_LumiHook;
     PadsHook m_PadsHook;
     FrameHook m_MainFrameHook;
     FrameHook m_RatioFrameHook;
