@@ -263,7 +263,7 @@ struct ThemeSpec // global
     float TextSize = 0.05;
     float LabelSize = 0.054f;
     float TitleSize = 0.06f;
-    float TitleOffsetX = 1.10f;
+    float TitleOffsetX = 1.00f;
     float TitleOffsetY = 1.25f;
     float LabelOffset = 0.015f;
     float TickLengthY = 0.02;
