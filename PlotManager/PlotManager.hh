@@ -261,9 +261,10 @@ struct ThemeSpec // global
 {
     int Font = 42;
     float TextSize = 0.05;
-    float LabelSize = 0.050f;
-    float TitleSize = 0.065f;
-    float TitleOffset = 1.1f;
+    float LabelSize = 0.054f;
+    float TitleSize = 0.06f;
+    float TitleOffsetX = 1.10f;
+    float TitleOffsetY = 1.25f;
     float LabelOffset = 0.015f;
     float TickLengthY = 0.02;
     float TickLengthX = 0.03;
@@ -285,11 +286,11 @@ struct BandSpec
 
 struct LayoutSpec // not global
 {
-    int CanvW = 800, CanvH = 700;
-    double RatioSplit = 0.30;
-    double TopPadBottomMargin = 0.04;
-    double BotPadTopMargin = 0.02;
-    double BotPadBottomMargin = 0.30;
+    int CanvW = 800, CanvH = 800;
+    double RatioSplit = 0.25;
+    double TopPadBottomMargin = 0.05;
+    double BotPadTopMargin = 0.05;
+    double BotPadBottomMargin = 0.42;
     bool ForceYMin = false;
     double YMin = 0.1;
     bool ForceYMax = false;

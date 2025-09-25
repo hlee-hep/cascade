@@ -177,6 +177,25 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
 // ===== style & axes =====
 void PlotManager::SetupStyle_(const ThemeSpec &th)
 {
+    gStyle->SetCanvasBorderMode(0);
+    gStyle->SetCanvasColor(kWhite);
+
+    gStyle->SetPadBorderMode(0);
+    gStyle->SetPadColor(kWhite);
+    gStyle->SetPadGridX(false);
+    gStyle->SetPadGridY(false);
+    gStyle->SetGridColor(0);
+    gStyle->SetGridStyle(3);
+    gStyle->SetGridWidth(1);
+
+    gStyle->SetFrameBorderMode(0);
+    gStyle->SetFrameBorderSize(1);
+    gStyle->SetFrameFillColor(0);
+    gStyle->SetFrameFillStyle(0);
+    gStyle->SetFrameLineColor(1);
+    gStyle->SetFrameLineStyle(1);
+    gStyle->SetFrameLineWidth(1);
+
     gStyle->SetOptStat(0);
     gStyle->SetPadTopMargin(th.PadTopMargin);
     gStyle->SetPadBottomMargin(th.PadBottomMargin);
@@ -189,8 +208,8 @@ void PlotManager::SetupStyle_(const ThemeSpec &th)
     gStyle->SetTitleSize(th.TitleSize, "XYZ");
     gStyle->SetLabelSize(th.LabelSize, "XYZ");
     gStyle->SetLabelOffset(th.LabelOffset, "XYZ");
-    gStyle->SetTitleOffset(th.TitleOffset, "XYZ");
-    gStyle->SetTitleOffset(th.TitleOffset, "XYZ");
+    gStyle->SetTitleOffset(th.TitleOffsetX, "X");
+    gStyle->SetTitleOffset(th.TitleOffsetY, "Y");
     gStyle->SetPadTickX(1);
     gStyle->SetPadTickY(1);
     gStyle->SetTickLength(th.TickLengthX, "X");
@@ -358,8 +377,8 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
 std::string PlotManager::AutoLegendOpt_(const PlanOverlayItem &it)
 {
     if (!it.Draw.LegendOption.empty()) return it.Draw.LegendOption;
-    if (it.Kind == ItemKind::Hist) return it.IsData ? "P" : "F";
-    if (it.Kind == ItemKind::Graph) return "P";
+    if (it.Kind == ItemKind::Hist) return it.IsData ? "PE" : "F";
+    if (it.Kind == ItemKind::Graph) return "PE";
     return "P";
 }
 
@@ -476,6 +495,7 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
         TuneAxes_(hs->GetHistogram(), spec, yMin, yMax);
         hs->SetMinimum(yMin);
         hs->SetMaximum(yMax);
+        hs->GetYaxis()->SetMaxDigits(4);
         if (spec.Ratio.Enable) hs->GetXaxis()->SetLabelSize(0);
         if (m_MainFrameHook) m_MainFrameHook(*(hs->GetHistogram()));
     }
@@ -483,6 +503,7 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
     {
         frame->Draw("AXIS");
         TuneAxes_(frame, spec, yMin, yMax);
+        frame->GetYaxis()->SetMaxDigits(4);
         if (spec.Ratio.Enable) frame->GetXaxis()->SetLabelSize(0);
         if (m_MainFrameHook) m_MainFrameHook(*frame);
     }
@@ -653,16 +674,19 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             auto [r, g] = MakeRatio_(pr.first, pr.second, "pm_ratio");
             if (r)
             {
+                double rScale = (1-spec.Layout.RatioSplit)/spec.Layout.RatioSplit;
                 r->SetTitle("");
                 r->GetYaxis()->SetTitle(spec.Ratio.YLabel.c_str());
                 r->GetYaxis()->SetNdivisions(505);
-                r->GetYaxis()->SetLabelSize(spec.Theme.LabelSize);
-                r->GetYaxis()->SetTitleSize(spec.Theme.TitleSize);
-                r->GetYaxis()->SetTitleOffset(0.9);
+                r->GetYaxis()->SetLabelSize(rScale*spec.Theme.LabelSize);
+                r->GetYaxis()->SetTitleSize(rScale*spec.Theme.TitleSize);
+                r->GetYaxis()->SetTitleOffset(spec.Theme.TitleOffsetY/rScale);
+                r->GetYaxis()->SetTickLength(spec.Theme.TickLengthY);
                 r->GetXaxis()->SetTitle(spec.XTitle.c_str());
-                r->GetXaxis()->SetLabelSize(spec.Theme.LabelSize);
-                r->GetXaxis()->SetTitleSize(spec.Theme.TitleSize);
-                r->GetXaxis()->SetTitleOffset(1.2);
+                r->GetXaxis()->SetLabelSize(rScale*spec.Theme.LabelSize);
+                r->GetXaxis()->SetTitleSize(rScale*spec.Theme.TitleSize);
+                r->GetXaxis()->SetTitleOffset(spec.Theme.TitleOffsetX);
+                r->GetXaxis()->SetTickLength(rScale*spec.Theme.TickLengthX);
                 r->SetMinimum(spec.Ratio.YMin);
                 r->SetMaximum(spec.Ratio.YMax);
                 r->SetMarkerStyle(20);
