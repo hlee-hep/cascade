@@ -3,6 +3,7 @@
 #include "InterruptManager.hh"
 #include "Logger.hh"
 #include <chrono>
+#include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -11,7 +12,6 @@
 #include <pybind11/stl.h>
 #include <thread>
 #include <yaml-cpp/yaml.h>
-#include <dlfcn.h>
 namespace py = pybind11;
 
 AMCM::AMCM()
@@ -169,16 +169,15 @@ void AMCM::SaveRunLog() const
     LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
 }
 
-void AMCM::LoadPlugins(const std::string& path) 
+void AMCM::LoadPlugins(const std::string &path)
 {
     namespace fs = std::filesystem;
-    for (auto& p : fs::directory_iterator(path)) 
+    for (auto &p : fs::directory_iterator(path))
     {
         if (p.path().extension() == ".so")
         {
-            void* handle = dlopen(p.path().c_str(), RTLD_NOW);
-            if (!handle)
-                std::cerr << "dlopen failed: " << dlerror() << std::endl;
+            void *handle = dlopen(p.path().c_str(), RTLD_NOW);
+            if (!handle) std::cerr << "dlopen failed: " << dlerror() << std::endl;
         }
     }
 }

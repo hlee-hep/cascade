@@ -1,10 +1,10 @@
 #include "PlotManager.hh"
 #include <Math/DistFunc.h>
+#include <TArrow.h>
 #include <TLegendEntry.h>
 #include <TROOT.h>
 #include <cstdio>
 #include <iostream>
-#include <TArrow.h>
 // ===== style =====
 void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
 {
@@ -166,10 +166,10 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
     TGraphAsymmErrors *g = new TGraphAsymmErrors();
     g->SetLineWidth(2);
     g->Divide(r, den, "pois");
-    for(int i = 0 ;i < g->GetN() ; i++)
+    for (int i = 0; i < g->GetN(); i++)
     {
-        g->SetPointEXhigh(i,0.0);
-        g->SetPointEXlow(i,0.0);
+        g->SetPointEXhigh(i, 0.0);
+        g->SetPointEXlow(i, 0.0);
     }
     return {r, g};
 }
@@ -319,7 +319,7 @@ void PlotManager::ComputeYMax_(const PlotSpec &spec, RenderPlan &plan)
     double yMax = 0.0;
     auto up = [&](double v) { yMax = std::max(yMax, v); };
 
-    if (plan.StackSum) up(plan.StackSum->GetMaximum()+plan.StackSum->GetBinError(plan.StackSum->GetMaximumBin()));
+    if (plan.StackSum) up(plan.StackSum->GetMaximum() + plan.StackSum->GetBinError(plan.StackSum->GetMaximumBin()));
 
     for (auto &ov : plan.Overlays)
     {
@@ -374,18 +374,55 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
     return {num, den};
 }
 
-std::string PlotManager::AutoLegendOpt_(const PlanOverlayItem &it)
+
+std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec, const RenderPlan &plan, bool manualMode)
 {
-    if (!it.Draw.LegendOption.empty()) return it.Draw.LegendOption;
-    if (it.Kind == ItemKind::Hist) return it.IsData ? "PE" : "F";
-    if (it.Kind == ItemKind::Graph) return "PE";
-    return "P";
+    std::vector<LegendEntry> v;
+    v.reserve(plan.Stacks.size() + plan.Overlays.size() + 1);
+
+    auto push_stack = [&](const PlanStackItem &it)
+    {
+        if (!it.Draw.Visible) return;
+        if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) return;
+        int prio = it.Draw.LegendPriority.value_or(0);
+        v.push_back({it.Label, it.Color, "F", prio});
+    };
+    auto push_overlay = [&](const PlanOverlayItem &ov)
+    {
+        if (!ov.Draw.Visible) return;
+        if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) return;
+
+        std::string opt = (ov.Kind == ItemKind::Hist) ? (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption)
+                                                      : (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption);
+        int prio = ov.Draw.LegendPriority.value_or(0);
+        v.push_back({ov.Label, ov.Color, opt, prio});
+    };
+
+    for (auto &it : plan.Stacks)
+        push_stack(it);
+
+    for (auto &ov : plan.Overlays)
+        push_overlay(ov);
+
+    return v;
 }
 
-// ===== main draw =====
-TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
+void PlotManager::AddLegendEntry_(TLegend *leg, const LegendEntry &e)
 {
-    if (m_MutateHook) m_MutateHook(spec);
+    auto *le = leg->AddEntry((TObject *)nullptr, e.Label.c_str(), e.Opt.c_str());
+    if (!le) return;
+    le->SetFillColor(e.Color.Fill);
+    le->SetFillStyle(e.Color.FillStyle);
+    le->SetLineColor(e.Color.Line);
+    le->SetLineWidth(e.Color.LineWidth);
+    le->SetMarkerColor(e.Color.Marker);
+    le->SetMarkerStyle(e.Color.MarkerStyle);
+    le->SetMarkerSize(1.0);
+}
+// ===== main draw =====
+TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
+{
+    //if (m_MutateHook) m_MutateHook(spec);
 
     //
 
@@ -395,6 +432,7 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
     BuildPlan_(spec, plan);
 
     //
+    /*
     for (auto &o : plan.Overlays)
     {
         if (o.H && IsTH2_(o.H))
@@ -410,7 +448,7 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             spec.Ratio.Enable = false;
             break;
         }
-    }
+    }*/
 
     ComputeYMax_(spec, plan);
     const double yMin = (spec.Layout.ForceYMin ? spec.Layout.YMin : (spec.Theme.LogY ? 0.1 : 0.0));
@@ -521,10 +559,9 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
 
     // overlays
     double overlayYMax = -1;
-    double cutMax = yMax/1.45;
+    double cutMax = yMax / 1.45;
     double binWidth = -1;
-    if(!plan.Stacks.empty())
-        binWidth = static_cast<TH1*>(hs->GetStack()->Last())->GetBinWidth(1);
+    if (!plan.Stacks.empty()) binWidth = static_cast<TH1 *>(hs->GetStack()->Last())->GetBinWidth(1);
     for (auto &ov : plan.Overlays)
     {
         if (ov.Kind == ItemKind::Hist && ov.H)
@@ -536,28 +573,39 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             if (ov.IsData)
             {
                 h->SetBinErrorOption(TH1::kPoisson);
-                for(int i = 1 ; i < h->GetNbinsX(); i++)
+                
+                if(ov.Draw.ZeroError)
                 {
-                    if(h->GetBinContent(i) == 0)
-                        h->SetBinError(i,0.);
+                    h->Draw((opt + " SAME").c_str());
+                }
+                else
+                {
+                    auto hg = new TGraphAsymmErrors(h);
+                    for (int i = hg->GetN()-1; i >= 0; i--) {
+                    double x, y;
+                    hg->GetPoint(i, x, y);
+                    int bin = h->GetXaxis()->FindBin(x);
+                    if (h->GetBinContent(bin) == 0) {
+                        hg->RemovePoint(i); 
+                    }}
+                    hg->Draw((opt + " SAME").c_str());
                 }
             }
             else
             {
-                if(ov.Draw.Scale && *ov.Draw.Scale < 0 && !plan.Stacks.empty())
-                    h->Scale(static_cast<TH1*>(hs->GetStack()->Last())->Integral()/h->Integral());
+                if (ov.Draw.Scale && *ov.Draw.Scale < 0 && !plan.Stacks.empty())
+                    h->Scale(static_cast<TH1 *>(hs->GetStack()->Last())->Integral() / h->Integral());
+                h->Draw((opt + " SAME").c_str());
             }
 
-            h->Draw((opt + " SAME").c_str());
-             
-            if(h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()) > yMax/1.5)
+
+            if (h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()) > yMax / 1.5)
             {
                 overlayYMax = h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin());
-                cutMax = (h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()))*1.05;
+                cutMax = (h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin())) * 1.05;
             }
 
-            if(binWidth < 0)
-                binWidth = h->GetBinWidth(1);
+            if (binWidth < 0) binWidth = h->GetBinWidth(1);
         }
         else if (ov.Kind == ItemKind::Graph && ov.G)
         {
@@ -572,26 +620,28 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             ov.GAE->Draw((opt + " SAME").c_str());
         }
     }
-    
-    if(overlayYMax > 0)
-    {   
-        if (!plan.Stacks.empty()) hs->SetMaximum(1.5*overlayYMax);
-        else frame->SetMaximum(1.5*overlayYMax);
+
+    if (overlayYMax > 0)
+    {
+        if (!plan.Stacks.empty())
+            hs->SetMaximum(1.5 * overlayYMax);
+        else
+            frame->SetMaximum(1.5 * overlayYMax);
     }
 
-    if(spec.Cut.upCut)
+    if (spec.Cut.upCut)
     {
-        auto *cline = new TLine(*spec.Cut.upCut,0,*spec.Cut.upCut,cutMax);
-        auto *carrow = new TArrow(*spec.Cut.upCut,cutMax,*spec.Cut.upCut - spec.Cut.arrowLength*binWidth,cutMax,0.025,"|>");
+        auto *cline = new TLine(*spec.Cut.upCut, 0, *spec.Cut.upCut, cutMax);
+        auto *carrow = new TArrow(*spec.Cut.upCut, cutMax, *spec.Cut.upCut - spec.Cut.arrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
         cline->Draw("SAME");
         carrow->Draw();
     }
-    if(spec.Cut.dnCut)
+    if (spec.Cut.dnCut)
     {
-        auto *cline = new TLine(*spec.Cut.dnCut,0,*spec.Cut.dnCut,cutMax);
-        auto *carrow = new TArrow(*spec.Cut.dnCut,cutMax,*spec.Cut.dnCut + spec.Cut.arrowLength*binWidth,cutMax,0.025,"|>");
+        auto *cline = new TLine(*spec.Cut.dnCut, 0, *spec.Cut.dnCut, cutMax);
+        auto *carrow = new TArrow(*spec.Cut.dnCut, cutMax, *spec.Cut.dnCut + spec.Cut.arrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
         cline->Draw("SAME");
@@ -606,35 +656,81 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
         leg->SetBorderSize(0);
         leg->SetFillStyle(0);
         leg->SetTextFont(spec.Theme.Font);
+        auto entries = CollectLegendEntries_(spec, plan, /*manualMode*/ spec.Legend.Mode == LegendMode::Manual);
 
-        auto addLegend = [&](const char *label, const ColorSpec &c, const char *opt)
+        bool drawAuto = (spec.Legend.Mode == LegendMode::Auto);
+
+        if (spec.Legend.Mode == LegendMode::Manual)
         {
-            auto *e = leg->AddEntry((TObject *)nullptr, label, opt);
-            if (!e) return;
-            e->SetFillColor(c.Fill);
-            e->SetFillStyle(c.FillStyle);
-            e->SetLineColor(c.Line);
-            e->SetLineWidth(c.LineWidth);
-            e->SetMarkerColor(c.Marker);
-            e->SetMarkerStyle(c.MarkerStyle);
-            e->SetMarkerSize(1.0);
-        };
+            bool allHavePriority = true;
+            for (auto &e : entries)
+            {
+            }
 
-        for (auto &it : plan.Stacks)
-            addLegend(it.Label.c_str(), it.Color, "F");
+            for (auto &it : plan.Stacks)
+            {
+                if (!it.Draw.Visible) continue;
+                if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) continue;
+                if (!it.Draw.LegendPriority.has_value())
+                {
+                    allHavePriority = false;
+                    break;
+                }
+            }
+            if (allHavePriority)
+            {
+                for (auto &ov : plan.Overlays)
+                {
+                    if (!ov.Draw.Visible) continue;
+                    if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) continue;
+                    if (!ov.Draw.LegendPriority.has_value())
+                    {
+                        allHavePriority = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!allHavePriority)
+            {
+                // auto fallback
+                drawAuto = true;
+            }
+            else
+            {
+                std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) { return a.Priority < b.Priority; });
+                for (auto &e : entries)
+                    AddLegendEntry_(leg, e);
+            }
+        }
+
+        if (drawAuto)
+        {
+            for (auto &ov : plan.Overlays)
+            {
+                if (!ov.Draw.Visible) continue;
+                if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) continue;
+                const std::string opt = (ov.Kind == ItemKind::Hist) ? (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption)
+                                                                    : (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption);
+                AddLegendEntry_(leg, {ov.Label, ov.Color, opt, 0});
+            }
+            for (auto &it : plan.Stacks)
+            {
+                if (!it.Draw.Visible) continue;
+                if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) continue;
+                AddLegendEntry_(leg, {it.Label, it.Color, "F", 0});
+            }
+            
+        }
         if (plan.StackSum && spec.Band.Enable)
         {
             ColorSpec bc;
             bc.Fill = spec.Band.FillColor;
             bc.FillStyle = spec.Band.FillStyle;
             bc.Line = 0;
-            addLegend("Bkg. unc.", bc, "F");
+            AddLegendEntry_(leg, {spec.Band.Name.c_str(), bc, "F", 0});
         }
-        for (auto &ov : plan.Overlays)
-        {
-            const std::string opt = (ov.Kind == ItemKind::Hist) ? AutoLegendOpt_(ov) : "PE";
-            addLegend(ov.Label.c_str(), ov.Color, opt.c_str());
-        }
+
         leg->Draw("SAME");
         if (m_LegendHook) m_LegendHook(*leg);
     }
@@ -643,17 +739,18 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
         delete leg;
         leg = nullptr;
     }
-    //latex
+    // latex
     TLatex *latExp = new TLatex();
     TLatex *latLumi = new TLatex();
-    if(spec.Sample.Enable)
+    if (spec.Sample.Enable)
     {
-        latExp->DrawLatexNDC(spec.Sample.XExp,spec.Sample.YExp, Form("#bf{#it{%s}}  %s",spec.Sample.Experiment.c_str(),spec.Sample.Comment.c_str()));
-        if(spec.Sample.Lumi > 0)
-            latLumi->DrawLatexNDC(spec.Sample.XLumi,spec.Sample.YLumi, Form("#scale[0.5]{#int}#scale[0.8]{#it{L}dt = %g %s}",spec.Sample.Lumi,spec.Sample.LumiUnit.c_str()));
+        latExp->DrawLatexNDC(spec.Sample.XExp, spec.Sample.YExp, Form("#bf{#it{%s}}  %s", spec.Sample.Experiment.c_str(), spec.Sample.Comment.c_str()));
+        if (spec.Sample.Lumi > 0)
+            latLumi->DrawLatexNDC(spec.Sample.XLumi, spec.Sample.YLumi,
+                                  Form("#scale[0.5]{#int}#scale[0.8]{#it{L}dt = %g %s}", spec.Sample.Lumi, spec.Sample.LumiUnit.c_str()));
 
-        if(m_ExpHook) m_ExpHook(*latExp);
-        if(m_LumiHook) m_ExpHook(*latLumi);
+        if (m_ExpHook) m_ExpHook(*latExp);
+        if (m_LumiHook) m_ExpHook(*latLumi);
     }
     else
     {
@@ -674,19 +771,19 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
             auto [r, g] = MakeRatio_(pr.first, pr.second, "pm_ratio");
             if (r)
             {
-                double rScale = (1-spec.Layout.RatioSplit)/spec.Layout.RatioSplit;
+                double rScale = (1 - spec.Layout.RatioSplit) / spec.Layout.RatioSplit;
                 r->SetTitle("");
                 r->GetYaxis()->SetTitle(spec.Ratio.YLabel.c_str());
                 r->GetYaxis()->SetNdivisions(505);
-                r->GetYaxis()->SetLabelSize(rScale*spec.Theme.LabelSize);
-                r->GetYaxis()->SetTitleSize(rScale*spec.Theme.TitleSize);
-                r->GetYaxis()->SetTitleOffset(spec.Theme.TitleOffsetY/rScale);
+                r->GetYaxis()->SetLabelSize(rScale * spec.Theme.LabelSize);
+                r->GetYaxis()->SetTitleSize(rScale * spec.Theme.TitleSize);
+                r->GetYaxis()->SetTitleOffset(spec.Theme.TitleOffsetY / rScale);
                 r->GetYaxis()->SetTickLength(spec.Theme.TickLengthY);
                 r->GetXaxis()->SetTitle(spec.XTitle.c_str());
-                r->GetXaxis()->SetLabelSize(rScale*spec.Theme.LabelSize);
-                r->GetXaxis()->SetTitleSize(rScale*spec.Theme.TitleSize);
+                r->GetXaxis()->SetLabelSize(rScale * spec.Theme.LabelSize);
+                r->GetXaxis()->SetTitleSize(rScale * spec.Theme.TitleSize);
                 r->GetXaxis()->SetTitleOffset(spec.Theme.TitleOffsetX);
-                r->GetXaxis()->SetTickLength(rScale*spec.Theme.TickLengthX);
+                r->GetXaxis()->SetTickLength(rScale * spec.Theme.TickLengthX);
                 r->SetMinimum(spec.Ratio.YMin);
                 r->SetMaximum(spec.Ratio.YMax);
                 r->SetMarkerStyle(20);
@@ -734,15 +831,15 @@ TCanvas *PlotManager::Draw(PlotSpec& spec, const std::string &canvasName)
                     ln->SetBit(kCanDelete, true);
                     ln->Draw("SAME");
                 }
-                
+
                 if (spec.Ratio.Arrow)
                 {
-                    for(int i = 0 ;i < g->GetN() ; i++)
+                    for (int i = 0; i < g->GetN(); i++)
                     {
-                        if(g->GetPointY(i)>spec.Ratio.YMax)
+                        if (g->GetPointY(i) > spec.Ratio.YMax)
                         {
                             double xarr = g->GetPointX(i);
-                            auto* arr = new TArrow(xarr,1.95,xarr,2,0.015,"|>");
+                            auto *arr = new TArrow(xarr, 1.95, xarr, 2, 0.015, "|>");
                             arr->Draw();
                         }
                     }

@@ -36,7 +36,7 @@ class AMCM
     void RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group);
     DAGManager &GetDAGManager() { return *dag; }
     void RunDAG();
-    void LoadPlugins(const std::string& path);
+    void LoadPlugins(const std::string &path);
 
   private:
     std::map<std::string, std::shared_ptr<IAnalysisModule>> modules_;

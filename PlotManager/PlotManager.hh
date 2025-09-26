@@ -6,11 +6,11 @@
 #include <TH1.h>
 #include <TH2.h>
 #include <THStack.h>
+#include <TLatex.h>
 #include <TLegend.h>
 #include <TLine.h>
 #include <TPad.h>
 #include <TStyle.h>
-#include <TLatex.h>
 #include <algorithm>
 #include <functional>
 #include <optional>
@@ -28,6 +28,12 @@ enum class RatioRole
     None,
     Numerator,
     Denominator
+};
+
+enum class LegendMode
+{
+    Auto,
+    Manual
 };
 
 struct ColorSpec
@@ -92,7 +98,7 @@ struct CutSpec
 {
     std::optional<double> upCut;
     std::optional<double> dnCut;
-    double arrowLength = 1.0;  //bin 
+    double arrowLength = 1.0; // bin
 };
 
 struct SampleSpec
@@ -112,7 +118,9 @@ struct DrawSpec
     std::optional<double> Scale;
     bool NormBinWidth = false;
     bool Visible = true;
+    bool ZeroError = true; //  only for data
     std::string LegendOption;
+    std::optional<int> LegendPriority;
     DrawSpec() = default;
 
     // fluent setters
@@ -157,6 +165,16 @@ struct DrawSpec
     DrawSpec &SetLegendOpt(std::string v)
     {
         LegendOption = std::move(v);
+        return *this;
+    }
+    DrawSpec &SetLegendPriority(int a)
+    {
+        LegendPriority = a;
+        return *this;
+    }
+    DrawSpec &SetZeroError(bool b = true)
+    {
+        ZeroError = b;
         return *this;
     }
 };
@@ -244,8 +262,16 @@ struct LegendSpec
     bool Enable = true;
     double X1 = 0.60, Y1 = 0.65, X2 = 0.88, Y2 = 0.88;
     int NCol = 1;
+    LegendMode Mode = LegendMode::Auto;
+    bool SkipEmpty = true;
 };
-
+struct LegendEntry
+{
+    std::string Label;
+    ColorSpec Color;
+    std::string Opt;
+    int Priority;
+};
 struct RatioSpec
 {
     bool Enable = false;
@@ -282,6 +308,7 @@ struct BandSpec
     int FillStyle = 3254;
     int FillColor = 1;
     float Alpha = 1;
+    std::string Name = "Stat. err.";
 };
 
 struct LayoutSpec // not global
@@ -306,7 +333,7 @@ struct PlotSpec
     BandSpec Band;
     RatioSpec Ratio;
     CutSpec Cut;
-    SampleSpec Sample; 
+    SampleSpec Sample;
     std::vector<StackItemSpec> Stacks;
     std::vector<OverlaySpec> Overlays;
 
@@ -331,9 +358,9 @@ struct PlotSpec
         Ratio.Enable = on;
         return *this;
     }
-    PlotSpec &LegendBox(double x1, double y1, double x2, double y2, int ncol = 1)
+    PlotSpec &LegendBox(double x1, double y1, double x2, double y2, int ncol = 1, LegendMode mode = LegendMode::Auto, bool skip = false)
     {
-        Legend = {true, x1, y1, x2, y2, ncol};
+        Legend = {true, x1, y1, x2, y2, ncol, mode, skip};
         return *this;
     }
     PlotSpec &Stack(std::vector<StackItemSpec> v)
@@ -404,13 +431,13 @@ struct RenderPlan
 class PlotManager
 {
   public:
-    using MutateSpecHook = std::function<void(PlotSpec &)>;
+    //using MutateSpecHook = std::function<void(PlotSpec &)>;
     using PostRenderHook = std::function<void(TCanvas &)>;
     using LegendHook = std::function<void(TLegend &)>;
     using PadsHook = std::function<void(TPad &, TPad *)>;
     using FrameHook = std::function<void(TH1 &)>;
     using LatexHook = std::function<void(TLatex &)>;
-    void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
+    //void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
     void OnPostRender(PostRenderHook f) { m_PostHook = std::move(f); }
     void OnLegend(LegendHook f) { m_LegendHook = std::move(f); }
     void OnExp(LatexHook f) { m_ExpHook = std::move(f); }
@@ -418,10 +445,10 @@ class PlotManager
     void OnPads(PadsHook f) { m_PadsHook = std::move(f); }
     void OnMainFrame(FrameHook f) { m_MainFrameHook = std::move(f); }
     void OnRatioFrame(FrameHook f) { m_RatioFrameHook = std::move(f); }
-    TCanvas *Draw(PlotSpec& spec, const std::string &canvasName = "c1");
+    TCanvas *Draw(const PlotSpec &spec, const std::string &canvasName = "c1");
 
   private:
-    MutateSpecHook m_MutateHook;
+    //MutateSpecHook m_MutateHook;
     PostRenderHook m_PostHook;
     LegendHook m_LegendHook;
     LatexHook m_ExpHook;
@@ -447,6 +474,31 @@ class PlotManager
     static std::pair<const TH1 *, const TH1 *> FindRatioPair_(const PlotSpec &spec, const RenderPlan &plan);
     static std::string AutoLegendOpt_(const PlanOverlayItem &it);
     static bool IsTH2_(const TH1 *h) { return h && h->InheritsFrom("TH2"); }
+
+    static void AddLegendEntry_(TLegend *leg, const LegendEntry &e);
+    static std::vector<LegendEntry> CollectLegendEntries_(const PlotSpec &spec, const RenderPlan &plan, bool manualMode);
+
+    static inline bool IsEmptyObject_(const PlanStackItem &s)
+    {
+        if (!s.H) return true;
+        return (s.H->GetEntries() == 0);
+    }
+    static inline bool IsEmptyObject_(const PlanOverlayItem &o)
+    {
+        if (o.Kind == ItemKind::Hist)
+        {
+            if (!o.H) return true;
+            return (o.H->GetEntries() == 0);
+        }
+        else if (o.Kind == ItemKind::Graph)
+        {
+            return (!o.G || o.G->GetN() == 0);
+        }
+        else
+        { // GraphAsymm
+            return (!o.GAE || o.GAE->GetN() == 0);
+        }
+    }
 
     static inline std::string MakeSafeName(const void *p, const char *tag)
     {
