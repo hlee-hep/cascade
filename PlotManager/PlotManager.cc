@@ -12,6 +12,7 @@ void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
     h->SetLineColor(c.Line);
     h->SetMarkerColor(c.Marker);
     h->SetMarkerStyle(c.MarkerStyle);
+    h->SetMarkerSize(c.MarkerSize);
     h->SetLineWidth(c.LineWidth);
     h->SetFillColor(c.Fill);
     h->SetFillStyle(c.FillStyle);
@@ -22,6 +23,7 @@ void PlotManager::ApplyStyleGraph_(TGraph *g, const ColorSpec &c)
     g->SetLineColor(c.Line);
     g->SetMarkerColor(c.Marker);
     g->SetMarkerStyle(c.MarkerStyle);
+    g->SetMarkerSize(c.MarkerSize);
     g->SetLineWidth(c.LineWidth);
 }
 void PlotManager::ApplyStyleGraphAsymm_(TGraphAsymmErrors *g, const ColorSpec &c)
@@ -30,6 +32,7 @@ void PlotManager::ApplyStyleGraphAsymm_(TGraphAsymmErrors *g, const ColorSpec &c
     g->SetLineColor(c.Line);
     g->SetMarkerColor(c.Marker);
     g->SetMarkerStyle(c.MarkerStyle);
+    g->SetMarkerSize(c.MarkerSize);
     g->SetLineWidth(c.LineWidth);
     g->SetFillColor(c.Fill);
     g->SetFillStyle(c.FillStyle);

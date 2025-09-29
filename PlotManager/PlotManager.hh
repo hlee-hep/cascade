@@ -44,7 +44,7 @@ struct ColorSpec
     int MarkerStyle = 20;
     int LineWidth = 2;
     int FillStyle = 1001;
-
+    float MarkerSize = 0.9;
     ColorSpec() = default;
     ColorSpec(int line, int fill, int marker, int markerStyle = 20, int lineWidth = 2, int fillStyle = 1001)
         : Line(line), Fill(fill), Marker(marker), MarkerStyle(markerStyle), LineWidth(lineWidth), FillStyle(fillStyle)
@@ -82,7 +82,11 @@ struct ColorSpec
         FillStyle = v;
         return *this;
     }
-
+    ColorSpec &SetMarkerSize(float v)
+    {
+        MarkerSize = v;
+        return *this;
+    }
     ColorSpec &Set(int line, int fill, int marker, int markerStyle = 20, int lineWidth = 2, int fillStyle = 1001)
     {
         Line = line;
