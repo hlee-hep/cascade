@@ -112,7 +112,7 @@ struct SampleSpec
     std::string Comment = "";
     double Lumi = 427.9;
     std::string LumiUnit = "fb^{-1}";
-    double XExp = 0.24, YExp = 0.92, XLumi = 0.88, YLumi = 0.92;
+    double XExp = 0.155, YExp = 0.92, XLumi = 0.77, YLumi = 0.92;
 };
 
 struct DrawSpec
@@ -299,7 +299,7 @@ struct ThemeSpec // global
     float TickLengthY = 0.02;
     float TickLengthX = 0.03;
     float PadTopMargin = 0.1;
-    float PadRightMargin = 0.02;
+    float PadRightMargin = 0.03;
     float PadLeftMargin = 0.15;
     float PadBottomMargin = 0.15;
     bool LogY = false;
