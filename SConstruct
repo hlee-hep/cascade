@@ -177,7 +177,7 @@ Depends('tidy', '.clang-tidy')
 utils_obj, utils_install = SConscript("build/utils/SConscript", exports=["env", "TOP"])
 lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisManager/SConscript", exports=["env","TOP"])
 lib_plot_obj, lib_plot_install = SConscript("build/PlotManager/SConscript", exports=["env","TOP"])
-lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env"])
+lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env","TOP"])
 core_objs, _ = SConscript("build/src/SConscript", exports=["env" , "lib_param_obj"])
 module_libs_obj, module_libs_install = SConscript("build/modules/SConscript", exports=["env", "lib_param_obj"])
 pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[

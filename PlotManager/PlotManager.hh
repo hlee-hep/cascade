@@ -435,13 +435,13 @@ struct RenderPlan
 class PlotManager
 {
   public:
-    //using MutateSpecHook = std::function<void(PlotSpec &)>;
+    // using MutateSpecHook = std::function<void(PlotSpec &)>;
     using PostRenderHook = std::function<void(TCanvas &)>;
     using LegendHook = std::function<void(TLegend &)>;
     using PadsHook = std::function<void(TPad &, TPad *)>;
     using FrameHook = std::function<void(TH1 &)>;
     using LatexHook = std::function<void(TLatex &)>;
-    //void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
+    // void OnMutateSpec(MutateSpecHook f) { m_MutateHook = std::move(f); }
     void OnPostRender(PostRenderHook f) { m_PostHook = std::move(f); }
     void OnLegend(LegendHook f) { m_LegendHook = std::move(f); }
     void OnExp(LatexHook f) { m_ExpHook = std::move(f); }
@@ -452,7 +452,7 @@ class PlotManager
     TCanvas *Draw(const PlotSpec &spec, const std::string &canvasName = "c1");
 
   private:
-    //MutateSpecHook m_MutateHook;
+    // MutateSpecHook m_MutateHook;
     PostRenderHook m_PostHook;
     LegendHook m_LegendHook;
     LatexHook m_ExpHook;

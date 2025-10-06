@@ -1,10 +1,30 @@
 import os
+Import("env","TOP")
 
-Import("env")
+srcdir = os.path.join(TOP, "ParamManager")              
+builddir = os.path.join(TOP, "build", "ParamManager")    
+utilsdir = os.path.join(TOP, "build", "utils")
+headers = [os.path.join(srcdir, "ParamManager.hh")]
+linkdef = os.path.join(srcdir, "LinkDef.h")
 
-srcs = ["ParamManager.cc"]
+pybind_includes = os.popen("python3 -m pybind11 --includes").read().strip()
 
-lib = env.SharedLibrary("libParamManager", srcs)
-install_targets = env.Install(env["LIBDIR"], lib)
+dict_cxx = os.path.join(builddir, "ParamManagerDict.cxx")
+pcm = os.path.join(builddir, "ParamManagerDict_rdict.pcm")
+rootmap = os.path.join(builddir, "libParamManager.rootmap")
+modenv = env.Clone()
+modenv.Append(LIBS=["utils"])
+modenv.Append(LIBPATH=[utilsdir])
+
+dict = modenv.Command(
+    target=[dict_cxx, pcm, rootmap],
+    source=["ParamManager.cc"],
+    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} -I{TOP}/utils {pybind_includes} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libParamManager.so"
+)
+
+sources = [dict_cxx, os.path.join(builddir, "ParamManager.cc")]
+lib = modenv.SharedLibrary("libParamManager", sources)
+
+install_targets = modenv.Install(modenv["LIBDIR"], [lib, pcm, rootmap])
 
 Return("lib install_targets")

@@ -377,7 +377,6 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
     return {num, den};
 }
 
-
 std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec, const RenderPlan &plan, bool manualMode)
 {
     std::vector<LegendEntry> v;
@@ -425,7 +424,7 @@ void PlotManager::AddLegendEntry_(TLegend *leg, const LegendEntry &e)
 // ===== main draw =====
 TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
 {
-    //if (m_MutateHook) m_MutateHook(spec);
+    // if (m_MutateHook) m_MutateHook(spec);
 
     //
 
@@ -576,21 +575,24 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             if (ov.IsData)
             {
                 h->SetBinErrorOption(TH1::kPoisson);
-                
-                if(ov.Draw.ZeroError)
+
+                if (ov.Draw.ZeroError)
                 {
                     h->Draw((opt + " SAME").c_str());
                 }
                 else
                 {
                     auto hg = new TGraphAsymmErrors(h);
-                    for (int i = hg->GetN()-1; i >= 0; i--) {
-                    double x, y;
-                    hg->GetPoint(i, x, y);
-                    int bin = h->GetXaxis()->FindBin(x);
-                    if (h->GetBinContent(bin) == 0) {
-                        hg->RemovePoint(i); 
-                    }}
+                    for (int i = hg->GetN() - 1; i >= 0; i--)
+                    {
+                        double x, y;
+                        hg->GetPoint(i, x, y);
+                        int bin = h->GetXaxis()->FindBin(x);
+                        if (h->GetBinContent(bin) == 0)
+                        {
+                            hg->RemovePoint(i);
+                        }
+                    }
                     hg->Draw((opt + " SAME").c_str());
                 }
             }
@@ -600,7 +602,6 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                     h->Scale(static_cast<TH1 *>(hs->GetStack()->Last())->Integral() / h->Integral());
                 h->Draw((opt + " SAME").c_str());
             }
-
 
             if (h->GetMaximum() + h->GetBinErrorUp(h->GetMaximumBin()) > yMax / 1.5)
             {
@@ -723,7 +724,6 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                 if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) continue;
                 AddLegendEntry_(leg, {it.Label, it.Color, "F", 0});
             }
-            
         }
         if (plan.StackSum && spec.Band.Enable)
         {

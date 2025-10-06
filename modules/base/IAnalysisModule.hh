@@ -84,26 +84,14 @@ class IAnalysisModule
     std::string GetCodeHash() const { return code_version_hash; }
 
     void SetParamFromPy(const std::string &key, py::object val) { _param.SetParamFromPy(key, val); }
-    void SetParamsFromDict(const py::dict &d)
-    {
-        for (auto item : d)
-            SetParamFromPy(py::str(item.first), py::reinterpret_borrow<py::object>(item.second));
-    }
-    void SetParamsFromYAML(const std::string &yamlPath)
-    {
-        const YAML::Node node = YAML::LoadFile(yamlPath.c_str());
-        _param.SetParamsFromYAML(node);
-    }
-    void DumpParamsToYAML(const std::string &filepath) const
-    {
-        YAML::Emitter out;
-        out.SetIndent(4);
-        out.SetMapFormat(YAML::Block);
-        out.SetSeqFormat(YAML::Flow);
-        out << _param.ToYAMLNode();
-        std::ofstream fout(filepath);
-        fout << out.c_str();
-    }
+    void SetParamsFromDict(const py::dict &d) { _param.SetParamsFromDict(d); }
+    void LoadParamsFromYAML(const std::string &path) { _param.LoadYAMLFile(path); }
+    void LoadParamsFromJSON(const std::string &path) { _param.LoadJSONFile(path); }
+    void SaveParamsToYAML(const std::string &path) { _param.SaveYAMLFile(path); }
+    void SaveParamsToJSON(const std::string &path) { _param.SaveJSONFile(path); }
+    std::string DumpParamsToYAML(int indent = 2) { return _param.DumpYAML(indent); }
+    std::string DumpParamsToJSON(int indent = 4) { return _param.DumpJSON(indent); }
+
     std::string GetStatus() const { return _status; }
     ParamManager &GetParamManager() { return _param; }
     const auto &GetAllManagers() const { return _mgr; }
@@ -159,7 +147,7 @@ class IAnalysisModule
                 mg->PrintHists();
                 mg->PrintCuts();
             }
-            LOG_INFO("ParamManager", _param.PrintParameters());
+            LOG_INFO("ParamManager", _param.DumpJSON());
             return false;
         }
         if (_param.Get<bool>("force_run"))
