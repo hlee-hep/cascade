@@ -3,34 +3,42 @@
   <img src="docs/framework_light.png" alt="Cascade Logo Light" width="300"/>
 </p>
 
+<br>
+
 # Cascade
 
-**Modular HEP analysis framework** with support for **ROOT**, **RDataFrame**, **DAG-based execution**, and **snapshot tracking**.
-
-> 🚧 **Cascade is under active development — stay tuned!**
-
----
-
-## 📁 Directory Structure
-
-- `include/`, `src/` — Core C++ framework components
-- `modules/` — Individual analysis modules (plug-and-play)
-- `AnalysisManager/` — Manages ROOT I/O and analysis flow
-- `ParamManager/` — Handles parameter input and lambda registration
-- `PlotManager/` — Centralized histogram and plot rendering
-- `python/` — Python wrapper and control interface
-- `main/` — Python binding entry point (`pybind11`)
-- `utils/` — Shared utilities and tools
+A modular analysis framework for high-energy physics (HEP).
+**Cascade** integrates ROOT, C++, and Python into a single, flexible environment for reproducible and maintainable data analysis.
 
 ---
 
-## ⚙️ Build Instructions
+## ⚙️ Overview
+Cascade provides a modular execution model where each analysis unit (“module”) defines its own logic and parameters.
+The framework manages configuration, dependencies, and execution order through a directed acyclic graph (DAG).
 
-Cascade is built using `scons`. To build the framework:
+---
 
-```bash
-scons -jX
-```
+## 🧩 Core Components
+- **AnalysisManager** — handles ROOT I/O, `RDataFrame`, histogramming, and variable definitions.
+- **PlotManager** — provides plotting and style control based on `TH1` objects.
+- **ParamManager** — type-safe parameter handler with Python-style access (`param["x"]`, `param.Get<float>("x")`).
+  The above three managers can also be used independently within ROOT macros.
+- **DAGManager** — manages dependencies and execution flow between modules.
+- **AMCM** — orchestrates module registration, dependency resolution, and execution monitoring.
+- **Logger** — provides unified logging and command-line progress display.
+- **SnapshotCacheManager** — handles snapshot hashing and caching for reproducible outputs.
+
+---
+
+## 🧰 Key Features
+- Full **C++17 / pybind11** integration
+- **RDataFrame**-based event loop
+- **YAML**-driven configuration system
+- Per-module parameter injection
+- **Python** interface for control and scripting
+- Core logic implemented in **C++** and **Python**
+- Support for user-defined module plugins
+- Clean **SCons** build system with ROOT dictionary generation
 
 ---
 
@@ -43,52 +51,5 @@ scons -jX
 - [openSSL](https://openssl-library.org) — Hash calculation
 - [SCons](https://scons.org/) — Build system (`pip install scons`)
 - C++17 or higher
-
----
-
-## 🧠 Core Managers
-
-### 🔧 AnalysisManager
-Handles ROOT I/O, TTree, and RDataFrame-based analysis logic.
-
-- Owns and executes ROOT RDataFrame (RDF) and TTree
-- Manages cut definitions, new variables, and snapshot outputs
-- **Can be used standalone within the ROOT framework (no Python or Cascade required)**
-
-### 📊 PlotManager
-Manages ROOT histograms and plotting utilities.
-
-- Define consistent styles for 1D and 2D histograms and graphs
-- Drawing pre-defined 1D histograms
-- Designed to be decoupled from analysis logic
-- **Can be used independently in ROOT macros similar to AnalysisManager**
-
-### 🧠 ParamManager
-Stores and manages parameters within each analysis module.
-
-- Receives Python-side input and provides typed parameter access
-- Holds reusable lambda functions for RDF operations
-- Simplifies configuration parsing inside each module
-
-### 🧮 DAGManager
-Controls directed acyclic graph (DAG) execution for module dependencies.
-
-- Resolves run order based on declared dependencies
-- Propagates parameters automatically between connected modules
-- Used internally by AMCM for DAG-based orchestration
-
-### 📢 Logger
-Unified logging utility used by all managers and modules.
-
-- Provides per-module logging and global messages
-- Includes minimal CLI progress bar
-- Does not manage any internal progress state
-
-### 🧩 AMCM (AnalysisModuleControlMaster)
-C++-side orchestrator that manages analysis module registration and execution.
-
-- Handles module execution and dependency resolution
-- Exposed to Python via `pybind11`
-- **Wrapped again in Python as `pyAMCM` to support dynamic registration and execution of Python-based modules**
 
 ---
