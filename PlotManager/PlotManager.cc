@@ -385,6 +385,7 @@ std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec
     auto push_stack = [&](const PlanStackItem &it)
     {
         if (!it.Draw.Visible) return;
+        if (!it.Draw.VisibleInLegend) return;
         if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) return;
         int prio = it.Draw.LegendPriority.value_or(0);
         v.push_back({it.Label, it.Color, "F", prio});
@@ -392,6 +393,7 @@ std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec
     auto push_overlay = [&](const PlanOverlayItem &ov)
     {
         if (!ov.Draw.Visible) return;
+        if (!ov.Draw.VisibleInLegend) return;
         if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) return;
 
         std::string opt = (ov.Kind == ItemKind::Hist) ? (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption)

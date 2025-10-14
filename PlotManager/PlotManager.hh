@@ -123,6 +123,7 @@ struct DrawSpec
     bool NormBinWidth = false;
     bool Visible = true;
     bool ZeroError = true; //  only for data
+    bool VisibleInLegend = true;
     std::string LegendOption;
     std::optional<int> LegendPriority;
     DrawSpec() = default;
@@ -164,6 +165,11 @@ struct DrawSpec
     DrawSpec &SetVisible(bool v = true)
     {
         Visible = v;
+        return *this;
+    }
+    DrawSpec &SetVisibleInLegend(bool b = true)
+    {
+        VisibleInLegend = b;
         return *this;
     }
     DrawSpec &SetLegendOpt(std::string v)
