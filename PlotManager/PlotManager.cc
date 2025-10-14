@@ -676,6 +676,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             for (auto &it : plan.Stacks)
             {
                 if (!it.Draw.Visible) continue;
+                if (!it.Draw.VisibleInLegend) continue;
                 if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) continue;
                 if (!it.Draw.LegendPriority.has_value())
                 {
@@ -688,6 +689,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                 for (auto &ov : plan.Overlays)
                 {
                     if (!ov.Draw.Visible) continue;
+                    if (!ov.Draw.VisibleInLegend) continue;
                     if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) continue;
                     if (!ov.Draw.LegendPriority.has_value())
                     {
@@ -715,6 +717,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             for (auto &ov : plan.Overlays)
             {
                 if (!ov.Draw.Visible) continue;
+                if (!ov.Draw.VisibleInLegend) continue;
                 if (spec.Legend.SkipEmpty && IsEmptyObject_(ov)) continue;
                 const std::string opt = (ov.Kind == ItemKind::Hist) ? (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption)
                                                                     : (ov.Draw.LegendOption.empty() ? "PE" : ov.Draw.LegendOption);
@@ -723,6 +726,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             for (auto &it : plan.Stacks)
             {
                 if (!it.Draw.Visible) continue;
+                if (!it.Draw.VisibleInLegend) continue;
                 if (spec.Legend.SkipEmpty && IsEmptyObject_(it)) continue;
                 AddLegendEntry_(leg, {it.Label, it.Color, "F", 0});
             }
