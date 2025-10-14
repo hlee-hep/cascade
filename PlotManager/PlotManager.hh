@@ -119,6 +119,7 @@ struct DrawSpec
 {
     std::string DrawOpt = "";
     std::optional<int> Rebin;
+    std::optional<int> Smoothing;
     std::optional<double> Scale;
     bool NormBinWidth = false;
     bool Visible = true;
@@ -140,6 +141,13 @@ struct DrawSpec
         Rebin = r;
         return *this;
     }
+
+    DrawSpec &SetSmoothing(int s)
+    {
+        Smoothing = s;
+        return *this;
+    }
+
     DrawSpec &ClearRebin()
     {
         Rebin.reset();

@@ -43,6 +43,7 @@ void PlotManager::ApplyViewOps_(TH1 *h, const DrawSpec &d)
 {
     if (!h) return;
     if (d.Rebin && *d.Rebin > 1) h->Rebin(*d.Rebin);
+    if (d.Smoothing && *d.Smoothing > 0) h->Smooth(*d.Smoothing);
     if (d.Scale) h->Scale(*d.Scale);
 
     if (d.NormBinWidth)
