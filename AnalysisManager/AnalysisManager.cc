@@ -11,7 +11,6 @@
 #include <ctime>
 #include <dlfcn.h>
 #include <fstream>
-#include <iostream>
 #include <regex>
 using namespace logger;
 
@@ -50,6 +49,7 @@ void AnalysisManager::LoadCuts(const std::string &yamlPath)
         std::string name = it.first.as<std::string>();
         std::string rawExpr = it.second.as<std::string>();
         if (rawExpr.find("--lambda:") == std::string::npos) rawCutExpr[name] = rawExpr;
+        LOG_INFO("AnalysisManager", "Registered cut '" << name << "' from " << yamlPath);
     }
     LOG_INFO("AnalysisManager", "Cut named " << yamlPath << " has been loaded.");
 }
@@ -196,7 +196,15 @@ void AnalysisManager::InitNewHistsFromFile(const std::string &histfile)
 }
 void AnalysisManager::LoadHists(const std::string &histfile)
 {
+    LOG_INFO("AnalysisManager", "Loading histograms from " << histfile);
     TFile *file = new TFile(histfile.c_str());
+    if (!file || file->IsZombie())
+    {
+        LOG_ERROR("AnalysisManager", "Failed to open histogram file: " << histfile);
+        delete file;
+        return;
+    }
+
     TDirectory *dir = static_cast<TDirectory *>(file);
 
     TIter next(dir->GetListOfKeys());
@@ -239,10 +247,12 @@ void AnalysisManager::ActivateSelectedCuts(const std::vector<std::string> &selec
                                      "tree first. or now using RDF");
         return;
     }
+    LOG_INFO("AnalysisManager", "Activating selected cuts" << (selected.empty() ? std::string(" (all available)") : std::string("")));
     for (const auto &[name, expr] : rawCutExpr)
     {
         if (!selected.empty() && std::find(selected.begin(), selected.end(), name) == selected.end()) continue;
         cutFormulas[name] = new TTreeFormula(name.c_str(), ExpandAliases(expr).c_str(), currentTree);
+        LOG_INFO("AnalysisManager", "Cut activated: " << name << " => " << expr);
     }
 }
 
@@ -271,7 +281,11 @@ std::string AnalysisManager::ExpandAliases(const std::string &expr) const
     return result;
 }
 
-void AnalysisManager::AddCut(const std::string &name, const std::string &expr) { rawCutExpr[name] = expr; }
+void AnalysisManager::AddCut(const std::string &name, const std::string &expr)
+{
+    rawCutExpr[name] = expr;
+    LOG_INFO("AnalysisManager", "Cut added: " << name << " -> " << expr);
+}
 
 bool AnalysisManager::PassCut(const std::string &name) const
 {
@@ -354,11 +368,19 @@ void AnalysisManager::SaveCuts(const std::string &yamlPath) const
     }
     out << YAML::EndMap << YAML::EndMap;
     std::ofstream fout(yamlPath);
+    if (!fout)
+    {
+        LOG_ERROR("AnalysisManager", "Unable to open cut output file: " << yamlPath);
+        return;
+    }
+
     fout << out.c_str();
+    LOG_INFO("AnalysisManager", "Cuts are saved to " << yamlPath);
 }
 
 void AnalysisManager::GenerateConfig(TTree *tree, const std::string &yamlOut, const std::vector<std::string> &filenames)
 {
+    LOG_INFO("AnalysisManager", "Generating configuration for tree " << tree->GetName() << " to " << yamlOut);
     YAML::Emitter out;
     out << YAML::BeginMap;
 
@@ -388,8 +410,15 @@ void AnalysisManager::GenerateConfig(TTree *tree, const std::string &yamlOut, co
     out << YAML::EndMap;
 
     std::ofstream fout(yamlOut);
+    if (!fout)
+    {
+        LOG_ERROR("AnalysisManager", "Unable to write generated config to " << yamlOut);
+        return;
+    }
+
     fout << out.c_str();
     fout.close();
+    LOG_INFO("AnalysisManager", "Configuration is generated at " << yamlOut);
 }
 
 double *AnalysisManager::AddVar(const std::string &name, std::string alias = "")
@@ -406,6 +435,7 @@ double *AnalysisManager::AddVar(const std::string &name, std::string alias = "")
     double *ptr = new double;
     newBranchMap[alias] = {name, "Double_t"};
     newBranchData[alias] = ptr;
+    LOG_INFO("AnalysisManager", "New variable added: " << alias << " mapped to " << name);
     return ptr;
 }
 
@@ -656,6 +686,8 @@ void AnalysisManager::SetRDFInputFromConfig(const std::string &yamlPath)
         rdf_raw = std::make_unique<ROOT::RDataFrame>(*currentTree);
         rdf_node = *rdf_raw;
         lm = std::make_unique<LambdaManager>();
+        LOG_INFO("AnalysisManager", "RDF input initialized from config " << yamlPath << " with " << inputFiles.size()
+                                      << " files for tree " << inTreeName);
     }
     else
     {
@@ -672,12 +704,14 @@ void AnalysisManager::SetRDFInputFromFile(const std::string &treename, const std
     rdf_raw = std::make_unique<ROOT::RDataFrame>(*currentTree);
     rdf_node = *rdf_raw;
     lm = std::make_unique<LambdaManager>();
+    LOG_INFO("AnalysisManager", "RDF input initialized from file " << filename << " for tree " << treename);
 }
 
 void AnalysisManager::DefineRDFVar(const std::string &name, const std::string &expr)
 {
     if (!useRDF) throw std::runtime_error("RDF not initialized");
     rdf_node = rdf_node->Define(name, expr);
+    LOG_INFO("AnalysisManager", "Defined RDF variable '" << name << "' with expression '" << expr << "'");
 }
 
 void AnalysisManager::ApplyRDFFilter(const std::string &name)
@@ -715,11 +749,13 @@ void AnalysisManager::ApplyRDFFilter(const std::string &name, const std::string 
 
 void AnalysisManager::ApplyRDFFilterSelected(const std::vector<std::string> &names)
 {
+    LOG_INFO("AnalysisManager", "Applying RDF filters for selected cuts (" << names.size() << " entries)");
     for (const auto &n : names)
         ApplyRDFFilter(n);
 }
 void AnalysisManager::ApplyRDFFilterAll()
 {
+    LOG_INFO("AnalysisManager", "Applying RDF filters for all registered cuts");
     for (const auto &[name, _] : rawCutExpr)
         ApplyRDFFilter(name);
 }
@@ -735,6 +771,8 @@ void AnalysisManager::BookRDFHist1D(const std::string &alias, const std::string 
     auto model = ROOT::RDF::TH1DModel(fullname.c_str(), "", int(binfo[0]), binfo[1], binfo[2]);
     auto rptr = rdf_node->Histo1D(model, alias);
     histRDF[alias][prefix] = rptr;
+    LOG_INFO("AnalysisManager", "Booked RDF histogram '" << fullname << "' with bins {" << binfo[0] << ", " << binfo[1] << ", "
+                                           << binfo[2] << "}");
 }
 
 void AnalysisManager::BookRDFHistsFromConfig(const std::string &yamlPath, const std::string &prefix)
@@ -760,6 +798,7 @@ void AnalysisManager::BookRDFHistsFromConfig(const std::string &yamlPath, const 
             LOG_ERROR("AnalysisManager", "Invalid bin format for histogram : " << alias);
         }
     }
+    LOG_INFO("AnalysisManager", "Booked RDF histograms from config " << yamlPath << " with prefix '" << prefix << "'");
 }
 void AnalysisManager::BookRDFHistsFromFile(const std::string &histfile)
 {
@@ -771,6 +810,7 @@ void AnalysisManager::BookRDFHistsFromFile(const std::string &histfile)
             BookRDFHist1D(alias, prefix, binfo);
         }
     }
+    LOG_INFO("AnalysisManager", "Booked RDF histograms based on file " << histfile);
 }
 
 void AnalysisManager::SnapshotRDF(const std::string &treeName, const std::string &fileName, int option)
@@ -965,7 +1005,7 @@ AnalysisManager::AnalysisManager()
     void *handle = dlopen("libTreePlayer.so", RTLD_LAZY | RTLD_GLOBAL);
     if (!handle)
     {
-        std::cerr << "[AnalysisManager] Failed to load libTreePlayer.so: " << dlerror() << std::endl;
+        LOG_WARN("AnalysisManager", "Failed to load libTreePlayer.so: " << dlerror());
     }
     ROOT::EnableImplicitMT();
 }

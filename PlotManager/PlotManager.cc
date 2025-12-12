@@ -3,8 +3,7 @@
 #include <TArrow.h>
 #include <TLegendEntry.h>
 #include <TROOT.h>
-#include <cstdio>
-#include <iostream>
+#include "Logger.hh"
 // ===== style =====
 void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
 {
@@ -315,6 +314,9 @@ void PlotManager::BuildPlan_(const PlotSpec &spec, RenderPlan &plan)
             plan.StackBand = spec.Band.Enable ? MakeBandFromHist_(plan.StackSum) : nullptr;
         }
     }
+
+    LOG_INFO("PlotManager", "Render plan built with " << plan.Stacks.size() << " stack items and " << plan.Overlays.size()
+                                                       << " overlays");
 }
 
 // ===== ymax =====
@@ -344,6 +346,7 @@ void PlotManager::ComputeYMax_(const PlotSpec &spec, RenderPlan &plan)
     if (yMax <= 0.0) yMax = 1.0;
     yMax *= (spec.Theme.LogY ? 10.0 : 1.5);
     plan.YMax = yMax;
+    LOG_INFO("PlotManager", "Computed YMax=" << yMax << (spec.Theme.LogY ? " (log scale)" : " (linear scale)"));
 }
 
 // ===== ratio helpers =====
@@ -374,7 +377,13 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
         }
     }
     if (!den) den = plan.StackSum;
-    if (!den) return {nullptr, nullptr};
+    if (!den)
+    {
+        LOG_INFO("PlotManager", "No valid ratio denominator found for numerator '" << num->GetName() << "'");
+        return {nullptr, nullptr};
+    }
+
+    LOG_INFO("PlotManager", "Ratio pair selected. Num='" << num->GetName() << "' Den='" << den->GetName() << "'");
     return {num, den};
 }
 
@@ -430,6 +439,9 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     // if (m_MutateHook) m_MutateHook(spec);
 
     //
+
+    LOG_INFO("PlotManager", "Drawing canvas '" << canvasName << "' with " << spec.Stacks.size() << " stack specs and "
+                                             << spec.Overlays.size() << " overlays");
 
     SetupStyle_(spec.Theme);
 
@@ -512,18 +524,19 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     {
         if (!obj)
         {
-            fprintf(stderr, "[PlotManager][ERR] Stack item '%s' is null\n", lbl);
+            LOG_ERROR("PlotManager", "Stack item '" << lbl << "' is null");
             return;
         }
         if (!obj->InheritsFrom(TH1::Class()))
         {
-            fprintf(stderr, "[PlotManager][ERR] Stack item '%s' not TH1 (class=%s, ptr=%p)\n", lbl, obj->ClassName(), (void *)obj);
+            LOG_ERROR("PlotManager",
+                      "Stack item '" << lbl << "' not TH1 (class=" << obj->ClassName() << ", ptr=" << (void *)obj << ")");
             return;
         }
         auto *h = static_cast<TH1 *>(obj);
         if (h->GetDimension() != 1)
         {
-            fprintf(stderr, "[PlotManager][ERR] Stack item '%s' is %dD (THStack needs 1D)\n", lbl, h->GetDimension());
+            LOG_ERROR("PlotManager", "Stack item '" << lbl << "' is " << h->GetDimension() << "D (THStack needs 1D)");
             return;
         }
         SanitizeUser(h);
@@ -882,5 +895,6 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     }
 
     if (m_PostHook) m_PostHook(*canvas);
+    LOG_INFO("PlotManager", "Finished drawing canvas '" << canvasName << "'");
     return canvas;
 }

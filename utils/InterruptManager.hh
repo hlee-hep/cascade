@@ -1,9 +1,9 @@
 #pragma once
 
 #include <TROOT.h>
+#include "Logger.hh"
 #include <atomic>
 #include <csignal>
-#include <iostream>
 
 class InterruptManager
 {
@@ -13,7 +13,7 @@ class InterruptManager
         std::signal(SIGINT,
                     [](int)
                     {
-                        std::cerr << "\n[INTERRUPT] SIGINT (^C) received. Preparing to terminate...\n";
+                        LOG_WARN("InterruptManager", "SIGINT (^C) received. Preparing to terminate...");
                         interrupted_.store(true);
                     });
     }

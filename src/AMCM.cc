@@ -98,8 +98,10 @@ void AMCM::RunAModule(const std::string &name)
     else
     {
         auto mod = it->second;
+        LOG_INFO("CONTROL", "Running module " << name);
         mod->Run();
         executed_modules_.push_back(mod);
+        LOG_INFO("CONTROL", "Module " << name << " finished execution");
     }
 }
 
@@ -115,17 +117,26 @@ void AMCM::SequentialRun()
 
 void AMCM::RunModules(const std::vector<std::string> &group)
 {
+    LOG_INFO("CONTROL", "Running " << group.size() << " modules from provided list");
     for (const auto &name : group)
         RunAModule(name);
+    LOG_INFO("CONTROL", "Finished running provided module list");
 }
 
 void AMCM::RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group)
 {
+    LOG_INFO("CONTROL", "Running " << group.size() << " provided module handles");
     for (const auto &mod : group)
         RunAModule(mod);
+    LOG_INFO("CONTROL", "Finished running provided module handles");
 }
 
-void AMCM::RunDAG() { dag->Execute(); }
+void AMCM::RunDAG()
+{
+    LOG_INFO("CONTROL", "Executing DAG workflow");
+    dag->Execute();
+    LOG_INFO("CONTROL", "DAG workflow execution completed");
+}
 
 void AMCM::SaveRunLog() const
 {
@@ -177,7 +188,7 @@ void AMCM::LoadPlugins(const std::string &path)
         if (p.path().extension() == ".so")
         {
             void *handle = dlopen(p.path().c_str(), RTLD_NOW);
-            if (!handle) std::cerr << "dlopen failed: " << dlerror() << std::endl;
+            if (!handle) LOG_ERROR("CONTROL", "dlopen failed for '" << p.path().string() << "': " << dlerror());
         }
     }
 }

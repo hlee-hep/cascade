@@ -3,7 +3,7 @@ Import("env","TOP")
 
 srcdir = os.path.join(TOP, "PlotManager")             
 builddir = os.path.join(TOP, "build", "PlotManager")  
-#utilsdir = os.path.join(TOP, "build", "utils")
+utilsdir = os.path.join(TOP, "build", "utils")
 headers = [os.path.join(srcdir, "PlotManager.hh")]
 linkdef = os.path.join(srcdir, "LinkDef.h")
 
@@ -11,8 +11,8 @@ dict_cxx = os.path.join(builddir, "PlotManagerDict.cxx")
 pcm = os.path.join(builddir, "PlotManagerDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libPlotManager.rootmap")
 modenv = env.Clone()
-#modenv.Append(LIBS=["utils"])
-##modenv.Append(LIBPATH=[utilsdir])
+modenv.Append(LIBS=["utils"])
+modenv.Append(LIBPATH=[utilsdir])
 
 dict = modenv.Command(
     target=[dict_cxx, pcm, rootmap],
