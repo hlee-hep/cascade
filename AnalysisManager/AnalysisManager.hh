@@ -24,6 +24,7 @@ enum OM
     kAppend = 0,
     kRecreate = 1 << 0
 };
+
 }
 
 class AnalysisManager
