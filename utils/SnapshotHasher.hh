@@ -26,10 +26,10 @@ class SnapshotHasher
             ss << mn;
             ss << "[Cuts]";
             const AnalysisManager *am = uam.get();
-            for (const auto &[name, expr] : am->GetCutExpressions())
+            for (const auto &[name, expr] : am->ListCutExpressions())
                 ss << name << ":" << expr << ";";
             ss << "[Inputs]";
-            for (const auto &f : am->GetInputFiles())
+            for (const auto &f : am->ListInputFiles())
                 ss << f << "|";
         }
         ss << "[Code]" << codeVersion;

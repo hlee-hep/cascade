@@ -7,56 +7,43 @@
 
 # Cascade
 
-A modular analysis framework for high-energy physics (HEP).
-**Cascade** integrates ROOT, C++, and Python into a single, flexible environment for reproducible and maintainable data analysis.
+Cascade is a modular analysis framework for HEP workflows. It combines ROOT-based I/O, a typed parameter system, a module registry, DAG orchestration, and both C++ and Python frontends to make analyses reproducible and portable.
 
----
+## Overview
 
-## ⚙️ Overview
-Cascade provides a modular execution model where each analysis unit (“module”) defines its own logic and parameters.
-The framework manages configuration, dependencies, and execution order through a directed acyclic graph (DAG).
+Cascade is built around a small set of managers and a module interface:
 
----
+- **AnalysisManager** controls ROOT input/output, `TChain`/`TTree` access, cut evaluation, histogram booking/filling, and `RDataFrame` workflows.
+- **ParamManager** handles typed parameters from YAML/JSON and Python, with serialization and mixed-type vectors.
+- **PlotManager** provides ROOT plotting utilities (stack, overlays, ratio pad, legend automation).
+- **DAGManager** executes dependency graphs and supports parameter passing between nodes.
+- **AMCM** registers and executes modules, tracks progress, and coordinates runs.
+- **Logger** provides structured logging with colorized output and progress bars.
 
-## 🧩 Core Components
-- **AnalysisManager** — handles ROOT I/O, `RDataFrame`, histogramming, and variable definitions.
-- **PlotManager** — provides plotting and style control based on `TH1` objects.
-- **ParamManager** — type-safe parameter handler with Python-style access (`param["x"]`, `param.Get<float>("x")`).
-  The above three managers can also be used independently within ROOT macros.
-- **DAGManager** — manages dependencies and execution flow between modules.
-- **AMCM** — orchestrates module registration, dependency resolution, and execution monitoring.
-- **Logger** — provides unified logging and command-line progress display.
-- **SnapshotCacheManager** — handles snapshot hashing and caching for reproducible outputs.
+Each analysis is a module that inherits `IAnalysisModule` and defines `Init`, `Execute`, and `Finalize`. The framework supplies shared services (config, parameters, logging, DAG, caching) so modules can focus on physics logic.
 
----
+## Key Features
 
-## 🧰 Key Features
-- Full **C++17 / pybind11** integration
-- **RDataFrame**-based event loop
-- **YAML**-driven configuration system
-- Per-module parameter injection
-- **Python** interface for control and scripting
-- Core logic implemented in **C++** and **Python**
-- Support for user-defined module plugins
-- Clean **SCons** build system with ROOT dictionary generation
+- ROOT I/O with both classic `TTree` loops and `RDataFrame` pipelines.
+- YAML/JSON driven configuration and parameter injection.
+- Module registry with auto-registration for plugins.
+- Python API via pybind11 for scripting and control.
+- DAG execution with automatic parameter propagation between nodes.
+- Snapshot hashing to detect duplicated runs.
 
----
+## External Dependencies
 
-## 📦 External Dependencies
-
-- [ROOT](https://root.cern/) — Data processing, I/O, RDataFrame
+- [ROOT](https://root.cern/) — I/O, `TTree`, `RDataFrame`, plotting
 - [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings
 - [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML config parsing
-- [nlohmann/json](https://github.com/nlohmann/json) — JSON serialization (single-header)
-- [openSSL](https://openssl-library.org) — Hash calculation
-- [SCons](https://scons.org/) — Build system (`pip install scons`)
+- [nlohmann/json](https://github.com/nlohmann/json) — JSON serialization (header-only)
+- [openSSL](https://openssl-library.org) — SHA256 hashing
+- [SCons](https://scons.org/) — build system (`pip install scons`)
 - C++17 or higher
 
----
+## Build and Install
 
-## 🔧 Installation
-
-Build and install with SCons. Default install prefix is `~/.local`.
+Default install prefix is `~/.local`.
 
 ```bash
 scons
@@ -75,5 +62,69 @@ scons PREFIX=/opt/cascade \
 ```
 
 Notes:
-- `PREFIX` controls the default values for the other paths.
-- If `LIBDIR`, `BINDIR`, `INCLUDEDIR`, `PYTHONDIR`, or `PYMODULEDIR` are not set, they fall back to sensible defaults derived from `PREFIX`.
+- `PREFIX` controls defaults for the other paths.
+- If `LIBDIR`, `BINDIR`, `INCLUDEDIR`, `PYTHONDIR`, or `PYMODULEDIR` are not set, they are derived from `PREFIX`.
+
+## Core Flow
+
+1. Register a module (C++ or Python).
+2. Load parameters (YAML/JSON/Python dict).
+3. Initialize inputs (ROOT files, trees, aliases).
+4. Run (`Init` -> `Execute` -> `Finalize`).
+5. Save outputs (trees, histograms, metadata).
+
+## Module API (C++)
+
+Modules inherit from `IAnalysisModule` and override:
+
+- `Init()` — set up managers, inputs, cuts.
+- `Execute()` — perform event loop or RDF pipeline.
+- `Finalize()` — write outputs and metadata.
+
+Example:
+
+```cpp
+class MyModule : public IAnalysisModule {
+public:
+  void Init() override {
+    auto *mgr = GetAnalysisManager("main");
+    mgr->LoadInputConfig("config.yaml");
+    mgr->BuildChain();
+  }
+
+  void Execute() override {
+    auto *mgr = GetAnalysisManager("main");
+    for (Long64_t i = 0; i < mgr->GetEntryCount(); ++i) {
+      mgr->LoadEvent(i);
+      if (!mgr->PassesAllCuts()) continue;
+      mgr->FillHistograms(1.0);
+    }
+  }
+
+  void Finalize() override {
+    auto *mgr = GetAnalysisManager("main");
+    mgr->WriteHistograms("hists.root");
+  }
+};
+```
+
+## Python API
+
+Python modules live in `modules/python/` and inherit `py_base_module`.
+
+Core Python control entry points:
+
+- `py_amcm` — wrapper around the C++ controller (run modules, DAG).
+- `plt_plot_manager` — matplotlib-based plotting utility.
+
+The CLI `python/cascade` can launch an interactive shell with `ctrl = py_amcm()`.
+
+## Configuration
+
+Inputs and cuts are YAML-driven:
+
+- Input config defines files, trees, and branch aliases.
+- Cut config defines named expressions.
+- Histogram config defines expressions and bins.
+
+These configs can be generated and written by `AnalysisManager` as part of your pipeline.

@@ -143,9 +143,9 @@ class IAnalysisModule
             LOG_INFO(Name(), "DRY run is enabled. variables and setting will be shown.");
             for (auto &[_, mg] : m_Managers)
             {
-                mg->PrintConfig();
-                mg->PrintHists();
-                mg->PrintCuts();
+                mg->PrintConfigSummary();
+                mg->PrintHistogramSummary();
+                mg->PrintCutSummary();
             }
             LOG_INFO("ParamManager", m_Param.DumpJSON());
             return false;

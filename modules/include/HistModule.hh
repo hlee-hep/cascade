@@ -27,24 +27,24 @@ class HistModule : public IAnalysisModule
     void Init() override
     {
         m_Manager = GetAnalysisManager("main");
-        m_Manager->LoadConfig(m_Param.Get<std::string>("config"));
-        m_Manager->InitTree();
-        m_Manager->LoadCuts(m_Param.Get<std::string>("cut_config"));
-        m_Manager->ActivateCuts();
-        m_Manager->PrintCuts();
-        m_Manager->InitNewHistsFromConfig(m_Param.Get<std::string>("hist_config"), "1");
+        m_Manager->LoadInputConfig(m_Param.Get<std::string>("config"));
+        m_Manager->BuildChain();
+        m_Manager->LoadCutConfig(m_Param.Get<std::string>("cut_config"));
+        m_Manager->EnableAllCuts();
+        m_Manager->PrintCutSummary();
+        m_Manager->LoadHistogramConfig(m_Param.Get<std::string>("hist_config"), "1");
     }
 
     void Execute() override
     {
-        for (Long64_t i = 0; i < m_Manager->GetEntries(); i++)
+        for (Long64_t i = 0; i < m_Manager->GetEntryCount(); i++)
         {
-            m_Manager->LoadEntry(i);
-            if (!m_Manager->PassCut()) continue;
-            m_Manager->FillHists(1.0);
+            m_Manager->LoadEvent(i);
+            if (!m_Manager->PassesAllCuts()) continue;
+            m_Manager->FillHistograms(1.0);
         }
     }
-    void Finalize() override { m_Manager->SaveHists(m_Param.Get<std::string>("output")); }
+    void Finalize() override { m_Manager->WriteHistograms(m_Param.Get<std::string>("output")); }
 
   private:
     AnalysisManager *m_Manager;

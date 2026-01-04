@@ -25,10 +25,10 @@ class RDFSkimModule : public IAnalysisModule
     void Init() override
     {
         m_Manager = GetAnalysisManager("main");
-        m_Manager->SetRDFInputFromConfig(m_Param.Get<std::string>("config"));
+        m_Manager->InitRdfFromConfig(m_Param.Get<std::string>("config"));
     }
     void Execute() override { LOG_INFO(m_Name, "Not implemented yet!"); }
-    void Finalize() override { m_Manager->SnapshotRDF("test", m_Param.Get<std::string>("output"), TreeOpt::Om::Append); }
+    void Finalize() override { m_Manager->WriteRdfSnapshot("test", m_Param.Get<std::string>("output"), TreeOpt::Om::Append); }
 
   private:
     AnalysisManager *m_Manager;

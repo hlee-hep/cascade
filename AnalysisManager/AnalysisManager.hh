@@ -33,51 +33,51 @@ class AnalysisManager
     AnalysisManager();
     ~AnalysisManager();
 
-    void LoadConfig(const std::string &yamlPath);
-    TChain *InitTree();
-    static void GenerateConfig(TTree *tree, const std::string &yamlOut, const std::vector<std::string> &filenames);
-    void AddTree(const std::string &name);
-    void AddTree(TTree *tree);
-    double *AddVar(const std::string &name, std::string alias);
-    bool AddBranch(TTree *tree, const std::string &alias, TreeOpt::Om option);
-    bool AddBranch(const std::string &treeName, const std::string &alias, TreeOpt::Om option);
-    double GetVar(const std::string &alias) const;
-    void LoadEntry(Long64_t);
-    Long64_t GetEntries();
-    void SaveTrees(const std::string &outfile);
+    void LoadInputConfig(const std::string &yamlPath);
+    TChain *BuildChain();
+    static void WriteInputConfig(TTree *tree, const std::string &yamlOut, const std::vector<std::string> &filenames);
+    void RegisterTree(const std::string &name);
+    void RegisterTree(TTree *tree);
+    double *RegisterVariable(const std::string &name, std::string alias);
+    bool AttachBranch(TTree *tree, const std::string &alias, TreeOpt::Om option);
+    bool AttachBranch(const std::string &treeName, const std::string &alias, TreeOpt::Om option);
+    double GetValue(const std::string &alias) const;
+    void LoadEvent(Long64_t);
+    Long64_t GetEntryCount();
+    void WriteTrees(const std::string &outfile);
 
-    void LoadCuts(const std::string &yamlPath);
-    void AddCut(const std::string &name, const std::string &expr);
-    void ActivateSelectedCuts(const std::vector<std::string> &selected);
-    void ActivateCuts();
-    bool PassCut(const std::string &name) const;
-    bool PassCut(const std::vector<std::string> &names);
-    bool PassCut(std::initializer_list<std::string> names);
-    bool PassCut();
-    void SaveCuts(const std::string &yamlPath) const;
-    std::string GetCutString(const std::string &name) const;
-    std::vector<std::string> GetInputFiles() const;
-    std::map<std::string, std::string> GetCutExpressions() const;
+    void LoadCutConfig(const std::string &yamlPath);
+    void RegisterCut(const std::string &name, const std::string &expr);
+    void EnableCuts(const std::vector<std::string> &selected);
+    void EnableAllCuts();
+    bool PassesCut(const std::string &name) const;
+    bool PassesCuts(const std::vector<std::string> &names);
+    bool PassesCuts(std::initializer_list<std::string> names);
+    bool PassesAllCuts();
+    void WriteCutConfig(const std::string &yamlPath) const;
+    std::string GetCutExpression(const std::string &name) const;
+    std::vector<std::string> ListInputFiles() const;
+    std::map<std::string, std::string> ListCutExpressions() const;
 
-    void InitNewHistsFromConfig(const std::string &yamlPath, const std::string &prefix);
-    void InitNewHistsFromFile(const std::string &histfile);
-    void AddHist(const std::string &alias, std::vector<double> binfo, const std::string &prefix);
-    void AddHist(const std::string &alias, TH1 *hist, const std::string &prefix);
-    void FillHists(double weight);
-    void SaveHistsConfig(const std::string &yamlOut);
-    void SaveHists(const std::string &outfile);
+    void LoadHistogramConfig(const std::string &yamlPath, const std::string &prefix);
+    void LoadHistogramTemplateFile(const std::string &histfile);
+    void BookHistogram(const std::string &alias, std::vector<double> binfo, const std::string &prefix);
+    void RegisterHistogram(const std::string &alias, TH1 *hist, const std::string &prefix);
+    void FillHistograms(double weight);
+    void WriteHistogramConfig(const std::string &yamlOut);
+    void WriteHistograms(const std::string &outfile);
 
-    void SetRDFInputFromConfig(const std::string &yamlPath);
-    void SetRDFInputFromFile(const std::string &treename, const std::string &rootfile);
+    void InitRdfFromConfig(const std::string &yamlPath);
+    void InitRdfFromFile(const std::string &treename, const std::string &rootfile);
 
-    template <typename F> void DefineRDFVar(const std::string &name, F &&func, std::vector<std::string> vars)
+    template <typename F> void DefineRdfVariable(const std::string &name, F &&func, std::vector<std::string> vars)
     {
         if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
         m_RdfNode = m_RdfNode->Define(name, std::forward<F>(func), vars);
     }
-    void DefineRDFVar(const std::string &name, const std::string &expr);
+    void DefineRdfVariable(const std::string &name, const std::string &expr);
 
-    template <typename F> void ApplyRDFFilter(const std::string &name, F &&func, std::vector<std::string> vars, const std::string &expr)
+    template <typename F> void ApplyRdfFilter(const std::string &name, F &&func, std::vector<std::string> vars, const std::string &expr)
     {
         if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
         auto it = m_RawCutExpr.find(name);
@@ -92,32 +92,32 @@ class AnalysisManager
             m_RawCutExpr[name] = "--lambda:" + expr;
         }
     }
-    void ApplyRDFFilter(const std::string &name);
-    void ApplyRDFFilter(const std::string &name, const std::string &expr);
-    void ApplyRDFFilterSelected(const std::vector<std::string> &names);
-    void ApplyRDFFilterAll();
-    void SnapshotRDF(const std::string &treeName, const std::string &fileName, TreeOpt::Om option);
-    void BookRDFHist1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo);
-    void SaveHistsRDF(const std::string &outfile);
-    void BookRDFHistsFromConfig(const std::string &yamlPath, const std::string &prefix = "");
-    void BookRDFHistsFromFile(const std::string &histfile);
+    void ApplyRdfFilter(const std::string &name);
+    void ApplyRdfFilter(const std::string &name, const std::string &expr);
+    void ApplyRdfFilters(const std::vector<std::string> &names);
+    void ApplyAllRdfFilters();
+    void WriteRdfSnapshot(const std::string &treeName, const std::string &fileName, TreeOpt::Om option);
+    void BookRdfHistogram1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo);
+    void WriteRdfHistograms(const std::string &outfile);
+    void BookRdfHistogramsFromConfig(const std::string &yamlPath, const std::string &prefix = "");
+    void BookRdfHistogramsFromFile(const std::string &histfile);
     inline void DisableMT() { ROOT::DisableImplicitMT(); }
     LambdaManager *GetLambdaManager();
-    std::ofstream OpenResultFile(const std::string &filename, const std::string &mode = "recreate") const;
+    std::ofstream OpenOutputFile(const std::string &filename, const std::string &mode = "recreate") const;
 
     std::unique_ptr<AnalysisManager> Fork();
-    ROOT::RDF::RNode GetIsolatedRNode();
+    ROOT::RDF::RNode GetIsolatedRdfNode();
 
     inline std::vector<std::string> GetAllVarNames() { return m_RdfNode->GetColumnNames(); }
     inline std::vector<std::string> GetDefinedVarNames() { return m_RdfNode->GetDefinedColumnNames(); }
 
-    void PrintCuts();
-    void PrintConfig();
-    void PrintHists();
-    inline bool IsRDF() const { return m_UseRdf; }
+    void PrintCutSummary();
+    void PrintConfigSummary();
+    void PrintHistogramSummary();
+    inline bool IsRdfEnabled() const { return m_UseRdf; }
     inline double GetProgress() const { return m_Progress; }
 
-    void WriteMetaData(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson);
+    void WriteMetadata(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson);
 
     struct BranchInfo
     {

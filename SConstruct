@@ -49,6 +49,17 @@ def make_executable(target, source, env):
         st = os.stat(path)
         os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+def create_symlink(target, source, env):
+    link_path = str(target[0])
+    target_path = str(source[0])
+    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    if os.path.lexists(link_path):
+        os.remove(link_path)
+    rel_target = os.path.relpath(target_path, os.path.dirname(link_path))
+    os.symlink(rel_target, link_path)
+    print(f"[SCons] symlink {link_path} -> {rel_target}")
+    return 0
+
 include_dir = Path("modules/include")
 module_headers = list(include_dir.glob("*Module.hh"))
 modules = [f.stem for f in module_headers if f.suffix == ".hh"]
@@ -210,6 +221,10 @@ env.AddPostAction(cli_install,make_executable)
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
 cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
 
+cascade_so_target = os.path.join(cascade_dir, f"_cascade{env['SHLIBSUFFIX']}")
+cascade_so_link = env.Command(cascade_so_target, pybind_install, create_symlink)
+Depends(cascade_so_link, pybind_install)
+
 pymodule_dir = env['PYMODULEDIR']
 pymodule_files = Glob("build/modules/python/*.py")
 pymodule_install = env.Install(pymodule_dir, pymodule_files)
@@ -236,7 +251,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install +py_install+cascade_init+pymodule_init + cli_install + hdr_install
+install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)

@@ -28,14 +28,14 @@ class RDFHistModule : public IAnalysisModule
     void Init() override
     {
         m_Manager = GetAnalysisManager("main");
-        m_Manager->SetRDFInputFromConfig(m_Param.Get<std::string>("config"));
-        m_Manager->ApplyRDFFilter("types", ("Type==" + m_Param.Get<std::string>("type")));
-        m_Manager->BookRDFHistsFromConfig(m_Param.Get<std::string>("hist_config"), m_Param.Get<std::string>("prefix"));
+        m_Manager->InitRdfFromConfig(m_Param.Get<std::string>("config"));
+        m_Manager->ApplyRdfFilter("types", ("Type==" + m_Param.Get<std::string>("type")));
+        m_Manager->BookRdfHistogramsFromConfig(m_Param.Get<std::string>("hist_config"), m_Param.Get<std::string>("prefix"));
     }
 
-    void Execute() override { m_Manager->SaveHistsRDF(m_Param.Get<std::string>("output")); }
+    void Execute() override { m_Manager->WriteRdfHistograms(m_Param.Get<std::string>("output")); }
 
-    void Finalize() override { m_Manager->WriteMetaData(m_Param.Get<std::string>("output"), m_Hash, m_Basename, m_Param.DumpJSON()); }
+    void Finalize() override { m_Manager->WriteMetadata(m_Param.Get<std::string>("output"), m_Hash, m_Basename, m_Param.DumpJSON()); }
 
   private:
     AnalysisManager *m_Manager;
