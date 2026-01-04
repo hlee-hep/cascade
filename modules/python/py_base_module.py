@@ -1,6 +1,6 @@
 from cascade import is_interrupted, log, log_level
 
-class pyBaseModule:
+class py_base_module:
     def __init__(self):
         self.params = {}
         self.status = "Pending"
@@ -29,7 +29,7 @@ class pyBaseModule:
 
     def set_status(self, status):
         self.status = status
-        log(log_level.INFO, self.m_name,"Status : "+status)
+        log(log_level.INFO, self.m_name, "Status : " + status)
 
     def get_status(self):
         return self.status

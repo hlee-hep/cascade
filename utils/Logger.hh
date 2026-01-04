@@ -41,38 +41,38 @@ class Logger
 
   private:
     Logger();
-    LogLevel g_level = LogLevel::INFO;
-    std::recursive_mutex log_mutex;
-    std::unique_ptr<std::ofstream> log_file_out;
-    bool is_terminal = isatty(fileno(stdout));
+    LogLevel m_Level = LogLevel::INFO;
+    std::recursive_mutex m_LogMutex;
+    std::unique_ptr<std::ofstream> m_LogFileOut;
+    bool m_IsTerminal = isatty(fileno(stdout));
 
-    std::string LevelToColor(LogLevel level);
-    std::string ToString(LogLevel level);
-    std::string ApplyColor(LogLevel level, const std::string &module, const std::string &msg);
+    std::string LevelToColor_(LogLevel level);
+    std::string ToString_(LogLevel level);
+    std::string ApplyColor_(LogLevel level, const std::string &module, const std::string &msg);
 
-    template <typename T> std::string ToStr(const T &value)
+    template <typename T> std::string ToStr_(const T &value)
     {
         std::ostringstream oss;
         oss << value;
         return oss.str();
     }
 
-    std::string colored(const std::string &text, const std::string &color = "", const std::string &style = "");
-    std::string HighlightMsg(const std::string &msg);
-    std::string ReplaceRegex(const std::string &input, const std::regex &pattern, std::function<std::string(const std::smatch &)> replacer);
-    std::string HighlightStatus(std::string msg);
-    std::string HighlightFileNames(std::string msg);
-    std::string HighlightExprs(std::string msg);
-    std::string HighlightParams(std::string msg);
-    std::string HighlightWarnings(std::string msg);
+    std::string Colored_(const std::string &text, const std::string &color = "", const std::string &style = "");
+    std::string HighlightMsg_(const std::string &msg);
+    std::string ReplaceRegex_(const std::string &input, const std::regex &pattern, std::function<std::string(const std::smatch &)> replacer);
+    std::string HighlightStatus_(std::string msg);
+    std::string HighlightFileNames_(std::string msg);
+    std::string HighlightExprs_(std::string msg);
+    std::string HighlightParams_(std::string msg);
+    std::string HighlightWarnings_(std::string msg);
 };
 
 #define LOG_STREAM(level, mod, msgstream)                                                                                                                      \
     do                                                                                                                                                         \
     {                                                                                                                                                          \
-        std::ostringstream __log_oss;                                                                                                                          \
-        __log_oss << msgstream;                                                                                                                                \
-        logger::Logger::Get().Log(level, mod, __log_oss.str());                                                                                                \
+        std::ostringstream logOss;                                                                                                                             \
+        logOss << msgstream;                                                                                                                                   \
+        logger::Logger::Get().Log(level, mod, logOss.str());                                                                                                   \
     } while (0)
 
 #define LOG_DEBUG(mod, msg) LOG_STREAM(logger::LogLevel::DEBUG, mod, msg)

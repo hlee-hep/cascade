@@ -19,15 +19,15 @@ class LambdaBase
 template <typename T> class LambdaHolder : public LambdaBase
 {
   public:
-    LambdaHolder(T func, std::vector<std::string> columns) : func_(std::move(func)), columns_(std::move(columns)) {}
+    LambdaHolder(T func, std::vector<std::string> columns) : m_Func(std::move(func)), m_Columns(std::move(columns)) {}
 
-    T Get() const { return func_; }
-    std::vector<std::string> GetColumns() const override { return columns_; }
+    T Get() const { return m_Func; }
+    std::vector<std::string> GetColumns() const override { return m_Columns; }
     std::type_index GetType() const override { return std::type_index(typeid(T)); }
 
   private:
-    T func_;
-    std::vector<std::string> columns_;
+    T m_Func;
+    std::vector<std::string> m_Columns;
 };
 
 class LambdaManager
@@ -35,17 +35,17 @@ class LambdaManager
   public:
     template <typename T> void Register(const std::string &name, T func, std::vector<std::string> columns)
     {
-        if (lambdas.count(name))
+        if (m_Lambdas.count(name))
         {
             throw std::runtime_error("Lambda with name '" + name + "' already registered");
         }
-        lambdas[name] = std::make_shared<LambdaHolder<T>>(std::move(func), std::move(columns));
+        m_Lambdas[name] = std::make_shared<LambdaHolder<T>>(std::move(func), std::move(columns));
     }
 
     template <typename T> T Get(const std::string &name) const
     {
-        auto it = lambdas.find(name);
-        if (it == lambdas.end())
+        auto it = m_Lambdas.find(name);
+        if (it == m_Lambdas.end())
         {
             throw std::runtime_error("Lambda with name '" + name + "' not found");
         }
@@ -62,8 +62,8 @@ class LambdaManager
 
     std::vector<std::string> GetColumns(const std::string &name) const
     {
-        auto it = lambdas.find(name);
-        if (it == lambdas.end())
+        auto it = m_Lambdas.find(name);
+        if (it == m_Lambdas.end())
         {
             throw std::runtime_error("Lambda with name '" + name + "' not found");
         }
@@ -75,11 +75,11 @@ class LambdaManager
     std::vector<std::string> ListRegisteredNames() const
     {
         std::vector<std::string> names;
-        for (const auto &[name, _] : lambdas)
+        for (const auto &[name, _] : m_Lambdas)
             names.push_back(name);
         return names;
     }
 
   private:
-    std::map<std::string, std::shared_ptr<LambdaBase>> lambdas;
+    std::map<std::string, std::shared_ptr<LambdaBase>> m_Lambdas;
 };

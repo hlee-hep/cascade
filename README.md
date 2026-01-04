@@ -53,3 +53,27 @@ The framework manages configuration, dependencies, and execution order through a
 - C++17 or higher
 
 ---
+
+## 🔧 Installation
+
+Build and install with SCons. Default install prefix is `~/.local`.
+
+```bash
+scons
+scons install
+```
+
+You can override install locations via SCons variables:
+
+```bash
+scons PREFIX=/opt/cascade \
+      LIBDIR=/opt/cascade/lib \
+      BINDIR=/opt/cascade/bin \
+      INCLUDEDIR=/opt/cascade/include/cascade \
+      PYTHONDIR=/opt/cascade/python \
+      PYMODULEDIR=/opt/cascade/python/pymodule
+```
+
+Notes:
+- `PREFIX` controls the default values for the other paths.
+- If `LIBDIR`, `BINDIR`, `INCLUDEDIR`, `PYTHONDIR`, or `PYMODULEDIR` are not set, they fall back to sensible defaults derived from `PREFIX`.

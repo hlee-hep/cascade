@@ -1,7 +1,7 @@
-from cascade.pymodule import pyBaseModule
+from cascade.pymodule import py_base_module
 from cascade import log, log_level
 
-class pySimpleModule(pyBaseModule):
+class py_simple_module(py_base_module):
 
     def __init__(self):
         super().__init__()
@@ -9,7 +9,7 @@ class pySimpleModule(pyBaseModule):
         self.code_version_hash = "@VERSION_HASH@"
 
     def print_description(self):
-        log(log_level.INFO,self.m_name,"An instance of "+self.basename+", which is RDF based Histogram filler")
+        log(log_level.INFO, self.m_name, "An instance of " + self.basename + ", which is RDF based Histogram filler")
 
     def init(self):
         self.a = self.get_param("a") or 0

@@ -3,69 +3,69 @@
 
 void DAGManager::AddNode(const std::string &name, const std::vector<std::string> &deps, std::function<void()> task)
 {
-    if (nodes.count(name)) throw std::runtime_error("Node " + name + " already exists.");
-    nodes[name] = Node{name, deps, task};
+    if (m_Nodes.count(name)) throw std::runtime_error("Node " + name + " already exists.");
+    m_Nodes[name] = Node{name, deps, task};
 }
 
 void DAGManager::LinkOutputToParam(const std::string &fromNode, const std::string &fromKey, const std::string &toNode, const std::string &toKey)
 {
-    paramLinks.push_back({fromNode, fromKey, toNode, toKey});
+    m_ParamLinks.push_back({fromNode, fromKey, toNode, toKey});
 }
 
 void DAGManager::SetParamManagerMap(const std::unordered_map<std::string, ParamManager *> &map)
 {
     for (const auto &[name, ptr] : map)
-        paramMap[name] = ptr;
+        m_ParamMap[name] = ptr;
 }
 
 void DAGManager::Execute()
 {
-    visited.clear();
-    recursionStack.clear();
+    m_Visited.clear();
+    m_RecursionStack.clear();
 
-    for (auto &[name, node] : nodes)
+    for (auto &[name, node] : m_Nodes)
     {
-        if (!node.executed)
+        if (!node.Executed)
         {
-            CheckForCycle(name);
-            ExecuteNode(name);
+            CheckForCycle_(name);
+            ExecuteNode_(name);
         }
     }
 }
 
-void DAGManager::ExecuteNode(const std::string &name)
+void DAGManager::ExecuteNode_(const std::string &name)
 {
-    auto &node = nodes[name];
-    if (node.executed) return;
-    for (const auto &dep : node.dependencies)
-        ExecuteNode(dep);
+    auto &node = m_Nodes[name];
+    if (node.Executed) return;
+    for (const auto &dep : node.Dependencies)
+        ExecuteNode_(dep);
 
-    for (auto &link : paramLinks)
+    for (auto &link : m_ParamLinks)
     {
-        if (link.toNode == name)
+        if (link.ToNode == name)
         {
-            if (!paramMap.count(link.fromNode) || !paramMap.count(link.toNode))
-                throw std::runtime_error("ParamManager not found for node in link: " + link.fromNode + " or " + link.toNode);
-            const auto val = paramMap.at(link.fromNode)->Get<ParamValue>(link.fromKey);
-            paramMap[link.toNode]->SetParamVariant(link.toKey, val);
+            if (!m_ParamMap.count(link.FromNode) || !m_ParamMap.count(link.ToNode))
+                throw std::runtime_error("ParamManager not found for node in link: " + link.FromNode + " or " + link.ToNode);
+            const auto val = m_ParamMap.at(link.FromNode)->Get<ParamValue>(link.FromKey);
+            m_ParamMap[link.ToNode]->SetParamVariant(link.ToKey, val);
         }
     }
-    node.task();
-    node.executed = true;
+    node.Task();
+    node.Executed = true;
 }
 
-void DAGManager::CheckForCycle(const std::string &name)
+void DAGManager::CheckForCycle_(const std::string &name)
 {
-    if (recursionStack.count(name)) throw std::runtime_error("Cycle detected at node: " + name);
-    if (visited.count(name)) return;
+    if (m_RecursionStack.count(name)) throw std::runtime_error("Cycle detected at node: " + name);
+    if (m_Visited.count(name)) return;
 
-    visited.insert(name);
-    recursionStack.insert(name);
+    m_Visited.insert(name);
+    m_RecursionStack.insert(name);
 
-    for (const auto &dep : nodes.at(name).dependencies)
-        CheckForCycle(dep);
+    for (const auto &dep : m_Nodes.at(name).Dependencies)
+        CheckForCycle_(dep);
 
-    recursionStack.erase(name);
+    m_RecursionStack.erase(name);
 }
 
 void DAGManager::DumpDOT(const std::string &filename) const
@@ -75,18 +75,18 @@ void DAGManager::DumpDOT(const std::string &filename) const
 
     fout << "digraph DAG {\n";
 
-    for (const auto &[name, node] : nodes)
+    for (const auto &[name, node] : m_Nodes)
     {
         fout << "    \"" << name << "\";\n";
-        for (const auto &dep : node.dependencies)
+        for (const auto &dep : node.Dependencies)
         {
             fout << "    \"" << dep << "\" -> \"" << name << "\";\n";
         }
     }
 
-    for (const auto &link : paramLinks)
+    for (const auto &link : m_ParamLinks)
     {
-        fout << "    \"" << link.fromNode << "\" -> \"" << link.toNode << "\" [style=dotted, label=\"" << link.fromKey << "→" << link.toKey << "\"];\n";
+        fout << "    \"" << link.FromNode << "\" -> \"" << link.ToNode << "\" [style=dotted, label=\"" << link.FromKey << "→" << link.ToKey << "\"];\n";
     }
 
     fout << "}\n";
@@ -96,7 +96,7 @@ void DAGManager::DumpDOT(const std::string &filename) const
 std::vector<std::string> DAGManager::GetNodeNames() const
 {
     std::vector<std::string> names;
-    for (const auto &[name, _] : nodes)
+    for (const auto &[name, _] : m_Nodes)
     {
         names.push_back(name);
     }

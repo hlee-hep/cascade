@@ -14,17 +14,17 @@ class InterruptManager
                     [](int)
                     {
                         LOG_WARN("InterruptManager", "SIGINT (^C) received. Preparing to terminate...");
-                        interrupted_.store(true);
+                        m_Interrupted.store(true);
                     });
     }
 
-    static bool IsInterrupted() { return interrupted_.load() || gROOT->IsInterrupted(); }
+    static bool IsInterrupted() { return m_Interrupted.load() || gROOT->IsInterrupted(); }
 
-    static void SetInterrupted() { interrupted_.store(true); }
-    static void Reset() { interrupted_.store(false); }
+    static void SetInterrupted() { m_Interrupted.store(true); }
+    static void Reset() { m_Interrupted.store(false); }
 
   private:
-    static std::atomic<bool> interrupted_;
+    static std::atomic<bool> m_Interrupted;
 };
 
-inline std::atomic<bool> InterruptManager::interrupted_ = false;
+inline std::atomic<bool> InterruptManager::m_Interrupted = false;

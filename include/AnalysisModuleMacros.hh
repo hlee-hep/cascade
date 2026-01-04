@@ -11,5 +11,5 @@
             AnalysisModuleRegistry::Get().Register(#T, []() -> std::unique_ptr<IAnalysisModule> { return std::make_unique<T>(); });                            \
         }                                                                                                                                                      \
     };                                                                                                                                                         \
-    static T##RegistryEntry global_##T##RegistryEntry;                                                                                                         \
+    static T##RegistryEntry g_##T##RegistryEntry;                                                                                                              \
     }

@@ -100,9 +100,9 @@ struct ColorSpec
 };
 struct CutSpec
 {
-    std::optional<double> upCut;
-    std::optional<double> dnCut;
-    double arrowLength = 1.0; // bin
+    std::optional<double> UpCut;
+    std::optional<double> DnCut;
+    double ArrowLength = 1.0; // bin
 };
 
 struct SampleSpec
@@ -518,7 +518,7 @@ class PlotManager
         }
     }
 
-    static inline std::string MakeSafeName(const void *p, const char *tag)
+    static inline std::string MakeSafeName_(const void *p, const char *tag)
     {
         char buf[64];
         snprintf(buf, sizeof(buf), "h%p_%s", p, tag);

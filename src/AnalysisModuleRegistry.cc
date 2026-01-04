@@ -7,12 +7,12 @@ AnalysisModuleRegistry &AnalysisModuleRegistry::Get()
     return instance;
 }
 
-void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory) { factories_[name] = std::move(factory); }
+void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory) { m_Factories[name] = std::move(factory); }
 
 std::unique_ptr<IAnalysisModule> AnalysisModuleRegistry::Create(const std::string &name) const
 {
-    auto it = factories_.find(name);
-    if (it == factories_.end())
+    auto it = m_Factories.find(name);
+    if (it == m_Factories.end())
     {
         throw std::runtime_error("Module not found: " + name);
     }
@@ -22,7 +22,7 @@ std::unique_ptr<IAnalysisModule> AnalysisModuleRegistry::Create(const std::strin
 std::vector<std::string> AnalysisModuleRegistry::ListModules() const
 {
     std::vector<std::string> names;
-    for (const auto &kv : factories_)
+    for (const auto &kv : m_Factories)
         names.push_back(kv.first);
     return names;
 }

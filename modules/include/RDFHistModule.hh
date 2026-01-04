@@ -13,30 +13,30 @@ class RDFHistModule : public IAnalysisModule
   public:
     RDFHistModule()
     {
-        basename = "@BASENAME@";
-        code_version_hash = "@VERSION_HASH@";
+        m_Basename = "@BASENAME@";
+        m_CodeVersionHash = "@VERSION_HASH@";
 
-        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
-        _param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
-        _param.Register<std::string>("output", "hists.root", "histogram output");
-        _param.Register<std::string>("type", "0", "0-9");
-        _param.Register<std::string>("prefix", "signal", "Prefix");
+        m_Param.Register<std::string>("config", "config_gen.yaml", "configuration file");
+        m_Param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
+        m_Param.Register<std::string>("output", "hists.root", "histogram output");
+        m_Param.Register<std::string>("type", "0", "0-9");
+        m_Param.Register<std::string>("prefix", "signal", "Prefix");
     }
 
-    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is RDF based Histogram filler"); }
+    void Description() const override { LOG_INFO(m_Name, "An instance of " << m_Basename << ", which is RDF based Histogram filler"); }
 
     void Init() override
     {
-        mg = GetAnalysisManager("main");
-        mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
-        mg->ApplyRDFFilter("types", ("Type==" + _param.Get<std::string>("type")));
-        mg->BookRDFHistsFromConfig(_param.Get<std::string>("hist_config"), _param.Get<std::string>("prefix"));
+        m_Manager = GetAnalysisManager("main");
+        m_Manager->SetRDFInputFromConfig(m_Param.Get<std::string>("config"));
+        m_Manager->ApplyRDFFilter("types", ("Type==" + m_Param.Get<std::string>("type")));
+        m_Manager->BookRDFHistsFromConfig(m_Param.Get<std::string>("hist_config"), m_Param.Get<std::string>("prefix"));
     }
 
-    void Execute() override { mg->SaveHistsRDF(_param.Get<std::string>("output")); }
+    void Execute() override { m_Manager->SaveHistsRDF(m_Param.Get<std::string>("output")); }
 
-    void Finalize() override { mg->WriteMetaData(_param.Get<std::string>("output"), _hash, basename, _param.DumpJSON()); }
+    void Finalize() override { m_Manager->WriteMetaData(m_Param.Get<std::string>("output"), m_Hash, m_Basename, m_Param.DumpJSON()); }
 
   private:
-    AnalysisManager *mg;
+    AnalysisManager *m_Manager;
 };

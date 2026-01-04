@@ -92,13 +92,26 @@ for mod in pymodules:
 
 vars = Variables()
 vars.Add('PREFIX', 'install directory', '~/.local')
+vars.Add('LIBDIR', 'library install directory', '')
+vars.Add('BINDIR', 'binary install directory', '')
+vars.Add('INCLUDEDIR', 'header install directory', '')
+vars.Add('PYTHONDIR', 'python package install directory', '')
+vars.Add('PYMODULEDIR', 'python module install directory (cascade.pymodule)', '')
 
 env = Environment(ENV=os.environ, variables=vars)
 env.Append()
 prefix = os.path.expanduser(env['PREFIX'])
 env['PREFIX'] = prefix
-
-env['LIBDIR'] = os.path.join(env['PREFIX'], 'lib')
+if not env['LIBDIR']:
+    env['LIBDIR'] = os.path.join(env['PREFIX'], 'lib')
+if not env['BINDIR']:
+    env['BINDIR'] = os.path.join(env['PREFIX'], 'bin')
+if not env['INCLUDEDIR']:
+    env['INCLUDEDIR'] = os.path.join(env['PREFIX'], 'include', 'cascade')
+if not env['PYTHONDIR']:
+    env['PYTHONDIR'] = os.path.join(env['LIBDIR'], 'cascade')
+if not env['PYMODULEDIR']:
+    env['PYMODULEDIR'] = os.path.join(env['PYTHONDIR'], 'pymodule')
 
 pybind_flags = os.popen("python3 -m pybind11 --includes").read().strip().split()
 pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
@@ -185,11 +198,11 @@ pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
 ])
 
 # pyinstall
-cascade_dir = os.path.join(env['LIBDIR'], "cascade")
+cascade_dir = env['PYTHONDIR']
 cascade_files = Glob("python/*.py")
 py_install = env.Install(cascade_dir, cascade_files)
 
-cascade_cli_dir = os.path.join(env['PREFIX'],"bin")
+cascade_cli_dir = env['BINDIR']
 cascade_cli = Glob("python/cascade")
 cli_install = env.Install(cascade_cli_dir, cascade_cli)
 env.AddPostAction(cli_install,make_executable)
@@ -197,7 +210,7 @@ env.AddPostAction(cli_install,make_executable)
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
 cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
 
-pymodule_dir = os.path.join(cascade_dir, "pymodule")
+pymodule_dir = env['PYMODULEDIR']
 pymodule_files = Glob("build/modules/python/*.py")
 pymodule_install = env.Install(pymodule_dir, pymodule_files)
 py_install += pymodule_install
@@ -205,8 +218,6 @@ py_install += pymodule_install
 pymodule_init_target = os.path.join(pymodule_dir, "__init__.py")
 pymodule_init = env.Command(pymodule_init_target, pymodule_install, generate_init_py)
 
-
-env['INCLUDEDIR'] = os.path.join(env['PREFIX'], 'include', 'cascade')
 
 hdr_install = []
 

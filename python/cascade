@@ -10,9 +10,9 @@ from typing import Any, List, Dict, Tuple, Optional
 
 # -------- optional imports --------
 try:
-    from cascade import pyAMCM
+    from cascade import py_amcm
 except Exception:
-    pyAMCM = None
+    py_amcm = None
 
 # ------------ logging  ------------
 def _log(level: str, msg: str) -> None:
@@ -106,9 +106,9 @@ def cmd_macro_run(args) -> None:
 
 # ------------ Python interactive shell (ctrl) ------------
 def _new_ctrl():
-    if pyAMCM is None:
-        raise SystemExit("Cannot found cascade.pyAMCM")
-    return pyAMCM()
+    if py_amcm is None:
+        raise SystemExit("Cannot found cascade.py_amcm")
+    return py_amcm()
 
 def _apply_params_generic(mod, sets: Optional[List[str]], yaml_path: Optional[str]) -> None:
     if yaml_path and hasattr(mod, "set_param_from_yaml"):
@@ -143,7 +143,7 @@ def cmd_shell(args) -> None:
 
     banner = (
         "Cascade Python shell\n"
-        " - variable: ctrl (pyAMCM)\n"
+        " - variable: ctrl (py_amcm)\n"
         " - helper  : _import_class('pkg.mod:Class'), _apply_params_generic(mod, sets, yaml)\n"
         "EXIT : Ctrl-D or exit()\n"
     )
@@ -175,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr.set_defaults(func=cmd_macro_run)
 
     # interactive shell with ctrl
-    sp = sub.add_parser("shell", help="[python] interactive shell with ctrl=pyAMCM()")
+    sp = sub.add_parser("shell", help="[python] interactive shell with ctrl=py_amcm()")
     sp.add_argument("--python", help="(optional) Python class to preload (pkg.mod:Class)")
     sp.add_argument("--name", help="Alias for preloaded Python module")
     sp.add_argument("--yaml", help="YAML config for the preloaded module")

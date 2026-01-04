@@ -13,23 +13,23 @@ class RDFSkimModule : public IAnalysisModule
   public:
     RDFSkimModule()
     {
-        basename = "@BASENAME@";
-        code_version_hash = "@VERSION_HASH@";
+        m_Basename = "@BASENAME@";
+        m_CodeVersionHash = "@VERSION_HASH@";
 
-        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
-        _param.Register<std::string>("output", "skim.root", "root output");
+        m_Param.Register<std::string>("config", "config_gen.yaml", "configuration file");
+        m_Param.Register<std::string>("output", "skim.root", "root output");
     }
 
-    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is RDF based Skimmer"); }
+    void Description() const override { LOG_INFO(m_Name, "An instance of " << m_Basename << ", which is RDF based Skimmer"); }
 
     void Init() override
     {
-        mg = GetAnalysisManager("main");
-        mg->SetRDFInputFromConfig(_param.Get<std::string>("config"));
+        m_Manager = GetAnalysisManager("main");
+        m_Manager->SetRDFInputFromConfig(m_Param.Get<std::string>("config"));
     }
-    void Execute() override { LOG_INFO(m_name, "Not implemented yet!"); }
-    void Finalize() override { mg->SnapshotRDF("test", _param.Get<std::string>("output"), TreeOpt::OM::kAppend); }
+    void Execute() override { LOG_INFO(m_Name, "Not implemented yet!"); }
+    void Finalize() override { m_Manager->SnapshotRDF("test", m_Param.Get<std::string>("output"), TreeOpt::Om::Append); }
 
   private:
-    AnalysisManager *mg;
+    AnalysisManager *m_Manager;
 };

@@ -35,6 +35,6 @@ class SnapshotHasher
         ss << "[Code]" << codeVersion;
 
         LOG_DEBUG("SnapshotHasher", ss.str());
-        return sha256(ss.str());
+        return Sha256(ss.str());
     }
 };

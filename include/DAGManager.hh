@@ -12,10 +12,10 @@ class DAGManager
   public:
     struct Node
     {
-        std::string name;
-        std::vector<std::string> dependencies;
-        std::function<void()> task;
-        bool executed = false;
+        std::string Name;
+        std::vector<std::string> Dependencies;
+        std::function<void()> Task;
+        bool Executed = false;
     };
 
     void AddNode(const std::string &name, const std::vector<std::string> &deps, std::function<void()> task);
@@ -26,18 +26,20 @@ class DAGManager
     std::vector<std::string> GetNodeNames() const;
 
   private:
-    std::unordered_map<std::string, Node> nodes;
-    std::unordered_set<std::string> visited;
-    std::unordered_set<std::string> recursionStack;
+    std::unordered_map<std::string, Node> m_Nodes;
+    std::unordered_set<std::string> m_Visited;
+    std::unordered_set<std::string> m_RecursionStack;
 
     struct ParamLink
     {
-        std::string fromNode, fromKey;
-        std::string toNode, toKey;
+        std::string FromNode;
+        std::string FromKey;
+        std::string ToNode;
+        std::string ToKey;
     };
-    std::vector<ParamLink> paramLinks;
-    std::unordered_map<std::string, ParamManager *> paramMap;
+    std::vector<ParamLink> m_ParamLinks;
+    std::unordered_map<std::string, ParamManager *> m_ParamMap;
 
-    void ExecuteNode(const std::string &name);
-    void CheckForCycle(const std::string &name);
+    void ExecuteNode_(const std::string &name);
+    void CheckForCycle_(const std::string &name);
 };

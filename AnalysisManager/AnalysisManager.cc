@@ -22,10 +22,10 @@ void AnalysisManager::LoadConfig(const std::string &yamlPath)
     {
         for (auto f : input["files"])
         {
-            inputFiles.push_back(f.as<std::string>());
+            m_InputFiles.push_back(f.as<std::string>());
             LOG_INFO("AnalysisManager", "File " << f.as<std::string>() << " has been loaded.");
         }
-        inTreeName = input["tree"].as<std::string>();
+        m_InTreeName = input["tree"].as<std::string>();
     }
 
     auto node = config["branches"];
@@ -34,11 +34,11 @@ void AnalysisManager::LoadConfig(const std::string &yamlPath)
         std::string alias = entry.first.as<std::string>();
         auto info = entry.second;
         BranchInfo binfo;
-        binfo.realName = info["name"].as<std::string>();
-        if (info["type"]) binfo.type = info["type"].as<std::string>();
-        branchMap[alias] = binfo;
+        binfo.RealName = info["name"].as<std::string>();
+        if (info["type"]) binfo.Type = info["type"].as<std::string>();
+        m_BranchMap[alias] = binfo;
     }
-    LOG_INFO("AnalysisManager", "Configuration file for tree " << inTreeName << " with yaml " << yamlPath << " has been loaded.");
+    LOG_INFO("AnalysisManager", "Configuration file for tree " << m_InTreeName << " with yaml " << yamlPath << " has been loaded.");
 }
 
 void AnalysisManager::LoadCuts(const std::string &yamlPath)
@@ -48,7 +48,7 @@ void AnalysisManager::LoadCuts(const std::string &yamlPath)
     {
         std::string name = it.first.as<std::string>();
         std::string rawExpr = it.second.as<std::string>();
-        if (rawExpr.find("--lambda:") == std::string::npos) rawCutExpr[name] = rawExpr;
+        if (rawExpr.find("--lambda:") == std::string::npos) m_RawCutExpr[name] = rawExpr;
         LOG_INFO("AnalysisManager", "Registered cut '" << name << "' from " << yamlPath);
     }
     LOG_INFO("AnalysisManager", "Cut named " << yamlPath << " has been loaded.");
@@ -57,10 +57,10 @@ void AnalysisManager::LoadCuts(const std::string &yamlPath)
 TChain *AnalysisManager::InitTree()
 {
 
-    currentTree = new TChain(inTreeName.c_str());
+    m_CurrentTree = new TChain(m_InTreeName.c_str());
     int count = 0;
-    for (auto &file : inputFiles)
-        count += currentTree->Add(file.c_str());
+    for (auto &file : m_InputFiles)
+        count += m_CurrentTree->Add(file.c_str());
 
     if (count < 1)
     {
@@ -68,53 +68,53 @@ TChain *AnalysisManager::InitTree()
         return nullptr;
     }
 
-    for (auto &[alias, info] : branchMap)
+    for (auto &[alias, info] : m_BranchMap)
     {
-        std::string realName = info.realName;
-        std::string type = info.type;
+        std::string realName = info.RealName;
+        std::string type = info.Type;
 
         if (type.empty())
         {
-            TLeaf *leaf = currentTree->GetLeaf(realName.c_str());
+            TLeaf *leaf = m_CurrentTree->GetLeaf(realName.c_str());
             if (!leaf)
             {
                 LOG_WARN("AnalysisManager", "No leaf for " << realName << " Continue...");
                 continue;
             }
             type = leaf->GetTypeName();
-            info.type = type;
+            info.Type = type;
         }
 
         if (type == "Double_t")
         {
             double *ptr = new double;
-            currentTree->SetBranchAddress(realName.c_str(), ptr);
-            branchData[alias] = ptr;
+            m_CurrentTree->SetBranchAddress(realName.c_str(), ptr);
+            m_BranchData[alias] = ptr;
         }
         else if (type == "Int_t")
         {
             int *ptr = new int;
-            currentTree->SetBranchAddress(realName.c_str(), ptr);
-            branchData[alias] = ptr;
+            m_CurrentTree->SetBranchAddress(realName.c_str(), ptr);
+            m_BranchData[alias] = ptr;
         }
         else
         {
             LOG_ERROR("AnalysisManager", "Unsupported type for " << alias << " : " << type);
         }
     }
-    LOG_INFO("AnalysisManager", "Tree " << currentTree->GetName() << " is initialized.");
+    LOG_INFO("AnalysisManager", "Tree " << m_CurrentTree->GetName() << " is initialized.");
 
-    return currentTree;
+    return m_CurrentTree;
 }
 
 void AnalysisManager::AddTree(const std::string &name)
 {
-    auto it = treeMap.find(name);
-    if (it == treeMap.end())
+    auto it = m_TreeMap.find(name);
+    if (it == m_TreeMap.end())
     {
         TTree *tree = new TTree(name.c_str(), name.c_str());
         tree->SetDirectory(nullptr);
-        treeMap[name] = tree;
+        m_TreeMap[name] = tree;
         LOG_INFO("AnalysisManager", "Following tree is added to the lists : " << name);
     }
     else
@@ -126,11 +126,11 @@ void AnalysisManager::AddTree(const std::string &name)
 void AnalysisManager::AddTree(TTree *tree)
 {
     std::string name = tree->GetName();
-    auto it = treeMap.find(name);
-    if (it == treeMap.end())
+    auto it = m_TreeMap.find(name);
+    if (it == m_TreeMap.end())
     {
         tree->SetDirectory(nullptr);
-        treeMap[name] = tree;
+        m_TreeMap[name] = tree;
         LOG_INFO("AnalysisManager", "Following tree is added to the lists : " << name);
     }
     else
@@ -142,7 +142,7 @@ void AnalysisManager::SaveTrees(const std::string &outfile)
 {
     TFile *file = new TFile(outfile.c_str(), "recreate");
     file->cd();
-    for (const auto &[_, tree] : treeMap)
+    for (const auto &[_, tree] : m_TreeMap)
     {
         tree->Write(tree->GetName(), TObject::kOverwrite);
     }
@@ -167,8 +167,8 @@ void AnalysisManager::InitNewHistsFromConfig(const std::string &yamlPath, const 
             int nbins = bins[0].as<int>();
             double xmin = bins[1].as<double>();
             double xmax = bins[2].as<double>();
-            histMap[alias][prefix] = {double(nbins), xmin, xmax};
-            histData[alias][prefix] = static_cast<TH1 *>(new TH1D(("hist_" + alias + "_" + prefix).c_str(), expr.c_str(), nbins, xmin, xmax));
+            m_HistMap[alias][prefix] = {double(nbins), xmin, xmax};
+            m_HistData[alias][prefix] = static_cast<TH1 *>(new TH1D(("hist_" + alias + "_" + prefix).c_str(), expr.c_str(), nbins, xmin, xmax));
         }
         else
         {
@@ -179,22 +179,22 @@ void AnalysisManager::InitNewHistsFromConfig(const std::string &yamlPath, const 
 
 void AnalysisManager::InitNewHistsFromFile(const std::string &histfile)
 {
-    LoadHists(histfile);
-    for (auto &[name, inmap] : loadedHistMap)
+    LoadHists_(histfile);
+    for (auto &[name, inmap] : m_LoadedHistMap)
         for (auto &[prefix, binfo] : inmap)
-            histMap[name][prefix] = binfo;
-    for (auto &[name, inmap] : loadedHistData)
+            m_HistMap[name][prefix] = binfo;
+    for (auto &[name, inmap] : m_LoadedHistData)
     {
         for (auto &[prefix, hist] : inmap)
         {
-            TString ch_name = hist->GetName();
-            ch_name = ch_name.Remove(0, 7);
-            histData[name][prefix] = static_cast<TH1 *>(hist->Clone(ch_name));
-            histData[name][prefix]->Reset();
+            TString chName = hist->GetName();
+            chName = chName.Remove(0, 7);
+            m_HistData[name][prefix] = static_cast<TH1 *>(hist->Clone(chName));
+            m_HistData[name][prefix]->Reset();
         }
     }
 }
-void AnalysisManager::LoadHists(const std::string &histfile)
+void AnalysisManager::LoadHists_(const std::string &histfile)
 {
     LOG_INFO("AnalysisManager", "Loading histograms from " << histfile);
     TFile *file = new TFile(histfile.c_str());
@@ -217,17 +217,17 @@ void AnalysisManager::LoadHists(const std::string &histfile)
         {
             TString parsename = obj->GetName();
             parsename = parsename.Remove(0, parsename.First('_') + 1);
-            TString alias_t = parsename(0, parsename.Last('_'));
-            TString prefix_t = parsename(parsename.Last('_') + 1, parsename.Length());
-            const char *alias = alias_t.Data();
-            const char *prefix = prefix_t.Data();
-            loadedHistData[alias][prefix] = static_cast<TH1 *>(obj->Clone(Form("loaded_%s", obj->GetName())));
-            auto temph = loadedHistData[alias][prefix];
+            TString aliasT = parsename(0, parsename.Last('_'));
+            TString prefixT = parsename(parsename.Last('_') + 1, parsename.Length());
+            const char *alias = aliasT.Data();
+            const char *prefix = prefixT.Data();
+            m_LoadedHistData[alias][prefix] = static_cast<TH1 *>(obj->Clone(Form("loaded_%s", obj->GetName())));
+            auto temph = m_LoadedHistData[alias][prefix];
             double nbins = temph->GetNbinsX();
             double xmin = temph->GetBinLowEdge(1);
             double xmax = temph->GetBinLowEdge(temph->GetNbinsX()) + temph->GetBinWidth(temph->GetNbinsX());
-            loadedHistMap[alias][prefix] = {nbins, xmin, xmax};
-            loadedHistData[alias][prefix]->SetDirectory(nullptr);
+            m_LoadedHistMap[alias][prefix] = {nbins, xmin, xmax};
+            m_LoadedHistData[alias][prefix]->SetDirectory(nullptr);
         }
 
         delete obj;
@@ -241,56 +241,56 @@ void AnalysisManager::LoadHists(const std::string &histfile)
 
 void AnalysisManager::ActivateSelectedCuts(const std::vector<std::string> &selected = {})
 {
-    if (!currentTree && useRDF)
+    if (!m_CurrentTree && m_UseRdf)
     {
         LOG_ERROR("AnalysisManager", "No tree found for cuts! Please assign a "
                                      "tree first. or now using RDF");
         return;
     }
     LOG_INFO("AnalysisManager", "Activating selected cuts" << (selected.empty() ? std::string(" (all available)") : std::string("")));
-    for (const auto &[name, expr] : rawCutExpr)
+    for (const auto &[name, expr] : m_RawCutExpr)
     {
         if (!selected.empty() && std::find(selected.begin(), selected.end(), name) == selected.end()) continue;
-        cutFormulas[name] = new TTreeFormula(name.c_str(), ExpandAliases(expr).c_str(), currentTree);
+        m_CutFormulas[name] = new TTreeFormula(name.c_str(), ExpandAliases_(expr).c_str(), m_CurrentTree);
         LOG_INFO("AnalysisManager", "Cut activated: " << name << " => " << expr);
     }
 }
 
 void AnalysisManager::ActivateCuts()
 {
-    if (!currentTree && useRDF)
+    if (!m_CurrentTree && m_UseRdf)
     {
         LOG_ERROR("AnalysisManager", "No tree found for cuts! Please assign a tree first.");
         return;
     }
-    for (const auto &[name, expr] : rawCutExpr)
+    for (const auto &[name, expr] : m_RawCutExpr)
     {
-        cutFormulas[name] = new TTreeFormula(name.c_str(), ExpandAliases(expr).c_str(), currentTree);
+        m_CutFormulas[name] = new TTreeFormula(name.c_str(), ExpandAliases_(expr).c_str(), m_CurrentTree);
     }
     LOG_INFO("AnalysisManager", "All Cuts are activated!");
 }
 
-std::string AnalysisManager::ExpandAliases(const std::string &expr) const
+std::string AnalysisManager::ExpandAliases_(const std::string &expr) const
 {
     std::string result = expr;
-    for (const auto &[alias, binfo] : branchMap)
+    for (const auto &[alias, binfo] : m_BranchMap)
     {
         std::regex pattern("\b" + alias + "\b");
-        result = std::regex_replace(result, pattern, binfo.realName);
+        result = std::regex_replace(result, pattern, binfo.RealName);
     }
     return result;
 }
 
 void AnalysisManager::AddCut(const std::string &name, const std::string &expr)
 {
-    rawCutExpr[name] = expr;
+    m_RawCutExpr[name] = expr;
     LOG_INFO("AnalysisManager", "Cut added: " << name << " -> " << expr);
 }
 
 bool AnalysisManager::PassCut(const std::string &name) const
 {
-    auto it = cutFormulas.find(name);
-    return it != cutFormulas.end() && it->second->EvalInstance();
+    auto it = m_CutFormulas.find(name);
+    return it != m_CutFormulas.end() && it->second->EvalInstance();
 }
 
 bool AnalysisManager::PassCut(const std::vector<std::string> &names)
@@ -309,46 +309,46 @@ bool AnalysisManager::PassCut(std::initializer_list<std::string> names)
 
 bool AnalysisManager::PassCut()
 {
-    for (const auto &[name, _] : cutFormulas)
+    for (const auto &[name, _] : m_CutFormulas)
         if (!PassCut(name)) return false;
     return true;
 }
 
 double AnalysisManager::GetVar(const std::string &alias) const
 {
-    auto it = branchData.find(alias);
-    if (it == branchData.end())
+    auto it = m_BranchData.find(alias);
+    if (it == m_BranchData.end())
     {
-        return GetNewVar(alias);
+        return GetNewVar_(alias);
     }
     else
     {
-        auto type = branchMap.at(alias).type;
-        if (type == "Double_t") return *(double *)branchData.at(alias);
-        if (type == "Int_t") return *(int *)branchData.at(alias);
+        auto type = m_BranchMap.at(alias).Type;
+        if (type == "Double_t") return *(double *)m_BranchData.at(alias);
+        if (type == "Int_t") return *(int *)m_BranchData.at(alias);
         LOG_ERROR("AnalysisManager", "Unsupported type in GetVar");
         return -255;
     }
 }
 
-double AnalysisManager::GetNewVar(const std::string &alias) const
+double AnalysisManager::GetNewVar_(const std::string &alias) const
 {
-    auto it = newBranchData.find(alias);
-    if (it == newBranchData.end())
+    auto it = m_NewBranchData.find(alias);
+    if (it == m_NewBranchData.end())
     {
         LOG_ERROR("AnalysisManager", "Cannot find " << alias << " in the variables list!");
         return -255;
     }
     else
     {
-        return *newBranchData.at(alias);
+        return *m_NewBranchData.at(alias);
     }
 }
 
 std::string AnalysisManager::GetCutString(const std::string &name) const
 {
-    auto it = rawCutExpr.find(name);
-    if (it != rawCutExpr.end())
+    auto it = m_RawCutExpr.find(name);
+    if (it != m_RawCutExpr.end())
         return it->second;
     else
     {
@@ -362,7 +362,7 @@ void AnalysisManager::SaveCuts(const std::string &yamlPath) const
     YAML::Emitter out;
     out << YAML::BeginMap;
     out << YAML::Key << "cuts" << YAML::Value << YAML::BeginMap;
-    for (const auto &[name, expr] : rawCutExpr)
+    for (const auto &[name, expr] : m_RawCutExpr)
     {
         out << YAML::Key << name << YAML::Value << expr;
     }
@@ -425,41 +425,41 @@ double *AnalysisManager::AddVar(const std::string &name, std::string alias = "")
 {
     if (alias.length() == 0) alias = name;
 
-    auto it = newBranchMap.find(alias);
-    if (it != newBranchMap.end())
+    auto it = m_NewBranchMap.find(alias);
+    if (it != m_NewBranchMap.end())
     {
         LOG_ERROR("AnalysisManager", "Overwriting existing new variable : " << alias);
         return nullptr;
     }
 
     double *ptr = new double;
-    newBranchMap[alias] = {name, "Double_t"};
-    newBranchData[alias] = ptr;
+    m_NewBranchMap[alias] = {name, "Double_t"};
+    m_NewBranchData[alias] = ptr;
     LOG_INFO("AnalysisManager", "New variable added: " << alias << " mapped to " << name);
     return ptr;
 }
 
-bool AnalysisManager::AddBranch(TTree *tree, const std::string &alias, int option)
+bool AnalysisManager::AddBranch(TTree *tree, const std::string &alias, TreeOpt::Om option)
 {
-    if (tree == currentTree)
+    if (tree == m_CurrentTree)
     {
         LOG_ERROR("AnalysisManager", "Cannot overwrite current tree!");
         return false;
     }
     else
     {
-        auto it = newBranchMap.find(alias);
-        if (it == newBranchMap.end())
+        auto it = m_NewBranchMap.find(alias);
+        if (it == m_NewBranchMap.end())
         {
             LOG_ERROR("AnalysisManager", "No such variable in the new branch map : " << alias);
             return false;
         }
-        double *ptr = newBranchData[alias];
-        std::string name = newBranchMap[alias].realName;
-        auto itold = branchMap.find(alias);
-        if (option == TreeOpt::OM::kAppend)
+        double *ptr = m_NewBranchData[alias];
+        std::string name = m_NewBranchMap[alias].RealName;
+        auto itold = m_BranchMap.find(alias);
+        if (option == TreeOpt::Om::Append)
         {
-            if (itold == branchMap.end())
+            if (itold == m_BranchMap.end())
             {
                 LOG_INFO("AnalysisManager", "New branch named " << name << " for " << tree->GetName() << " is appended.");
                 tree->Branch(name.c_str(), ptr, (name + "/D").c_str());
@@ -471,7 +471,7 @@ bool AnalysisManager::AddBranch(TTree *tree, const std::string &alias, int optio
                 return false;
             }
         }
-        else if (option == TreeOpt::OM::kRecreate)
+        else if (option == TreeOpt::Om::Recreate)
         {
             LOG_INFO("AnalysisManager", "New branch named " << name << " for " << tree->GetName() << "is created.");
             tree->Branch(name.c_str(), ptr, (name + "/D").c_str());
@@ -479,37 +479,37 @@ bool AnalysisManager::AddBranch(TTree *tree, const std::string &alias, int optio
         }
         else
         {
-            LOG_ERROR("AnalysisManager", "Option should be kAppend or kRecreate!");
+            LOG_ERROR("AnalysisManager", "Option should be Append or Recreate!");
             return false;
         }
     }
 }
 
-bool AnalysisManager::AddBranch(const std::string &treeName, const std::string &alias, int option)
+bool AnalysisManager::AddBranch(const std::string &treeName, const std::string &alias, TreeOpt::Om option)
 {
-    auto it_tree = treeMap.find(treeName);
-    if (it_tree == treeMap.end())
+    auto itTree = m_TreeMap.find(treeName);
+    if (itTree == m_TreeMap.end())
     {
         LOG_ERROR("AnalysisManager", "Cannot find the tree!");
         return false;
     }
     else
     {
-        auto it = newBranchMap.find(alias);
-        if (it == newBranchMap.end())
+        auto it = m_NewBranchMap.find(alias);
+        if (it == m_NewBranchMap.end())
         {
             LOG_ERROR("AnalysisManager", "No such variable in the new branch map : " << alias);
             return false;
         }
-        double *ptr = newBranchData[alias];
-        std::string name = newBranchMap[alias].realName;
-        auto itold = branchMap.find(alias);
-        if (option == TreeOpt::OM::kAppend)
+        double *ptr = m_NewBranchData[alias];
+        std::string name = m_NewBranchMap[alias].RealName;
+        auto itold = m_BranchMap.find(alias);
+        if (option == TreeOpt::Om::Append)
         {
-            if (itold == branchMap.end())
+            if (itold == m_BranchMap.end())
             {
                 LOG_INFO("AnalysisManager", "New branch named " << name << " for " << treeName << " is appended.");
-                it_tree->second->Branch(name.c_str(), ptr, (name + "/D").c_str());
+                itTree->second->Branch(name.c_str(), ptr, (name + "/D").c_str());
                 return true;
             }
             else
@@ -518,15 +518,15 @@ bool AnalysisManager::AddBranch(const std::string &treeName, const std::string &
                 return false;
             }
         }
-        else if (option == TreeOpt::OM::kRecreate)
+        else if (option == TreeOpt::Om::Recreate)
         {
             LOG_INFO("AnalysisManager", "New branch named " << name << " for " << treeName << " is created.");
-            it_tree->second->Branch(name.c_str(), ptr, (name + "/D").c_str());
+            itTree->second->Branch(name.c_str(), ptr, (name + "/D").c_str());
             return true;
         }
         else
         {
-            LOG_ERROR("AnalysisManager", "Option should be kAppend or kRecreate!");
+            LOG_ERROR("AnalysisManager", "Option should be Append or Recreate!");
             return false;
         }
     }
@@ -535,7 +535,7 @@ void AnalysisManager::AddHist(const std::string &alias, std::vector<double> binf
 {
     std::string fullname = "hist_" + alias + "_" + prefix;
     bool chk = true;
-    for (const auto &[alias, inmap] : histMap)
+    for (const auto &[alias, inmap] : m_HistMap)
     {
         std::string existname = "hist_" + alias;
         for (const auto &[prefix, _] : inmap)
@@ -552,9 +552,9 @@ void AnalysisManager::AddHist(const std::string &alias, std::vector<double> binf
     if (chk)
     {
         LOG_INFO("AnalysisManager", "Histogram " << fullname << " is added");
-        histData[alias][prefix] = static_cast<TH1 *>(new TH1D(fullname.c_str(), "", int(binfo[0]), binfo[1], binfo[2]));
-        histData[alias][prefix]->SetDirectory(nullptr);
-        histMap[alias][prefix] = binfo;
+        m_HistData[alias][prefix] = static_cast<TH1 *>(new TH1D(fullname.c_str(), "", int(binfo[0]), binfo[1], binfo[2]));
+        m_HistData[alias][prefix]->SetDirectory(nullptr);
+        m_HistMap[alias][prefix] = binfo;
     }
     else
     {
@@ -566,7 +566,7 @@ void AnalysisManager::AddHist(const std::string &alias, TH1 *hist, const std::st
 {
     std::string fullname = hist->GetName();
     bool chk = true;
-    for (const auto &[alias, inmap] : histMap)
+    for (const auto &[alias, inmap] : m_HistMap)
     {
         std::string existname = "hist_" + alias;
         for (const auto &[prefix, _] : inmap)
@@ -583,12 +583,12 @@ void AnalysisManager::AddHist(const std::string &alias, TH1 *hist, const std::st
     if (chk)
     {
         LOG_INFO("AnalysisManager", "Histogram " << fullname << " is added");
-        histData[alias][prefix] = hist;
-        histData[alias][prefix]->SetDirectory(nullptr);
+        m_HistData[alias][prefix] = hist;
+        m_HistData[alias][prefix]->SetDirectory(nullptr);
         double nbins = hist->GetNbinsX();
         double xmin = hist->GetBinLowEdge(1);
         double xmax = hist->GetBinLowEdge(hist->GetNbinsX()) + hist->GetBinWidth(hist->GetNbinsX());
-        histMap[alias][prefix] = {nbins, xmin, xmax};
+        m_HistMap[alias][prefix] = {nbins, xmin, xmax};
     }
     else
     {
@@ -598,7 +598,7 @@ void AnalysisManager::AddHist(const std::string &alias, TH1 *hist, const std::st
 
 void AnalysisManager::FillHists(double weight)
 {
-    for (const auto &[name, inmap] : histData)
+    for (const auto &[name, inmap] : m_HistData)
     {
         double x = GetVar(name);
 
@@ -611,7 +611,7 @@ void AnalysisManager::SaveHists(const std::string &outfile)
 {
     TFile *file = new TFile(outfile.c_str(), "recreate");
     file->cd();
-    for (const auto &[_, inmap] : histData)
+    for (const auto &[_, inmap] : m_HistData)
     {
         for (const auto &[_, hist] : inmap)
             hist->Write(hist->GetName(), TObject::kOverwrite);
@@ -628,13 +628,13 @@ void AnalysisManager::SaveHistsConfig(const std::string &yamlOut)
 
     out << YAML::Key << "histograms" << YAML::Value << YAML::BeginMap;
 
-    for (const auto &[name, inmap] : histMap)
+    for (const auto &[name, inmap] : m_HistMap)
     {
         out << YAML::Key << name << YAML::Value << YAML::BeginMap;
         out << YAML::Key << "expr" << YAML::Value << name;
-        auto first_it = inmap.begin();
+        auto firstIt = inmap.begin();
         out << YAML::Key << "bins" << YAML::Value << YAML::Flow << YAML::BeginSeq;
-        for (auto b : first_it->second)
+        for (auto b : firstIt->second)
             out << b;
         out << YAML::EndSeq;
         out << YAML::EndMap;
@@ -650,14 +650,14 @@ void AnalysisManager::SaveHistsConfig(const std::string &yamlOut)
 
 void AnalysisManager::LoadEntry(Long64_t i)
 {
-    if (i == 0) start_time = std::chrono::steady_clock::now();
+    if (i == 0) m_StartTime = std::chrono::steady_clock::now();
 
-    currentTree->GetEntry(i);
+    m_CurrentTree->GetEntry(i);
 
-    if (i % 500 == 0 || i == GetEntries() - 1) UpdateProgress((double)(i + 1) / GetEntries());
+    if (i % 500 == 0 || i == GetEntries() - 1) UpdateProgress_((double)(i + 1) / GetEntries());
 }
 
-Long64_t AnalysisManager::GetEntries() { return currentTree->GetEntries(); }
+Long64_t AnalysisManager::GetEntries() { return m_CurrentTree->GetEntries(); }
 
 void AnalysisManager::SetRDFInputFromConfig(const std::string &yamlPath)
 {
@@ -667,27 +667,27 @@ void AnalysisManager::SetRDFInputFromConfig(const std::string &yamlPath)
     {
         for (auto f : input["files"])
         {
-            inputFiles.push_back(f.as<std::string>());
+            m_InputFiles.push_back(f.as<std::string>());
             LOG_INFO("AnalysisManager", "File " << f.as<std::string>() << " has been loaded.");
         }
-        inTreeName = input["tree"].as<std::string>();
+        m_InTreeName = input["tree"].as<std::string>();
 
-        currentTree = new TChain(inTreeName.c_str());
+        m_CurrentTree = new TChain(m_InTreeName.c_str());
         int count = 0;
-        for (auto &file : inputFiles)
-            count += currentTree->Add(file.c_str());
+        for (auto &file : m_InputFiles)
+            count += m_CurrentTree->Add(file.c_str());
 
         if (count < 1)
         {
             LOG_ERROR("AnalysisManager", "This initializer is for the TTree!");
             return;
         }
-        useRDF = true;
-        rdf_raw = std::make_unique<ROOT::RDataFrame>(*currentTree);
-        rdf_node = *rdf_raw;
-        lm = std::make_unique<LambdaManager>();
-        LOG_INFO("AnalysisManager", "RDF input initialized from config " << yamlPath << " with " << inputFiles.size()
-                                      << " files for tree " << inTreeName);
+        m_UseRdf = true;
+        m_RdfRaw = std::make_unique<ROOT::RDataFrame>(*m_CurrentTree);
+        m_RdfNode = *m_RdfRaw;
+        m_LambdaManager = std::make_unique<LambdaManager>();
+        LOG_INFO("AnalysisManager", "RDF input initialized from config " << yamlPath << " with " << m_InputFiles.size()
+                                      << " files for tree " << m_InTreeName);
     }
     else
     {
@@ -698,33 +698,33 @@ void AnalysisManager::SetRDFInputFromConfig(const std::string &yamlPath)
 
 void AnalysisManager::SetRDFInputFromFile(const std::string &treename, const std::string &filename)
 {
-    currentTree = new TChain(treename.c_str());
-    currentTree->Add(filename.c_str());
-    useRDF = true;
-    rdf_raw = std::make_unique<ROOT::RDataFrame>(*currentTree);
-    rdf_node = *rdf_raw;
-    lm = std::make_unique<LambdaManager>();
+    m_CurrentTree = new TChain(treename.c_str());
+    m_CurrentTree->Add(filename.c_str());
+    m_UseRdf = true;
+    m_RdfRaw = std::make_unique<ROOT::RDataFrame>(*m_CurrentTree);
+    m_RdfNode = *m_RdfRaw;
+    m_LambdaManager = std::make_unique<LambdaManager>();
     LOG_INFO("AnalysisManager", "RDF input initialized from file " << filename << " for tree " << treename);
 }
 
 void AnalysisManager::DefineRDFVar(const std::string &name, const std::string &expr)
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
-    rdf_node = rdf_node->Define(name, expr);
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
+    m_RdfNode = m_RdfNode->Define(name, expr);
     LOG_INFO("AnalysisManager", "Defined RDF variable '" << name << "' with expression '" << expr << "'");
 }
 
 void AnalysisManager::ApplyRDFFilter(const std::string &name)
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
 
-    auto it = rawCutExpr.find(name);
-    if (it != rawCutExpr.end())
+    auto it = m_RawCutExpr.find(name);
+    if (it != m_RawCutExpr.end())
     {
         if (it->second.find("--lambda:") == std::string::npos)
         {
             LOG_INFO("AnalysisManager", "Cut " << name << " : " << it->second << " is applied.");
-            rdf_node = rdf_node->Filter(it->second, name);
+            m_RdfNode = m_RdfNode->Filter(it->second, name);
         }
     }
     else
@@ -733,17 +733,17 @@ void AnalysisManager::ApplyRDFFilter(const std::string &name)
 
 void AnalysisManager::ApplyRDFFilter(const std::string &name, const std::string &expr)
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
-    auto it = rawCutExpr.find(name);
-    if (it != rawCutExpr.end())
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
+    auto it = m_RawCutExpr.find(name);
+    if (it != m_RawCutExpr.end())
     {
         LOG_ERROR("AnalysisManager", "SAME name of cut exists. expr : " << it->second);
     }
     else
     {
-        rdf_node = rdf_node->Filter(expr, name);
+        m_RdfNode = m_RdfNode->Filter(expr, name);
         LOG_INFO("AnalysisManager", "Direct filter is applied and registered. name : " << name << " and expr : " << expr);
-        rawCutExpr[name] = expr;
+        m_RawCutExpr[name] = expr;
     }
 }
 
@@ -756,12 +756,12 @@ void AnalysisManager::ApplyRDFFilterSelected(const std::vector<std::string> &nam
 void AnalysisManager::ApplyRDFFilterAll()
 {
     LOG_INFO("AnalysisManager", "Applying RDF filters for all registered cuts");
-    for (const auto &[name, _] : rawCutExpr)
+    for (const auto &[name, _] : m_RawCutExpr)
         ApplyRDFFilter(name);
 }
 void AnalysisManager::BookRDFHist1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo)
 {
-    if (!rdf_node) throw std::runtime_error("RDF not initialized!");
+    if (!m_RdfNode) throw std::runtime_error("RDF not initialized!");
     if (binfo.size() != 3)
     {
         LOG_ERROR("AnalysisManager", "bin info should has form such as {100,0,1}");
@@ -769,8 +769,8 @@ void AnalysisManager::BookRDFHist1D(const std::string &alias, const std::string 
     }
     std::string fullname = "hist_" + alias + "_" + prefix;
     auto model = ROOT::RDF::TH1DModel(fullname.c_str(), "", int(binfo[0]), binfo[1], binfo[2]);
-    auto rptr = rdf_node->Histo1D(model, alias);
-    histRDF[alias][prefix] = rptr;
+    auto rptr = m_RdfNode->Histo1D(model, alias);
+    m_HistRdf[alias][prefix] = rptr;
     LOG_INFO("AnalysisManager", "Booked RDF histogram '" << fullname << "' with bins {" << binfo[0] << ", " << binfo[1] << ", "
                                            << binfo[2] << "}");
 }
@@ -802,8 +802,8 @@ void AnalysisManager::BookRDFHistsFromConfig(const std::string &yamlPath, const 
 }
 void AnalysisManager::BookRDFHistsFromFile(const std::string &histfile)
 {
-    LoadHists(histfile);
-    for (auto &[alias, inmap] : loadedHistMap)
+    LoadHists_(histfile);
+    for (auto &[alias, inmap] : m_LoadedHistMap)
     {
         for (auto &[prefix, binfo] : inmap)
         {
@@ -813,139 +813,139 @@ void AnalysisManager::BookRDFHistsFromFile(const std::string &histfile)
     LOG_INFO("AnalysisManager", "Booked RDF histograms based on file " << histfile);
 }
 
-void AnalysisManager::SnapshotRDF(const std::string &treeName, const std::string &fileName, int option)
+void AnalysisManager::SnapshotRDF(const std::string &treeName, const std::string &fileName, TreeOpt::Om option)
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
     std::atomic<ULong64_t> counter = 0;
-    auto callback = rdf_node->Count();
+    auto callback = m_RdfNode->Count();
 
     callback.OnPartialResultSlot(500,
                                  [this, &counter](unsigned int j, ULong64_t &)
                                  {
-                                     std::lock_guard<std::mutex> lock(prg_mtx);
+                                     std::lock_guard<std::mutex> lock(m_ProgressMutex);
                                      counter += 500;
-                                     UpdateProgress(double(counter) / GetEntries());
+                                     UpdateProgress_(double(counter) / GetEntries());
                                  });
-    // ROOT::RDF::Experimental::AddProgressBar(*rdf_node);
+    // ROOT::RDF::Experimental::AddProgressBar(*m_RdfNode);
     ROOT::RDF::RSnapshotOptions opts;
     opts.fLazy = false;
-    if (option == TreeOpt::OM::kRecreate)
-        rdf_node->Snapshot(treeName, fileName, GetDefinedVarNames(), opts);
-    else if (option == TreeOpt::OM::kAppend)
-        rdf_node->Snapshot(treeName, fileName, GetAllVarNames(), opts);
+    if (option == TreeOpt::Om::Recreate)
+        m_RdfNode->Snapshot(treeName, fileName, GetDefinedVarNames(), opts);
+    else if (option == TreeOpt::Om::Append)
+        m_RdfNode->Snapshot(treeName, fileName, GetAllVarNames(), opts);
     else
         throw std::runtime_error("No such option avaliable");
-    start_time = std::chrono::steady_clock::now();
+    m_StartTime = std::chrono::steady_clock::now();
     *callback;
-    UpdateProgress(1.0);
+    UpdateProgress_(1.0);
 }
 
 void AnalysisManager::SaveHistsRDF(const std::string &outfile)
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
 
     std::atomic<ULong64_t> counter = 0;
-    auto callback = rdf_node->Count();
+    auto callback = m_RdfNode->Count();
 
     callback.OnPartialResultSlot(500,
                                  [this, &counter](unsigned int, ULong64_t &)
                                  {
-                                     std::lock_guard<std::mutex> lock(prg_mtx);
+                                     std::lock_guard<std::mutex> lock(m_ProgressMutex);
                                      counter += 500;
-                                     UpdateProgress(double(counter) / GetEntries());
+                                     UpdateProgress_(double(counter) / GetEntries());
                                  });
-    // ROOT::RDF::Experimental::AddProgressBar(*rdf_node);
+    // ROOT::RDF::Experimental::AddProgressBar(*m_RdfNode);
     TFile *file = new TFile(outfile.c_str(), "recreate");
     file->cd();
 
-    start_time = std::chrono::steady_clock::now();
+    m_StartTime = std::chrono::steady_clock::now();
     *callback;
-    for (auto &[_, inmap] : histRDF)
+    for (auto &[_, inmap] : m_HistRdf)
     {
         for (auto &[_, hist] : inmap)
             hist->Write(hist->GetName(), TObject::kOverwrite);
     }
     file->Close();
     delete file;
-    UpdateProgress(1.0);
+    UpdateProgress_(1.0);
     LOG_INFO("AnalysisManager", "RDF Histograms are saved in " << outfile);
 }
 
 std::unique_ptr<AnalysisManager> AnalysisManager::Fork()
 {
     auto forked = std::make_unique<AnalysisManager>();
-    forked->rdf_node = this->rdf_node->Filter([]() { return true; });
-    forked->useRDF = true;
-    forked->rawCutExpr = this->rawCutExpr;
-    forked->lm = std::make_unique<LambdaManager>();
+    forked->m_RdfNode = this->m_RdfNode->Filter([]() { return true; });
+    forked->m_UseRdf = true;
+    forked->m_RawCutExpr = this->m_RawCutExpr;
+    forked->m_LambdaManager = std::make_unique<LambdaManager>();
 
     return forked;
 }
 
 ROOT::RDF::RNode AnalysisManager::GetIsolatedRNode()
 {
-    if (!rdf_node.has_value()) throw std::runtime_error("rdf_node not initialized");
+    if (!m_RdfNode.has_value()) throw std::runtime_error("m_RdfNode not initialized");
 
     LOG_INFO("AnalysisManager", "Isolated RNode is generated. Manager has no responsible for the RNode.");
-    return rdf_node->Filter([]() { return true; });
+    return m_RdfNode->Filter([]() { return true; });
 }
 
 LambdaManager *AnalysisManager::GetLambdaManager()
 {
-    if (!useRDF) throw std::runtime_error("RDF not initialized");
-    return lm.get();
+    if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
+    return m_LambdaManager.get();
 }
 
 std::ofstream AnalysisManager::OpenResultFile(const std::string &filename, const std::string &mode) const
 {
-    std::ios_base::openmode open_mode = std::ios::out;
+    std::ios_base::openmode openMode = std::ios::out;
     TString tmode = mode;
 
     if (tmode.Contains("update", TString::kIgnoreCase))
     {
         LOG_INFO("AnalysisManager", filename << " is opened with update mode.");
-        open_mode |= std::ios::app;
+        openMode |= std::ios::app;
     }
     else
     {
         LOG_INFO("AnalysisManager", filename << " is opened.");
-        open_mode |= std::ios::trunc;
+        openMode |= std::ios::trunc;
     }
 
-    std::ofstream fout(filename, open_mode);
+    std::ofstream fout(filename, openMode);
     if (!fout) throw std::runtime_error("Failed to open result file : " + filename);
     return fout;
 }
 
-void AnalysisManager::UpdateProgress(double p)
+void AnalysisManager::UpdateProgress_(double p)
 {
     auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - start_time).count();
+    double elapsed = std::chrono::duration<double>(now - m_StartTime).count();
     double eta = (p > 0.0f && p < 1.0f) ? elapsed * (1.0f / p - 1.0f) : -1.0f;
-    _progress = std::clamp(p, 0.0, 1.0);
-    Logger::Get().PrintProgressBar("AnalysisManager", _progress, elapsed, eta);
+    m_Progress = std::clamp(p, 0.0, 1.0);
+    Logger::Get().PrintProgressBar("AnalysisManager", m_Progress, elapsed, eta);
 }
 
-std::vector<std::string> AnalysisManager::GetInputFiles() const { return inputFiles; }
+std::vector<std::string> AnalysisManager::GetInputFiles() const { return m_InputFiles; }
 
-std::map<std::string, std::string> AnalysisManager::GetCutExpressions() const { return rawCutExpr; }
+std::map<std::string, std::string> AnalysisManager::GetCutExpressions() const { return m_RawCutExpr; }
 
-void AnalysisManager::WriteMetaData(const std::string &filename, const std::string &hash, const std::string &basename, const std::string &paramjson)
+void AnalysisManager::WriteMetaData(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson)
 {
-    _hash = hash;
-    _basename = basename;
-    _paramjson = paramjson;
-    _cuts = "";
-    _endtime = Logger::Get().GetCurrentTime();
-    for (const auto &[k, v] : rawCutExpr)
-        _cuts += (k + ":" + v + ";");
+    m_Hash = hash;
+    m_Basename = baseName;
+    m_ParamJson = paramJson;
+    m_Cuts = "";
+    m_EndTime = Logger::Get().GetCurrentTime();
+    for (const auto &[k, v] : m_RawCutExpr)
+        m_Cuts += (k + ":" + v + ";");
     TFile fout(filename.c_str(), "UPDATE");
     TTree *tmeta = new TTree("metadata", "metadata");
-    tmeta->Branch("hash", &_hash);
-    tmeta->Branch("endtime", &_endtime);
-    tmeta->Branch("module", &_basename);
-    tmeta->Branch("paramjson", &_paramjson);
-    tmeta->Branch("cuts", &_cuts);
+    tmeta->Branch("hash", &m_Hash);
+    tmeta->Branch("endtime", &m_EndTime);
+    tmeta->Branch("module", &m_Basename);
+    tmeta->Branch("paramjson", &m_ParamJson);
+    tmeta->Branch("cuts", &m_Cuts);
     tmeta->Fill();
     tmeta->Write("metadata");
     fout.Close();
@@ -954,7 +954,7 @@ void AnalysisManager::WriteMetaData(const std::string &filename, const std::stri
 void AnalysisManager::PrintCuts()
 {
     LOG_INFO("AnalysisManager", "-------------REGISTERED CUTS----------------");
-    for (const auto &[name, expr] : rawCutExpr)
+    for (const auto &[name, expr] : m_RawCutExpr)
         LOG_INFO("AnalysisManager", name << " : " << expr);
     LOG_INFO("AnalysisManager", "-------------REGISTERED CUTS----------------");
 }
@@ -963,15 +963,15 @@ void AnalysisManager::PrintConfig()
 {
     LOG_INFO("AnalysisManager", "-------------Configuration Summary------------");
     LOG_INFO("AnalysisManager", "FILES :");
-    for (const auto &filename : inputFiles)
+    for (const auto &filename : m_InputFiles)
         LOG_INFO("AnalysisManager", "    " << filename);
-    LOG_INFO("AnalysisManager", "    TREE : " << inTreeName);
-    if (!useRDF)
+    LOG_INFO("AnalysisManager", "    TREE : " << m_InTreeName);
+    if (!m_UseRdf)
     {
         LOG_INFO("AnalysisManager", "        BRANCHES (ALIAS : BRANCH NAME / TYPE): ");
-        for (const auto &[alias, binfo] : branchMap)
+        for (const auto &[alias, binfo] : m_BranchMap)
         {
-            LOG_INFO("AnalysisManager", "               " << alias << " : " << binfo.realName << " / " << binfo.type);
+            LOG_INFO("AnalysisManager", "               " << alias << " : " << binfo.RealName << " / " << binfo.Type);
         }
     }
     LOG_INFO("AnalysisManager", "-------------Configuration Summary-------------");
@@ -980,20 +980,20 @@ void AnalysisManager::PrintConfig()
 void AnalysisManager::PrintHists()
 {
     LOG_INFO("AnalysisManager", "-------------Registered Histograms-------------");
-    for (const auto &[alias, hists] : loadedHistMap)
+    for (const auto &[alias, hists] : m_LoadedHistMap)
     {
         for (const auto &[prefix, bins] : hists)
             LOG_INFO("AnalysisManager", "loaded_hist_" << alias << "_" << prefix << " : " << "[" << int(bins[0]) << "," << bins[1] << "," << bins[2] << "]");
     }
 
-    for (const auto &[alias, hists] : histMap)
+    for (const auto &[alias, hists] : m_HistMap)
     {
         for (const auto &[prefix, bins] : hists)
             LOG_INFO("AnalysisManager", "hist_" << alias << "_" << prefix << " : " << "[" << int(bins[0]) << "," << bins[1] << "," << bins[2] << "]");
     }
-    if (useRDF)
+    if (m_UseRdf)
     {
-        for (const auto &[alias, hists] : histRDF)
+        for (const auto &[alias, hists] : m_HistRdf)
             for (const auto &[prefix, _] : hists)
                 LOG_INFO("AnalysisManager", "hist_" << alias << "_" << prefix << " : RDF histograms");
     }
@@ -1012,37 +1012,37 @@ AnalysisManager::AnalysisManager()
 
 AnalysisManager::~AnalysisManager()
 {
-    for (auto &[_, tr] : treeMap)
+    for (auto &[_, tr] : m_TreeMap)
         delete tr;
-    treeMap.clear();
-    for (auto &[alias, ptr] : branchData)
+    m_TreeMap.clear();
+    for (auto &[alias, ptr] : m_BranchData)
     {
-        if (branchMap[alias].type == "Int_t")
+        if (m_BranchMap[alias].Type == "Int_t")
             delete static_cast<int *>(ptr);
         else
             delete static_cast<double *>(ptr);
     }
-    branchData.clear();
-    branchMap.clear();
-    newBranchMap.clear();
-    for (auto &[_, ptr] : newBranchData)
+    m_BranchData.clear();
+    m_BranchMap.clear();
+    m_NewBranchMap.clear();
+    for (auto &[_, ptr] : m_NewBranchData)
         delete ptr;
-    newBranchData.clear();
-    histMap.clear();
-    for (auto &[_, hists] : histData)
+    m_NewBranchData.clear();
+    m_HistMap.clear();
+    for (auto &[_, hists] : m_HistData)
         for (auto &[_, h] : hists)
             delete h;
-    histData.clear();
-    loadedHistMap.clear();
-    for (auto &[_, hists] : loadedHistData)
+    m_HistData.clear();
+    m_LoadedHistMap.clear();
+    for (auto &[_, hists] : m_LoadedHistData)
         for (auto &[_, h] : hists)
             delete h;
-    loadedHistData.clear();
-    histRDF.clear();
-    rawCutExpr.clear();
-    for (auto &[_, cut] : cutFormulas)
+    m_LoadedHistData.clear();
+    m_HistRdf.clear();
+    m_RawCutExpr.clear();
+    for (auto &[_, cut] : m_CutFormulas)
         delete cut;
-    cutFormulas.clear();
-    inputFiles.clear();
-    delete currentTree;
+    m_CutFormulas.clear();
+    m_InputFiles.clear();
+    delete m_CurrentTree;
 }

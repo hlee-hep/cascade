@@ -21,5 +21,5 @@ class AnalysisModuleRegistry
     std::vector<std::string> ListModules() const;
 
   private:
-    std::unordered_map<std::string, ModuleFactory> factories_;
+    std::unordered_map<std::string, ModuleFactory> m_Factories;
 };

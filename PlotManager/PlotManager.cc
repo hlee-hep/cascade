@@ -392,7 +392,7 @@ std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec
     std::vector<LegendEntry> v;
     v.reserve(plan.Stacks.size() + plan.Overlays.size() + 1);
 
-    auto push_stack = [&](const PlanStackItem &it)
+    auto pushStack = [&](const PlanStackItem &it)
     {
         if (!it.Draw.Visible) return;
         if (!it.Draw.VisibleInLegend) return;
@@ -400,7 +400,7 @@ std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec
         int prio = it.Draw.LegendPriority.value_or(0);
         v.push_back({it.Label, it.Color, "F", prio});
     };
-    auto push_overlay = [&](const PlanOverlayItem &ov)
+    auto pushOverlay = [&](const PlanOverlayItem &ov)
     {
         if (!ov.Draw.Visible) return;
         if (!ov.Draw.VisibleInLegend) return;
@@ -413,10 +413,10 @@ std::vector<LegendEntry> PlotManager::CollectLegendEntries_(const PlotSpec &spec
     };
 
     for (auto &it : plan.Stacks)
-        push_stack(it);
+        pushStack(it);
 
     for (auto &ov : plan.Overlays)
-        push_overlay(ov);
+        pushOverlay(ov);
 
     return v;
 }
@@ -513,14 +513,14 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     THStack *hs = new THStack();
     hs->SetBit(kCanDelete, true);
 
-    auto SanitizeUser = [](TObject *o)
+    auto sanitizeUser = [](TObject *o)
     {
         if (!o) return;
         o->SetBit(kCanDelete, false); //
         if (auto *h = dynamic_cast<TH1 *>(o)) h->SetDirectory(nullptr);
     };
 
-    auto SafeAddToStack = [&](TObject *obj, const char *lbl)
+    auto safeAddToStack = [&](TObject *obj, const char *lbl)
     {
         if (!obj)
         {
@@ -539,12 +539,12 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             LOG_ERROR("PlotManager", "Stack item '" << lbl << "' is " << h->GetDimension() << "D (THStack needs 1D)");
             return;
         }
-        SanitizeUser(h);
+        sanitizeUser(h);
         hs->Add(h);
     };
 
     for (auto &s : plan.Stacks)
-        SafeAddToStack(s.H, s.Label.c_str());
+        safeAddToStack(s.H, s.Label.c_str());
     if (!plan.Stacks.empty())
     {
         hs->Draw("HIST");
@@ -585,7 +585,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
         if (ov.Kind == ItemKind::Hist && ov.H)
         {
             TH1 *h = ov.H;
-            SanitizeUser(h);
+            sanitizeUser(h);
             const bool is2d = IsTH2_(h);
             const std::string opt = ov.Draw.DrawOpt.empty() ? (is2d ? "COLZ" : (ov.IsData ? "E1" : "HIST")) : ov.Draw.DrawOpt;
             if (ov.IsData)
@@ -629,13 +629,13 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
         }
         else if (ov.Kind == ItemKind::Graph && ov.G)
         {
-            SanitizeUser(ov.G);
+            sanitizeUser(ov.G);
             const std::string opt = ov.Draw.DrawOpt.empty() ? "PE" : ov.Draw.DrawOpt;
             ov.G->Draw((opt + " SAME").c_str());
         }
         else if (ov.Kind == ItemKind::GraphAsymm && ov.GAE)
         {
-            SanitizeUser(ov.GAE);
+            sanitizeUser(ov.GAE);
             const std::string opt = ov.Draw.DrawOpt.empty() ? "PE" : ov.Draw.DrawOpt;
             ov.GAE->Draw((opt + " SAME").c_str());
         }
@@ -649,19 +649,19 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             frame->SetMaximum(1.5 * overlayYMax);
     }
 
-    if (spec.Cut.upCut)
+    if (spec.Cut.UpCut)
     {
-        auto *cline = new TLine(*spec.Cut.upCut, 0, *spec.Cut.upCut, cutMax);
-        auto *carrow = new TArrow(*spec.Cut.upCut, cutMax, *spec.Cut.upCut - spec.Cut.arrowLength * binWidth, cutMax, 0.025, "|>");
+        auto *cline = new TLine(*spec.Cut.UpCut, 0, *spec.Cut.UpCut, cutMax);
+        auto *carrow = new TArrow(*spec.Cut.UpCut, cutMax, *spec.Cut.UpCut - spec.Cut.ArrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
         cline->Draw("SAME");
         carrow->Draw();
     }
-    if (spec.Cut.dnCut)
+    if (spec.Cut.DnCut)
     {
-        auto *cline = new TLine(*spec.Cut.dnCut, 0, *spec.Cut.dnCut, cutMax);
-        auto *carrow = new TArrow(*spec.Cut.dnCut, cutMax, *spec.Cut.dnCut + spec.Cut.arrowLength * binWidth, cutMax, 0.025, "|>");
+        auto *cline = new TLine(*spec.Cut.DnCut, 0, *spec.Cut.DnCut, cutMax);
+        auto *carrow = new TArrow(*spec.Cut.DnCut, cutMax, *spec.Cut.DnCut + spec.Cut.ArrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
         cline->Draw("SAME");

@@ -17,35 +17,35 @@ namespace py = pybind11;
 AMCM::AMCM()
 {
     InterruptManager::Init();
-    dag = std::make_unique<DAGManager>();
+    m_Dag = std::make_unique<DAGManager>();
     LoadPlugins(std::string(std::getenv("HOME")) + "/.local/lib/cascade/plugin");
 }
 
-std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instance_name)
+std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)
 {
     auto mod = AnalysisModuleRegistry::Get().Create(base);
-    mod->SetName(instance_name);
+    mod->SetName(instanceName);
     LOG_DEBUG("CONTROL", "mod ptr before shared_ptr: " << mod.get());
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
     LOG_DEBUG("CONTROL", "shared_ptr made");
-    modules_[instance_name] = ptr;
-    LOG_DEBUG("CONTROL", "mod ptr = " << ptr.get() << ", &mod->_param = " << &ptr->GetParamManager());
-    LOG_INFO("CONTROL", "Module " << base << " is registered as " << instance_name);
-    dag->SetParamManagerMap({{instance_name, &ptr->GetParamManager()}});
+    m_Modules[instanceName] = ptr;
+    LOG_DEBUG("CONTROL", "mod ptr = " << ptr.get() << ", &param manager = " << &ptr->GetParamManager());
+    LOG_INFO("CONTROL", "Module " << base << " is registered as " << instanceName);
+    m_Dag->SetParamManagerMap({{instanceName, &ptr->GetParamManager()}});
     return ptr;
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base)
 {
-    int count = ++module_name_counter_[base];
-    std::string auto_name = base + "_" + std::to_string(count);
-    return RegisterModule(base, auto_name);
+    int count = ++m_ModuleNameCounter[base];
+    std::string autoName = base + "_" + std::to_string(count);
+    return RegisterModule(base, autoName);
 }
 
 std::vector<std::string> AMCM::ListRegisteredModules() const
 {
     std::vector<std::string> names = {};
-    for (auto &[_, mod] : modules_)
+    for (auto &[_, mod] : m_Modules)
         names.push_back(mod->Name());
 
     return names;
@@ -53,9 +53,9 @@ std::vector<std::string> AMCM::ListRegisteredModules() const
 
 std::shared_ptr<IAnalysisModule> AMCM::GetModule(const std::string &name)
 {
-    auto it = modules_.find(name);
+    auto it = m_Modules.find(name);
 
-    if (it == modules_.end())
+    if (it == m_Modules.end())
     {
         LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
         return nullptr;
@@ -69,19 +69,19 @@ std::shared_ptr<IAnalysisModule> AMCM::GetModule(const std::string &name)
 
 std::string AMCM::GetStatus(const std::string &name) const
 {
-    std::lock_guard<std::mutex> lock(status_mutex);
-    if (modules_.count(name) == 0) throw std::runtime_error("Module not found");
-    return modules_.at(name)->GetStatus();
+    std::lock_guard<std::mutex> lock(m_StatusMutex);
+    if (m_Modules.count(name) == 0) throw std::runtime_error("Module not found");
+    return m_Modules.at(name)->GetStatus();
 }
 
 std::map<std::string, std::map<std::string, double>> AMCM::GetAllProgress() const
 {
     std::map<std::string, std::map<std::string, double>> result;
-    for (const auto &[modname, mod] : modules_)
+    for (const auto &[modName, mod] : m_Modules)
     {
-        for (const auto &[mgrname, mgr] : mod->GetAllManagers())
+        for (const auto &[mgrName, mgr] : mod->GetAllManagers())
         {
-            result[modname][mgrname] = mgr->GetProgress();
+            result[modName][mgrName] = mgr->GetProgress();
         }
     }
     return result;
@@ -90,8 +90,8 @@ std::map<std::string, std::map<std::string, double>> AMCM::GetAllProgress() cons
 void AMCM::RunAModule(const std::string &name)
 {
     py::gil_scoped_release release;
-    auto it = modules_.find(name);
-    if (it == modules_.end())
+    auto it = m_Modules.find(name);
+    if (it == m_Modules.end())
     {
         LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
     }
@@ -100,7 +100,7 @@ void AMCM::RunAModule(const std::string &name)
         auto mod = it->second;
         LOG_INFO("CONTROL", "Running module " << name);
         mod->Run();
-        executed_modules_.push_back(mod);
+        m_ExecutedModules.push_back(mod);
         LOG_INFO("CONTROL", "Module " << name << " finished execution");
     }
 }
@@ -110,7 +110,7 @@ void AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod) { RunAModule(mod->Na
 void AMCM::SequentialRun()
 {
     LOG_INFO("CONTROL", "Sequential Run is starting.");
-    for (auto &[_, mod] : modules_)
+    for (auto &[_, mod] : m_Modules)
         RunAModule(mod);
     LOG_INFO("CONTROL", "Sequential Run is ended.");
 }
@@ -134,7 +134,7 @@ void AMCM::RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group)
 void AMCM::RunDAG()
 {
     LOG_INFO("CONTROL", "Executing DAG workflow");
-    dag->Execute();
+    m_Dag->Execute();
     LOG_INFO("CONTROL", "DAG workflow execution completed");
 }
 
@@ -152,17 +152,17 @@ void AMCM::SaveRunLog() const
     out << YAML::BeginMap;
     out << YAML::Key << "modules" << YAML::Value << YAML::BeginSeq;
 
-    for (const auto &mod : executed_modules_)
+    for (const auto &mod : m_ExecutedModules)
     {
         std::string name = mod->Name();
-        std::string basename = mod->BaseName();
-        std::string codehash = mod->GetCodeHash();
+        std::string baseName = mod->BaseName();
+        std::string codeHash = mod->GetCodeHash();
         std::string status = mod->GetStatus();
         auto &params = mod->GetParamManager();
         out << YAML::BeginMap;
         out << YAML::Key << "name" << YAML::Value << name;
-        out << YAML::Key << "module" << YAML::Value << basename;
-        out << YAML::Key << "codehash" << YAML::Value << codehash;
+        out << YAML::Key << "module" << YAML::Value << baseName;
+        out << YAML::Key << "codehash" << YAML::Value << codeHash;
         out << YAML::Key << "status" << YAML::Value << status;
         out << YAML::Key << "params" << YAML::Value << params.ToYAMLNode();
         out << YAML::EndMap;

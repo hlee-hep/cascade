@@ -19,10 +19,10 @@
 namespace TreeOpt
 {
 
-enum OM
+enum Om
 {
-    kAppend = 0,
-    kRecreate = 1 << 0
+    Append = 0,
+    Recreate = 1 << 0
 };
 
 }
@@ -39,8 +39,8 @@ class AnalysisManager
     void AddTree(const std::string &name);
     void AddTree(TTree *tree);
     double *AddVar(const std::string &name, std::string alias);
-    bool AddBranch(TTree *tree, const std::string &alias, int option);
-    bool AddBranch(const std::string &treeName, const std::string &alias, int option);
+    bool AddBranch(TTree *tree, const std::string &alias, TreeOpt::Om option);
+    bool AddBranch(const std::string &treeName, const std::string &alias, TreeOpt::Om option);
     double GetVar(const std::string &alias) const;
     void LoadEntry(Long64_t);
     Long64_t GetEntries();
@@ -72,31 +72,31 @@ class AnalysisManager
 
     template <typename F> void DefineRDFVar(const std::string &name, F &&func, std::vector<std::string> vars)
     {
-        if (!useRDF) throw std::runtime_error("RDF not initialized");
-        rdf_node = rdf_node->Define(name, std::forward<F>(func), vars);
+        if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
+        m_RdfNode = m_RdfNode->Define(name, std::forward<F>(func), vars);
     }
     void DefineRDFVar(const std::string &name, const std::string &expr);
 
     template <typename F> void ApplyRDFFilter(const std::string &name, F &&func, std::vector<std::string> vars, const std::string &expr)
     {
-        if (!useRDF) throw std::runtime_error("RDF not initialized");
-        auto it = rawCutExpr.find(name);
-        if (it != rawCutExpr.end())
+        if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
+        auto it = m_RawCutExpr.find(name);
+        if (it != m_RawCutExpr.end())
         {
             LOG_ERROR("AnalysisManager", "SAME name of cut exists. expr : " << it->second);
         }
         else
         {
-            rdf_node = rdf_node->Filter(std::forward<F>(func), vars, name);
+            m_RdfNode = m_RdfNode->Filter(std::forward<F>(func), vars, name);
             LOG_INFO("AnalysisManager", "Lambda filter is applied and registered. name : " << name << " and expr : --lambda:" << expr);
-            rawCutExpr[name] = "--lambda:" + expr;
+            m_RawCutExpr[name] = "--lambda:" + expr;
         }
     }
     void ApplyRDFFilter(const std::string &name);
     void ApplyRDFFilter(const std::string &name, const std::string &expr);
     void ApplyRDFFilterSelected(const std::vector<std::string> &names);
     void ApplyRDFFilterAll();
-    void SnapshotRDF(const std::string &treeName, const std::string &fileName, int option);
+    void SnapshotRDF(const std::string &treeName, const std::string &fileName, TreeOpt::Om option);
     void BookRDFHist1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo);
     void SaveHistsRDF(const std::string &outfile);
     void BookRDFHistsFromConfig(const std::string &yamlPath, const std::string &prefix = "");
@@ -108,60 +108,60 @@ class AnalysisManager
     std::unique_ptr<AnalysisManager> Fork();
     ROOT::RDF::RNode GetIsolatedRNode();
 
-    inline std::vector<std::string> GetAllVarNames() { return rdf_node->GetColumnNames(); }
-    inline std::vector<std::string> GetDefinedVarNames() { return rdf_node->GetDefinedColumnNames(); }
+    inline std::vector<std::string> GetAllVarNames() { return m_RdfNode->GetColumnNames(); }
+    inline std::vector<std::string> GetDefinedVarNames() { return m_RdfNode->GetDefinedColumnNames(); }
 
     void PrintCuts();
     void PrintConfig();
     void PrintHists();
-    inline bool IsRDF() const { return useRDF; }
-    inline double GetProgress() const { return _progress; }
+    inline bool IsRDF() const { return m_UseRdf; }
+    inline double GetProgress() const { return m_Progress; }
 
-    void WriteMetaData(const std::string &filename, const std::string &hash, const std::string &basename, const std::string &paramjson);
+    void WriteMetaData(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson);
 
     struct BranchInfo
     {
-        std::string realName;
-        std::string type;
+        std::string RealName;
+        std::string Type;
     };
 
   private:
-    std::map<std::string, TTree *> treeMap;
+    std::map<std::string, TTree *> m_TreeMap;
 
-    std::map<std::string, BranchInfo> branchMap;
-    std::map<std::string, void *> branchData;
-    std::map<std::string, BranchInfo> newBranchMap;
-    std::map<std::string, double *> newBranchData;
+    std::map<std::string, BranchInfo> m_BranchMap;
+    std::map<std::string, void *> m_BranchData;
+    std::map<std::string, BranchInfo> m_NewBranchMap;
+    std::map<std::string, double *> m_NewBranchData;
 
-    std::map<std::string, std::map<std::string, std::vector<double>>> histMap;
-    std::map<std::string, std::map<std::string, TH1 *>> histData;
-    std::map<std::string, std::map<std::string, std::vector<double>>> loadedHistMap;
-    std::map<std::string, std::map<std::string, TH1 *>> loadedHistData;
-    std::map<std::string, std::map<std::string, ROOT::RDF::RResultPtr<TH1>>> histRDF;
+    std::map<std::string, std::map<std::string, std::vector<double>>> m_HistMap;
+    std::map<std::string, std::map<std::string, TH1 *>> m_HistData;
+    std::map<std::string, std::map<std::string, std::vector<double>>> m_LoadedHistMap;
+    std::map<std::string, std::map<std::string, TH1 *>> m_LoadedHistData;
+    std::map<std::string, std::map<std::string, ROOT::RDF::RResultPtr<TH1>>> m_HistRdf;
 
-    std::map<std::string, std::string> rawCutExpr;
-    std::map<std::string, TTreeFormula *> cutFormulas;
+    std::map<std::string, std::string> m_RawCutExpr;
+    std::map<std::string, TTreeFormula *> m_CutFormulas;
 
-    std::vector<std::string> inputFiles;
-    std::string inTreeName;
-    TChain *currentTree = nullptr;
-    std::string ExpandAliases(const std::string &expr) const;
-    double GetNewVar(const std::string &alias) const;
-    void LoadHists(const std::string &histfile);
+    std::vector<std::string> m_InputFiles;
+    std::string m_InTreeName;
+    TChain *m_CurrentTree = nullptr;
+    std::string ExpandAliases_(const std::string &expr) const;
+    double GetNewVar_(const std::string &alias) const;
+    void LoadHists_(const std::string &histfile);
 
-    std::unique_ptr<ROOT::RDataFrame> rdf_raw = nullptr;
-    std::optional<ROOT::RDF::RNode> rdf_node;
-    bool useRDF = false;
-    std::unique_ptr<LambdaManager> lm = nullptr;
+    std::unique_ptr<ROOT::RDataFrame> m_RdfRaw = nullptr;
+    std::optional<ROOT::RDF::RNode> m_RdfNode;
+    bool m_UseRdf = false;
+    std::unique_ptr<LambdaManager> m_LambdaManager = nullptr;
 
-    std::string _hash;
-    std::string _basename;
-    std::string _paramjson;
-    std::string _cuts;
-    std::string _endtime;
+    std::string m_Hash;
+    std::string m_Basename;
+    std::string m_ParamJson;
+    std::string m_Cuts;
+    std::string m_EndTime;
 
-    std::chrono::steady_clock::time_point start_time;
-    double _progress = 0.0;
-    void UpdateProgress(double p);
-    std::mutex prg_mtx;
+    std::chrono::steady_clock::time_point m_StartTime;
+    double m_Progress = 0.0;
+    void UpdateProgress_(double p);
+    std::mutex m_ProgressMutex;
 };

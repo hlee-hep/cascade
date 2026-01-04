@@ -13,18 +13,18 @@ Logger::Logger() {}
 
 void Logger::SetLogLevel(LogLevel level)
 {
-    std::lock_guard<std::recursive_mutex> lock(log_mutex);
-    g_level = level;
+    std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
+    m_Level = level;
 }
 
 void Logger::InitLogFile(const std::string &path)
 {
-    std::lock_guard<std::recursive_mutex> lock(log_mutex);
-    log_file_out = std::make_unique<std::ofstream>(path);
-    if (!log_file_out->is_open()) throw std::runtime_error("Failed to open log file: " + path);
+    std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
+    m_LogFileOut = std::make_unique<std::ofstream>(path);
+    if (!m_LogFileOut->is_open()) throw std::runtime_error("Failed to open log file: " + path);
 }
 
-std::string Logger::ToString(LogLevel level)
+std::string Logger::ToString_(LogLevel level)
 {
     switch (level)
     {
@@ -41,7 +41,7 @@ std::string Logger::ToString(LogLevel level)
     }
 }
 
-std::string Logger::LevelToColor(LogLevel level)
+std::string Logger::LevelToColor_(LogLevel level)
 {
     switch (level)
     {
@@ -58,7 +58,7 @@ std::string Logger::LevelToColor(LogLevel level)
     }
 }
 
-std::string Logger::colored(const std::string &text, const std::string &color, const std::string &style)
+std::string Logger::Colored_(const std::string &text, const std::string &color, const std::string &style)
 {
     std::string header, styleCode;
     if (color == "red")
@@ -92,58 +92,58 @@ std::string Logger::colored(const std::string &text, const std::string &color, c
     return "\x1B[" + styleCode + header + "m" + text + "\x1B[0m";
 }
 
-std::string Logger::ReplaceRegex(const std::string &input, const std::regex &pattern, std::function<std::string(const std::smatch &)> replacer)
+std::string Logger::ReplaceRegex_(const std::string &input, const std::regex &pattern, std::function<std::string(const std::smatch &)> replacer)
 {
     std::string output;
     std::sregex_iterator begin(input.begin(), input.end(), pattern), end;
-    std::size_t last_pos = 0;
+    std::size_t lastPos = 0;
     for (auto it = begin; it != end; ++it)
     {
-        output += input.substr(last_pos, it->position() - last_pos);
+        output += input.substr(lastPos, it->position() - lastPos);
         output += replacer(*it);
-        last_pos = it->position() + it->length();
+        lastPos = it->position() + it->length();
     }
-    output += input.substr(last_pos);
+    output += input.substr(lastPos);
     return output;
 }
 
-std::string Logger::HighlightStatus(std::string msg)
+std::string Logger::HighlightStatus_(std::string msg)
 {
-    const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> status_map = {{"Status : Initializing", {"magenta", "bold"}},
+    const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> statusMap = {{"Status : Initializing", {"magenta", "bold"}},
                                                                                                  {"Status : Running", {"yellow", "bold"}},
                                                                                                  {"Status : Finalizing", {"cyan", "bold"}},
                                                                                                  {"Status : Skipped", {"blue", ""}},
                                                                                                  {"Status : Interrupted", {"red", ""}},
                                                                                                  {"Status : Failed", {"red", ""}},
                                                                                                  {"Status : Done", {"green", ""}}};
-    for (const auto &[key, style] : status_map)
+    for (const auto &[key, style] : statusMap)
     {
         auto pos = msg.find(key);
-        if (pos != std::string::npos) msg.replace(pos, key.size(), colored(key, style.first, style.second));
+        if (pos != std::string::npos) msg.replace(pos, key.size(), Colored_(key, style.first, style.second));
     }
     return msg;
 }
 
-std::string Logger::HighlightFileNames(std::string msg)
+std::string Logger::HighlightFileNames_(std::string msg)
 {
-    std::regex file_pattern(R"((\b[\w\-/]+\.(root|yaml|csv|json)\b))");
-    return ReplaceRegex(msg, file_pattern, [&](const std::smatch &m) { return colored(m.str(), "green", "bold"); });
+    std::regex filePattern(R"((\b[\w\-/]+\.(root|yaml|csv|json)\b))");
+    return ReplaceRegex_(msg, filePattern, [&](const std::smatch &m) { return Colored_(m.str(), "green", "bold"); });
 }
 
-std::string Logger::HighlightExprs(std::string msg)
+std::string Logger::HighlightExprs_(std::string msg)
 {
-    msg = ReplaceRegex(msg, std::regex(R"((name :\s*)(\w+))"), [&](const std::smatch &m) { return m[1].str() + colored(m[2].str(), "cyan"); });
-    msg = ReplaceRegex(msg, std::regex(R"((expr :\s*)([^,;\n]+))"), [&](const std::smatch &m) { return m[1].str() + colored(m[2].str(), "yellow"); });
+    msg = ReplaceRegex_(msg, std::regex(R"((name :\s*)(\w+))"), [&](const std::smatch &m) { return m[1].str() + Colored_(m[2].str(), "cyan"); });
+    msg = ReplaceRegex_(msg, std::regex(R"((expr :\s*)([^,;\n]+))"), [&](const std::smatch &m) { return m[1].str() + Colored_(m[2].str(), "yellow"); });
     return msg;
 }
 
-std::string Logger::HighlightParams(std::string msg)
+std::string Logger::HighlightParams_(std::string msg)
 {
-    std::regex kv_pattern(R"((\b\w+\b)\s*=\s*([\w\.\-]+))");
-    return ReplaceRegex(msg, kv_pattern, [&](const std::smatch &m) { return colored(m[1].str(), "magenta", "bold") + " = " + colored(m[2].str(), "white"); });
+    std::regex kvPattern(R"((\b\w+\b)\s*=\s*([\w\.\-]+))");
+    return ReplaceRegex_(msg, kvPattern, [&](const std::smatch &m) { return Colored_(m[1].str(), "magenta", "bold") + " = " + Colored_(m[2].str(), "white"); });
 }
 
-std::string Logger::HighlightWarnings(std::string msg)
+std::string Logger::HighlightWarnings_(std::string msg)
 {
     const std::vector<std::string> keywords = {"Duplication of hash is detected",
                                                "Invalid bin format",
@@ -156,50 +156,50 @@ std::string Logger::HighlightWarnings(std::string msg)
     for (const auto &k : keywords)
     {
         auto pos = msg.find(k);
-        if (pos != std::string::npos) msg.replace(pos, k.size(), colored(k, "red", "bold"));
+        if (pos != std::string::npos) msg.replace(pos, k.size(), Colored_(k, "red", "bold"));
     }
     return msg;
 }
 
-std::string Logger::HighlightMsg(const std::string &msg)
+std::string Logger::HighlightMsg_(const std::string &msg)
 {
     std::string m = msg;
-    m = HighlightStatus(m);
-    m = HighlightFileNames(m);
-    m = HighlightExprs(m);
-    m = HighlightParams(m);
-    m = HighlightWarnings(m);
+    m = HighlightStatus_(m);
+    m = HighlightFileNames_(m);
+    m = HighlightExprs_(m);
+    m = HighlightParams_(m);
+    m = HighlightWarnings_(m);
     return m;
 }
 
-std::string Logger::ApplyColor(LogLevel level, const std::string &module, const std::string &msg)
+std::string Logger::ApplyColor_(LogLevel level, const std::string &module, const std::string &msg)
 {
-    std::string level_str = colored("[" + ToString(level) + "]", LevelToColor(level));
-    std::string mod_str;
+    std::string levelStr = Colored_("[" + ToString_(level) + "]", LevelToColor_(level));
+    std::string modStr;
 
     if (module == "AnalysisManager")
-        mod_str = colored(module, "blue");
+        modStr = Colored_(module, "blue");
     else if (module == "PlotManager")
-        mod_str = colored(module, "blue", "bold");
+        modStr = Colored_(module, "blue", "bold");
     else if (module == "CONTROL")
-        mod_str = colored(module, "green");
+        modStr = Colored_(module, "green");
     else
-        mod_str = colored(module, "magenta");
+        modStr = Colored_(module, "magenta");
 
-    return level_str + " [" + mod_str + "] " + HighlightMsg(msg);
+    return levelStr + " [" + modStr + "] " + HighlightMsg_(msg);
 }
 
 void Logger::Log(LogLevel level, const std::string &module, const std::string &msg)
 {
-    std::lock_guard<std::recursive_mutex> lock(log_mutex);
-    if (level < g_level) return;
+    std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
+    if (level < m_Level) return;
 
-    std::string raw = "[" + ToString(level) + "] [" + module + "] " + msg;
+    std::string raw = "[" + ToString_(level) + "] [" + module + "] " + msg;
 
     // stdout
-    if (is_terminal)
+    if (m_IsTerminal)
     {
-        std::cout << ApplyColor(level, module, msg) << std::endl;
+        std::cout << ApplyColor_(level, module, msg) << std::endl;
     }
     else
     {
@@ -207,29 +207,29 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
     }
 
     // file
-    if (log_file_out && log_file_out->is_open())
+    if (m_LogFileOut && m_LogFileOut->is_open())
     {
-        *log_file_out << "[" << GetCurrentTime() << "] " << raw << std::endl;
+        *m_LogFileOut << "[" << GetCurrentTime() << "] " << raw << std::endl;
     }
 }
 
 void Logger::PrintProgressBar(const std::string &name, double progress, double elapsed, double eta)
 {
-    std::lock_guard<std::recursive_mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
     const int barWidth = 40;
     int pos = static_cast<int>(progress * barWidth);
 
     std::ostringstream oss;
     oss << "\r\033[K";
 
-    oss << std::fixed << colored("[INFO]", "cyan") << " [" << colored("LOOP", "red", "bold") << "] [";
+    oss << std::fixed << Colored_("[INFO]", "cyan") << " [" << Colored_("LOOP", "red", "bold") << "] [";
 
     for (int i = 0; i < barWidth; ++i)
     {
         if (i < pos)
-            oss << colored("=", "green");
+            oss << Colored_("=", "green");
         else if (i == pos)
-            oss << colored(">", "yellow");
+            oss << Colored_(">", "yellow");
         else
             oss << " ";
     }
@@ -247,12 +247,12 @@ void Logger::PrintProgressBar(const std::string &name, double progress, double e
 
 std::string Logger::GetCurrentTime()
 {
-    std::lock_guard<std::recursive_mutex> lock(log_mutex);
+    std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
     auto now = std::chrono::system_clock::now();
-    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::time_t nowC = std::chrono::system_clock::to_time_t(now);
 
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(std::localtime(&nowC), "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 

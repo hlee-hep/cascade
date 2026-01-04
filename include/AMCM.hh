@@ -20,7 +20,7 @@ class AMCM
     AMCM();
 
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base);
-    std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instance_name);
+    std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instanceName);
     std::vector<std::string> ListRegisteredModules() const;
     std::vector<std::string> ListAvailableModules() const { return AnalysisModuleRegistry::Get().ListModules(); }
 
@@ -34,20 +34,20 @@ class AMCM
     void SequentialRun();
     void RunModules(const std::vector<std::string> &group);
     void RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group);
-    DAGManager &GetDAGManager() { return *dag; }
+    DAGManager &GetDAGManager() { return *m_Dag; }
     void RunDAG();
     void LoadPlugins(const std::string &path);
 
   private:
-    std::map<std::string, std::shared_ptr<IAnalysisModule>> modules_;
-    std::unique_ptr<DAGManager> dag;
+    std::map<std::string, std::shared_ptr<IAnalysisModule>> m_Modules;
+    std::unique_ptr<DAGManager> m_Dag;
 
-    std::vector<std::shared_ptr<IAnalysisModule>> executed_modules_;
+    std::vector<std::shared_ptr<IAnalysisModule>> m_ExecutedModules;
 
-    std::map<std::string, int> module_name_counter_;
+    std::map<std::string, int> m_ModuleNameCounter;
 
-    std::atomic<bool> execution_done = false;
-    mutable std::mutex status_mutex;
+    std::atomic<bool> m_ExecutionDone = false;
+    mutable std::mutex m_StatusMutex;
 
-    std::string _runid;
+    std::string m_RunId;
 };

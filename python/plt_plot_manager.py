@@ -1,4 +1,4 @@
-# pltPlotManager.py
+# plt_plot_manager.py
 # Minimal-yet-HEP matplotlib plot manager with Pearson (sqrt(N)) errors
 # - plot_hist: single histogram
 # - plot_stack: stacked backgrounds (auto palette from experiment preset)
@@ -22,7 +22,7 @@ HEP_STYLES = {
     },
 }
 
-class pltPlotManager:
+class plt_plot_manager:
     def __init__(self, outdir: str = "plots", ext: str = "pdf",
                  experiment: Optional[str] = None, lumi: float = 0.0):
         self.outdir = outdir
@@ -199,4 +199,4 @@ class pltPlotManager:
             fname = os.path.join(self.outdir, f"{prefix}_{i}.{self.ext}")
             fig.tight_layout()
             fig.savefig(fname)
-            print(f"[pltPlotManager] Saved {fname}")
+            print(f"[plt_plot_manager] Saved {fname}")

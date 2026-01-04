@@ -1,4 +1,4 @@
-from cascade.pymodule import pyBaseModule
+from cascade.pymodule import py_base_module
 from cascade import AMCM
 from cascade._cascade import IAnalysisModule
 from cascade import init_interrupt, is_interrupted, log, log_level
@@ -7,15 +7,15 @@ from datetime import datetime
 import json
 #wrapper class for python module
 
-class pyAMCM:
+class py_amcm:
     def __init__(self):
-        self.ctrl = AMCM()  # pyAMCM instance
+        self.ctrl = AMCM()  # py_amcm instance
         self.python_modules = {}  # name -> PythonModuleBase instance
         self.executed_modules = []
         init_interrupt()
 
     def register_python_module(self, name, module_obj):
-        if not isinstance(module_obj, pyBaseModule):
+        if not isinstance(module_obj, py_base_module):
             raise TypeError("Module must inherit from PythonModuleBase")
         self.python_modules[name] = module_obj
         self.python_modules[name].set_name(name)
@@ -33,7 +33,7 @@ class pyAMCM:
             else:
                 self.ctrl.run_module(name)
                 self.executed_modules.append(self.ctrl.get_module(name))
-        elif isinstance(name_or_mod,pyBaseModule):
+        elif isinstance(name_or_mod, py_base_module):
             mod = name_or_mod
             if mod in self.python_modules.values():
                 mod.run()
@@ -59,7 +59,7 @@ class pyAMCM:
             except Exception:
                 continue
             for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if issubclass(obj, pyBaseModule) and obj is not pyBaseModule:
+                if issubclass(obj, py_base_module) and obj is not py_base_module:
                     modules.append(name)
 
         pkg = importlib.import_module("cascade.pyplugin")
@@ -69,7 +69,7 @@ class pyAMCM:
             except Exception:
                 continue
             for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if issubclass(obj, pyBaseModule) and obj is not pyBaseModule:
+                if issubclass(obj, py_base_module) and obj is not py_base_module:
                     modules.append(name)
         return modules
 
@@ -115,7 +115,7 @@ class pyAMCM:
             if isinstance(mod,IAnalysisModule):
                 raw = json.loads(mod.get_params_to_json())
                 params = {k: v["value"] for k, v in raw.items()}
-            elif isinstance(mod,pyBaseModule):
+            elif isinstance(mod, py_base_module):
                 params = mod.get_parameters()
             else:
                 params = None

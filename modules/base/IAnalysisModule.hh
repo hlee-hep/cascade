@@ -32,7 +32,7 @@ class IAnalysisModule
             SetStatus("Interrupted");
             return;
         }
-        if (!RunCheck())
+        if (!RunCheck_())
         {
             SetStatus("Skipped");
             return;
@@ -67,7 +67,7 @@ class IAnalysisModule
 
         if (!InterruptManager::IsInterrupted())
         {
-            CacheManager::AddHash(basename, _hash);
+            CacheManager::AddHash(m_Basename, m_Hash);
             SetStatus("Done");
         }
         else
@@ -76,28 +76,28 @@ class IAnalysisModule
 
     virtual void Description() const = 0;
 
-    std::string GetParamsToJSON() { return _param.DumpJSON(); }
+    std::string GetParamsToJSON() { return m_Param.DumpJSON(); }
 
-    void SetName(const std::string &name) { m_name = name; }
-    std::string Name() const { return m_name; }
-    std::string BaseName() const { return basename; }
-    std::string GetCodeHash() const { return code_version_hash; }
+    void SetName(const std::string &name) { m_Name = name; }
+    std::string Name() const { return m_Name; }
+    std::string BaseName() const { return m_Basename; }
+    std::string GetCodeHash() const { return m_CodeVersionHash; }
 
-    void SetParamFromPy(const std::string &key, py::object val) { _param.SetParamFromPy(key, val); }
-    void SetParamsFromDict(const py::dict &d) { _param.SetParamsFromDict(d); }
-    void LoadParamsFromYAML(const std::string &path) { _param.LoadYAMLFile(path); }
-    void LoadParamsFromJSON(const std::string &path) { _param.LoadJSONFile(path); }
-    void SaveParamsToYAML(const std::string &path) { _param.SaveYAMLFile(path); }
-    void SaveParamsToJSON(const std::string &path) { _param.SaveJSONFile(path); }
-    std::string DumpParamsToYAML(int indent = 2) { return _param.DumpYAML(indent); }
-    std::string DumpParamsToJSON(int indent = 4) { return _param.DumpJSON(indent); }
+    void SetParamFromPy(const std::string &key, py::object val) { m_Param.SetParamFromPy(key, val); }
+    void SetParamsFromDict(const py::dict &d) { m_Param.SetParamsFromDict(d); }
+    void LoadParamsFromYAML(const std::string &path) { m_Param.LoadYAMLFile(path); }
+    void LoadParamsFromJSON(const std::string &path) { m_Param.LoadJSONFile(path); }
+    void SaveParamsToYAML(const std::string &path) { m_Param.SaveYAMLFile(path); }
+    void SaveParamsToJSON(const std::string &path) { m_Param.SaveJSONFile(path); }
+    std::string DumpParamsToYAML(int indent = 2) { return m_Param.DumpYAML(indent); }
+    std::string DumpParamsToJSON(int indent = 4) { return m_Param.DumpJSON(indent); }
 
-    std::string GetStatus() const { return _status; }
-    ParamManager &GetParamManager() { return _param; }
-    const auto &GetAllManagers() const { return _mgr; }
+    std::string GetStatus() const { return m_Status; }
+    ParamManager &GetParamManager() { return m_Param; }
+    const auto &GetAllManagers() const { return m_Managers; }
     void SetStatus(const std::string &s)
     {
-        _status = s;
+        m_Status = s;
         LOG_INFO(Name(), "Status : " << s);
     }
 
@@ -108,56 +108,56 @@ class IAnalysisModule
 
     void RegisterAnalysisManager(const std::string &name = "main")
     {
-        auto it = _mgr.find(name);
-        if (it != _mgr.end())
+        auto it = m_Managers.find(name);
+        if (it != m_Managers.end())
             LOG_ERROR(Name(), "The same name of analysis manager exists.");
         else
-            _mgr[name] = std::make_unique<AnalysisManager>();
+            m_Managers[name] = std::make_unique<AnalysisManager>();
     }
 
     AnalysisManager *GetAnalysisManager(const std::string &name) const
     {
-        auto it = _mgr.find(name);
-        return it != _mgr.end() ? it->second.get() : nullptr;
+        auto it = m_Managers.find(name);
+        return it != m_Managers.end() ? it->second.get() : nullptr;
     }
 
-    AnalysisManager *am(const std::string &name = "main") const { return GetAnalysisManager(name); }
+    AnalysisManager *Am(const std::string &name = "main") const { return GetAnalysisManager(name); }
 
-    std::string _status = "Pending";
-    ParamManager _param;
-    std::string _hash;
+    std::string m_Status = "Pending";
+    ParamManager m_Param;
+    std::string m_Hash;
 
-    std::string basename = "Interface";
-    std::string m_name = "";
-    std::string code_version_hash = "";
+    std::string m_Basename = "Interface";
+    std::string m_Name = "";
+    std::string m_CodeVersionHash = "";
 
   private:
-    std::map<std::string, std::unique_ptr<AnalysisManager>> _mgr;
+    std::map<std::string, std::unique_ptr<AnalysisManager>> m_Managers;
 
-    std::string ComputeSnapshotHash() const { return SnapshotHasher::Compute(_param, GetAllManagers(), basename, code_version_hash); }
+    std::string ComputeSnapshotHash_() const { return SnapshotHasher::Compute(m_Param, GetAllManagers(), m_Basename, m_CodeVersionHash); }
 
-    bool RunCheck()
+    bool RunCheck_()
     {
-        if (_param.Get<bool>("dry_run"))
+        if (m_Param.Get<bool>("dry_run"))
         {
             LOG_INFO(Name(), "DRY run is enabled. variables and setting will be shown.");
-            for (auto &[_, mg] : _mgr)
+            for (auto &[_, mg] : m_Managers)
             {
                 mg->PrintConfig();
                 mg->PrintHists();
                 mg->PrintCuts();
             }
-            LOG_INFO("ParamManager", _param.DumpJSON());
+            LOG_INFO("ParamManager", m_Param.DumpJSON());
             return false;
         }
-        if (_param.Get<bool>("force_run"))
+        if (m_Param.Get<bool>("force_run"))
         {
             LOG_INFO(Name(), "Force run is enabled. Run will be started.");
             return true;
         }
 
-        _hash = ComputeSnapshotHash();
-        bool dupl = CacheManager::IsHashCached(basename, _hash);
+        m_Hash = ComputeSnapshotHash_();
+        bool dupl = CacheManager::IsHashCached(m_Basename, m_Hash);
         if (dupl) LOG_ERROR(Name(), "Duplication of hash is detected.");
         return !dupl;
     }

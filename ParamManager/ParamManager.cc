@@ -9,7 +9,7 @@ using json = nlohmann::json;
 ParamManager::ParamManager() { RegisterCommon(); }
 
 // ================= YAML -> ParamValue =================
-ParamValue ParamManager::ConvertFromYAML(const YAML::Node &val)
+ParamValue ParamManager::ConvertFromYaml_(const YAML::Node &val)
 {
     if (val.IsScalar())
     {
@@ -32,12 +32,12 @@ ParamValue ParamManager::ConvertFromYAML(const YAML::Node &val)
     {
         if (val.size() == 0) return std::monostate{};
 
-        bool all_int = true, all_double = true, all_str = true;
+        bool allInt = true, allDouble = true, allStr = true;
         for (const auto &e : val)
         {
             if (!e.IsScalar())
             {
-                all_int = all_double = all_str = false;
+                allInt = allDouble = allStr = false;
                 break;
             }
             const std::string s = e.Scalar();
@@ -47,7 +47,7 @@ ParamValue ParamManager::ConvertFromYAML(const YAML::Node &val)
             }
             catch (...)
             {
-                all_int = false;
+                allInt = false;
             }
             try
             {
@@ -55,13 +55,13 @@ ParamValue ParamManager::ConvertFromYAML(const YAML::Node &val)
             }
             catch (...)
             {
-                all_double = false;
+                allDouble = false;
             }
         }
 
-        if (all_int) return val.as<std::vector<int>>();
-        if (all_double) return val.as<std::vector<double>>();
-        if (all_str) return val.as<std::vector<std::string>>();
+        if (allInt) return val.as<std::vector<int>>();
+        if (allDouble) return val.as<std::vector<double>>();
+        if (allStr) return val.as<std::vector<std::string>>();
 
         // heterogeneous → MixedVector
         MixedVector mv;
@@ -112,7 +112,7 @@ ParamValue ParamManager::ConvertFromYAML(const YAML::Node &val)
 }
 
 // ================= PY -> ParamValue =================
-ParamValue ParamManager::ConvertFromPy(const py::object &obj) const
+ParamValue ParamManager::ConvertFromPy_(const py::object &obj) const
 {
     if (py::isinstance<py::bool_>(obj)) return obj.cast<bool>();
     if (py::isinstance<py::int_>(obj)) return static_cast<long long>(obj.cast<long long>());
@@ -124,18 +124,18 @@ ParamValue ParamManager::ConvertFromPy(const py::object &obj) const
         py::list lst = obj.cast<py::list>();
         if (lst.empty()) return std::monostate{};
 
-        bool all_str = true, all_int = true, all_float = true;
+        bool allStr = true, allInt = true, allFloat = true;
         for (auto item : lst)
         {
-            all_str &= py::isinstance<py::str>(item);
-            all_int &= py::isinstance<py::int_>(item);
-            all_float &= py::isinstance<py::float_>(item);
-            if (!(all_str || all_int || all_float)) break;
+            allStr &= py::isinstance<py::str>(item);
+            allInt &= py::isinstance<py::int_>(item);
+            allFloat &= py::isinstance<py::float_>(item);
+            if (!(allStr || allInt || allFloat)) break;
         }
 
-        if (all_str) return lst.cast<std::vector<std::string>>();
-        if (all_int) return lst.cast<std::vector<int>>();
-        if (all_float) return lst.cast<std::vector<double>>();
+        if (allStr) return lst.cast<std::vector<std::string>>();
+        if (allInt) return lst.cast<std::vector<int>>();
+        if (allFloat) return lst.cast<std::vector<double>>();
 
         MixedVector mv;
         mv.reserve(py::len(lst));
@@ -168,13 +168,13 @@ static YAML::Node MixedToYAML(const MixedElement &e)
     return std::visit([](auto &&v) -> YAML::Node { return YAML::Node(v); }, e);
 }
 
-json ParamManager::ToJSONInternal() const
+json ParamManager::ToJsonInternal_() const
 {
     json j;
-    for (const auto &[k, v] : rawValues_)
+    for (const auto &[k, v] : m_RawValues)
     {
         json entry;
-        entry["description"] = descriptions_.count(k) ? descriptions_.at(k) : "";
+        entry["description"] = m_Descriptions.count(k) ? m_Descriptions.at(k) : "";
         std::visit(
             [&](auto &&val)
             {
@@ -205,10 +205,10 @@ json ParamManager::ToJSONInternal() const
     return j;
 }
 
-YAML::Node ParamManager::ToYAMLInternal() const
+YAML::Node ParamManager::ToYamlInternal_() const
 {
     YAML::Node node;
-    for (const auto &[k, v] : rawValues_)
+    for (const auto &[k, v] : m_RawValues)
     {
         YAML::Node entry;
         std::visit(
@@ -236,7 +236,7 @@ YAML::Node ParamManager::ToYAMLInternal() const
             },
             v);
 
-        if (descriptions_.count(k)) entry["desc"] = descriptions_.at(k);
+        if (m_Descriptions.count(k)) entry["desc"] = m_Descriptions.at(k);
 
         node[k] = entry;
     }
@@ -256,7 +256,7 @@ void ParamManager::SaveYAMLFile(const std::string &path) const
     out.SetIndent(4);
     out.SetMapFormat(YAML::Block);
     out.SetSeqFormat(YAML::Flow);
-    out << ToYAMLInternal();
+    out << ToYamlInternal_();
 
     std::ofstream fout(path);
     if (!fout.is_open()) throw std::runtime_error("ParamManager: cannot open YAML file: " + path);
@@ -278,29 +278,29 @@ void ParamManager::LoadJSONFile(const std::string &path)
 
         // value
         if (entry["value"].is_boolean())
-            UpdateExisting(k, entry["value"].get<bool>());
+            UpdateExisting_(k, entry["value"].get<bool>());
         else if (entry["value"].is_number_integer())
-            UpdateExisting(k, static_cast<long long>(entry["value"].get<long long>()));
+            UpdateExisting_(k, static_cast<long long>(entry["value"].get<long long>()));
         else if (entry["value"].is_number_float())
-            UpdateExisting(k, entry["value"].get<double>());
+            UpdateExisting_(k, entry["value"].get<double>());
         else if (entry["value"].is_string())
-            UpdateExisting(k, entry["value"].get<std::string>());
+            UpdateExisting_(k, entry["value"].get<std::string>());
         else if (entry["value"].is_array())
         {
             auto arr = entry["value"];
-            bool all_int = true, all_double = true, all_str = true;
+            bool allInt = true, allDouble = true, allStr = true;
             for (auto &a : arr)
             {
-                all_int &= a.is_number_integer();
-                all_double &= a.is_number_float();
-                all_str &= a.is_string();
+                allInt &= a.is_number_integer();
+                allDouble &= a.is_number_float();
+                allStr &= a.is_string();
             }
-            if (all_int)
-                UpdateExisting(k, arr.get<std::vector<int>>());
-            else if (all_double)
-                UpdateExisting(k, arr.get<std::vector<double>>());
-            else if (all_str)
-                UpdateExisting(k, arr.get<std::vector<std::string>>());
+            if (allInt)
+                UpdateExisting_(k, arr.get<std::vector<int>>());
+            else if (allDouble)
+                UpdateExisting_(k, arr.get<std::vector<double>>());
+            else if (allStr)
+                UpdateExisting_(k, arr.get<std::vector<std::string>>());
             else
             {
                 MixedVector mv;
@@ -316,7 +316,7 @@ void ParamManager::LoadJSONFile(const std::string &path)
                     else if (a.is_string())
                         mv.emplace_back(a.get<std::string>());
                 }
-                UpdateExisting(k, mv);
+                UpdateExisting_(k, mv);
             }
         }
         else
@@ -330,7 +330,7 @@ void ParamManager::SaveJSONFile(const std::string &path) const
 {
     std::ofstream fout(path);
     if (!fout.is_open()) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
-    fout << ToJSONInternal().dump(2);
+    fout << ToJsonInternal_().dump(2);
 }
 
 std::string ParamManager::DumpYAML(int indent) const
@@ -339,11 +339,11 @@ std::string ParamManager::DumpYAML(int indent) const
     out.SetIndent(indent);
     out.SetMapFormat(YAML::Block);
     out.SetSeqFormat(YAML::Flow);
-    out << ToYAMLInternal();
+    out << ToYamlInternal_();
     return out.c_str();
 }
 
-std::string ParamManager::DumpJSON(int indent) const { return ToJSONInternal().dump(indent); }
+std::string ParamManager::DumpJSON(int indent) const { return ToJsonInternal_().dump(indent); }
 
 // ============== Bulk setters ==============
 void ParamManager::SetParamsFromYAML(const YAML::Node &node)
@@ -353,8 +353,8 @@ void ParamManager::SetParamsFromYAML(const YAML::Node &node)
         const std::string key = it.first.as<std::string>();
         if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' not registered (SetParamsFromYAML).");
 
-        ParamValue v = ConvertFromYAML(it.second);
-        std::visit([&](auto &&x) { UpdateExisting(key, x); }, v);
+        ParamValue v = ConvertFromYaml_(it.second);
+        std::visit([&](auto &&x) { UpdateExisting_(key, x); }, v);
     }
 }
 
@@ -374,12 +374,12 @@ void ParamManager::SetParamFromPy(const std::string &key, const py::object &obj,
 {
     if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' not registered (SetParamFromPy).");
 
-    ParamValue v = ConvertFromPy(obj);
-    std::visit([&](auto &&val) { UpdateExisting(key, val, desc); }, v);
+    ParamValue v = ConvertFromPy_(obj);
+    std::visit([&](auto &&val) { UpdateExisting_(key, val, desc); }, v);
 }
 
 // ======== AMCM compatibility ========
-YAML::Node ParamManager::ToYAMLNode() const { return ToYAMLInternal(); }
+YAML::Node ParamManager::ToYAMLNode() const { return ToYamlInternal_(); }
 
 // ============== Common ==============
 void ParamManager::RegisterCommon()

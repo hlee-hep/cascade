@@ -11,26 +11,26 @@ namespace py = pybind11;
 class PythonObject
 {
   public:
-    PythonObject(const std::string &module_name, const std::string &class_name, const std::vector<py::object> &args = {})
+    PythonObject(const std::string &moduleName, const std::string &className, const std::vector<py::object> &args = {})
     {
-        EnsureInterpreterInitialized();
-        py::module_ mod = py::module_::import(module_name.c_str());
-        py::object cls = mod.attr(class_name.c_str());
-        instance_ = cls(*args);
+        EnsureInterpreterInitialized_();
+        py::module_ mod = py::module_::import(moduleName.c_str());
+        py::object cls = mod.attr(className.c_str());
+        m_Instance = cls(*args);
     }
 
     template <typename... Args> py::object Call(const std::string &method, Args &&...args)
     {
         py::gil_scoped_acquire acquire;
-        return instance_.attr(method.c_str())(std::forward<Args>(args)...);
+        return m_Instance.attr(method.c_str())(std::forward<Args>(args)...);
     }
 
-    py::object GetInstance() const { return instance_; }
+    py::object GetInstance() const { return m_Instance; }
 
   private:
-    py::object instance_;
+    py::object m_Instance;
 
-    static void EnsureInterpreterInitialized()
+    static void EnsureInterpreterInitialized_()
     {
         static bool initialized = false;
         if (!initialized)

@@ -13,41 +13,41 @@ class HistModule : public IAnalysisModule
   public:
     HistModule()
     {
-        basename = "@BASENAME@";
-        code_version_hash = "@VERSION_HASH@";
+        m_Basename = "@BASENAME@";
+        m_CodeVersionHash = "@VERSION_HASH@";
 
-        _param.Register<std::string>("config", "config_gen.yaml", "configuration file");
-        _param.Register<std::string>("cut_config", "cut.yaml", "cut list file");
-        _param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
-        _param.Register<std::string>("output", "hists.root", "histogram output");
+        m_Param.Register<std::string>("config", "config_gen.yaml", "configuration file");
+        m_Param.Register<std::string>("cut_config", "cut.yaml", "cut list file");
+        m_Param.Register<std::string>("hist_config", "hist.yaml", "hist definition file");
+        m_Param.Register<std::string>("output", "hists.root", "histogram output");
     }
 
-    void Description() const override { LOG_INFO(m_name, "An instance of " << basename << ", which is old-style Histogram filler"); }
+    void Description() const override { LOG_INFO(m_Name, "An instance of " << m_Basename << ", which is old-style Histogram filler"); }
 
     void Init() override
     {
-        mg = GetAnalysisManager("main");
-        mg->LoadConfig(_param.Get<std::string>("config"));
-        mg->InitTree();
-        mg->LoadCuts(_param.Get<std::string>("cut_config"));
-        mg->ActivateCuts();
-        mg->PrintCuts();
-        mg->InitNewHistsFromConfig(_param.Get<std::string>("hist_config"), "1");
+        m_Manager = GetAnalysisManager("main");
+        m_Manager->LoadConfig(m_Param.Get<std::string>("config"));
+        m_Manager->InitTree();
+        m_Manager->LoadCuts(m_Param.Get<std::string>("cut_config"));
+        m_Manager->ActivateCuts();
+        m_Manager->PrintCuts();
+        m_Manager->InitNewHistsFromConfig(m_Param.Get<std::string>("hist_config"), "1");
     }
 
     void Execute() override
     {
-        for (Long64_t i = 0; i < mg->GetEntries(); i++)
+        for (Long64_t i = 0; i < m_Manager->GetEntries(); i++)
         {
-            mg->LoadEntry(i);
-            if (!mg->PassCut()) continue;
-            mg->FillHists(1.0);
+            m_Manager->LoadEntry(i);
+            if (!m_Manager->PassCut()) continue;
+            m_Manager->FillHists(1.0);
         }
     }
-    void Finalize() override { mg->SaveHists(_param.Get<std::string>("output")); }
+    void Finalize() override { m_Manager->SaveHists(m_Param.Get<std::string>("output")); }
 
   private:
-    AnalysisManager *mg;
+    AnalysisManager *m_Manager;
 
   protected:
 };
