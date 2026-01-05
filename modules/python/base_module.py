@@ -1,6 +1,6 @@
 from cascade import is_interrupted, log, log_level
 
-class py_base_module:
+class base_module:
     def __init__(self):
         self.params = {}
         self.status = "Pending"

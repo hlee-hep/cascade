@@ -33,11 +33,43 @@ def generate_init_py(target, source, env):
 def generate_init_py_head(target, source, env):
     target_dir = os.path.dirname(str(target[0]))
     files = [f for f in os.listdir(target_dir) if f.endswith(".py") and f != "__init__.py"]
-    lines = ["# Auto-generated cascade __init__.py\n"]
+    lines = [
+        "# Auto-generated cascade __init__.py\n",
+        "from ._cascade import log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version",
+        "import importlib",
+        "",
+        "__version__ = get_version()",
+        "__abi_version__ = get_abi_version()",
+        "",
+        "_LAZY_MODULES = {",
+    ]
     for fname in sorted(files):
         modulename = fname[:-3]
-        lines.append(f"from ._cascade import AMCM, log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log")
-        lines.append(f"from .{modulename} import {modulename}")
+        lines.append(f"    \"{modulename}\": \"{modulename}\",")
+    lines += [
+        "}",
+        "",
+        "__all__ = [",
+        "    \"log_level\",",
+        "    \"set_log_level\",",
+        "    \"set_log_file\",",
+        "    \"get_version\",",
+        "    \"get_abi_version\",",
+        "    \"__version__\",",
+        "    \"__abi_version__\",",
+        "    \"init_interrupt\",",
+        "    \"is_interrupted\",",
+        "    \"log\",",
+        "] + list(_LAZY_MODULES.keys())",
+        "",
+        "def __getattr__(name):",
+        "    if name in _LAZY_MODULES:",
+        "        mod = importlib.import_module(f\".{_LAZY_MODULES[name]}\", __name__)",
+        "        obj = getattr(mod, name)",
+        "        globals()[name] = obj",
+        "        return obj",
+        "    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")",
+    ]
     with open(str(target[0]), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[SCons] __init__.py for cascade generated in {target_dir}")

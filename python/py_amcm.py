@@ -1,6 +1,5 @@
-from cascade.pymodule import py_base_module
-from cascade import AMCM
-from cascade._cascade import IAnalysisModule
+from cascade.pymodule import base_module
+from cascade._cascade import AMCM, IAnalysisModule
 from cascade import init_interrupt, is_interrupted, log, log_level
 import yaml, os
 from datetime import datetime
@@ -15,7 +14,7 @@ class py_amcm:
         init_interrupt()
 
     def register_python_module(self, name, module_obj):
-        if not isinstance(module_obj, py_base_module):
+        if not isinstance(module_obj, base_module):
             raise TypeError("Module must inherit from PythonModuleBase")
         self.python_modules[name] = module_obj
         self.python_modules[name].set_name(name)
@@ -33,7 +32,7 @@ class py_amcm:
             else:
                 self.ctrl.run_module(name)
                 self.executed_modules.append(self.ctrl.get_module(name))
-        elif isinstance(name_or_mod, py_base_module):
+        elif isinstance(name_or_mod, base_module):
             mod = name_or_mod
             if mod in self.python_modules.values():
                 mod.run()
@@ -48,29 +47,51 @@ class py_amcm:
             raise TypeError(f"Unsupported argument type: {type(name_or_mod)}")
 
     def get_list_available_modules(self):
+        import ast
         import importlib
+        import importlib.util
         import pkgutil
-        import inspect
         modules = self.ctrl.get_list_available_modules()
-        pkg = importlib.import_module("cascade.pymodule")
-        for _, modname, _ in pkgutil.iter_modules(pkg.__path__, "cascade.pymodule" + "."):
-            try:
-                mod = importlib.import_module(modname)
-            except Exception:
-                continue
-            for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if issubclass(obj, py_base_module) and obj is not py_base_module:
-                    modules.append(name)
 
-        pkg = importlib.import_module("cascade.pyplugin")
-        for _, modname, _ in pkgutil.iter_modules(pkg.__path__, "cascade.pyplugin" + "."):
+        def is_base_module(base):
+            if isinstance(base, ast.Name):
+                return base.id in ("base_module", "py_base_module")
+            if isinstance(base, ast.Attribute):
+                return base.attr in ("base_module", "py_base_module")
+            return False
+
+        def list_python_modules(pkg_name):
             try:
-                mod = importlib.import_module(modname)
+                pkg = importlib.import_module(pkg_name)
             except Exception:
-                continue
-            for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if issubclass(obj, py_base_module) and obj is not py_base_module:
-                    modules.append(name)
+                return []
+            return [modname for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + ".")]
+
+        def classes_from_module(modname):
+            try:
+                spec = importlib.util.find_spec(modname)
+            except Exception:
+                return []
+            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                return []
+            try:
+                with open(spec.origin, "r", encoding="utf-8") as f:
+                    tree = ast.parse(f.read(), filename=spec.origin)
+            except Exception:
+                return []
+            classes = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    for base in node.bases:
+                        if is_base_module(base):
+                            classes.append(node.name)
+                            break
+            return classes
+
+        for modname in list_python_modules("cascade.pymodule"):
+            modules.extend(classes_from_module(modname))
+        for modname in list_python_modules("cascade.pyplugin"):
+            modules.extend(classes_from_module(modname))
         return modules
 
     def get_list_registered_modules(self):
@@ -103,7 +124,7 @@ class py_amcm:
         else:
             raise TypeError(f"Unsupported argument type: {type(group)}")
 
-    def save_run_log_all(self):
+    def save_run_log_all(self, log_dir=None):
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         log_data = {
@@ -115,7 +136,7 @@ class py_amcm:
             if isinstance(mod,IAnalysisModule):
                 raw = json.loads(mod.get_params_to_json())
                 params = {k: v["value"] for k, v in raw.items()}
-            elif isinstance(mod, py_base_module):
+            elif isinstance(mod, base_module):
                 params = mod.get_parameters()
             else:
                 params = None
@@ -132,9 +153,11 @@ class py_amcm:
 
         suffix = "_".join(filename_suffix)
         filename = f"control_log_{timestamp}_{suffix}.yaml"
-        os.makedirs("run_logs", exist_ok=True)
+        default_log_dir = os.path.join(os.path.expanduser("~"), ".cache", "cascade", "run_logs")
+        log_dir = log_dir or os.getenv("CASCADE_RUN_LOG_DIR", default_log_dir)
+        os.makedirs(log_dir, exist_ok=True)
 
-        with open(os.path.join("run_logs", filename), "w") as f:
+        with open(os.path.join(log_dir, filename), "w") as f:
             yaml.dump(log_data, f, sort_keys=False)
 
-        log(log_level.INFO,"CONTROL",f"Run log '{filename}' is saved.")
+        log(log_level.INFO,"CONTROL",f"Run log '{filename}' is saved in {log_dir}.")

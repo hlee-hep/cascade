@@ -1,7 +1,7 @@
-from cascade.pymodule import py_base_module
+from cascade.pymodule import base_module
 from cascade import log, log_level
 
-class py_simple_module(py_base_module):
+class simple_module(base_module):
 
     def __init__(self):
         super().__init__()

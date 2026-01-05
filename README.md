@@ -17,7 +17,7 @@ Cascade is built around a small set of managers and a module interface:
 - **ParamManager** handles typed parameters from YAML/JSON and Python, with serialization and mixed-type vectors.
 - **PlotManager** provides ROOT plotting utilities (stack, overlays, ratio pad, legend automation).
 - **DAGManager** executes dependency graphs and supports parameter passing between nodes.
-- **AMCM** registers and executes modules, tracks progress, and coordinates runs.
+- **AMCM** is the core C++ controller used by the Python wrapper; it is intentionally not re-exported at the top-level Python API.
 - **Logger** provides structured logging with colorized output and progress bars.
 
 Each analysis is a module that inherits `IAnalysisModule` and defines `Init`, `Execute`, and `Finalize`. The framework supplies shared services (config, parameters, logging, DAG, caching) so modules can focus on physics logic.
@@ -110,14 +110,59 @@ public:
 
 ## Python API
 
-Python modules live in `modules/python/` and inherit `py_base_module`.
+Python modules live in `modules/python/` and inherit `base_module`.
 
 Core Python control entry points:
 
 - `py_amcm` — wrapper around the C++ controller (run modules, DAG).
 - `plt_plot_manager` — matplotlib-based plotting utility.
 
-The CLI `python/cascade` can launch an interactive shell with `ctrl = py_amcm()`.
+Public API boundary:
+
+- `py_amcm` is the supported Python control surface.
+- `cascade._cascade` is internal; use it only if you need direct C++ bindings.
+- `AMCM` is intentionally not re-exported at top level to keep the public API small.
+
+The CLI `python/cascade` is a minimal ROOT macro wrapper that injects `--yaml` and `--set` into a temporary JSON file passed as the first macro argument.
+
+An example ROOT macro is provided in `examples/RootMacroExample.C`.
+An example plugin module is provided in `examples/PluginExample.cc`.
+
+Run logs from `py_amcm.save_run_log_all()` are written under `~/.cache/cascade/run_logs/` by default. You can override the output directory with `CASCADE_RUN_LOG_DIR` or by passing `log_dir=...`.
+
+Versioning:
+
+- `cascade.__version__` exposes the semantic version string.
+- `cascade.__abi_version__` exposes the plugin ABI version.
+
+## Build and Install Layout
+
+SCons installs to `${PREFIX}` with per-component overrides:
+
+- Libraries: `${LIBDIR}` (default: `${PREFIX}/lib`)
+- Headers: `${INCLUDEDIR}` (default: `${PREFIX}/include/cascade`)
+- CLI: `${BINDIR}` (default: `${PREFIX}/bin`)
+- Python package: `${PYTHONDIR}` (default: `${LIBDIR}/cascade`)
+- Python modules: `${PYMODULEDIR}` (default: `${PYTHONDIR}/pymodule`)
+
+The pybind library `libCascade.so` is installed to `${LIBDIR}` and symlinked into `${PYTHONDIR}` as `_cascade.so`.
+
+## Plugin ABI
+
+External C++ plugins should export two C symbols so the loader can check ABI compatibility and register modules:
+
+```cpp
+#include "PluginABI.hh"
+#include "MyModule.hh"
+
+CASCADE_PLUGIN_EXPORT int CascadePluginAbiVersion() { return CASCADE_PLUGIN_ABI_VERSION; }
+CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() { CASCADE_REGISTER_MODULE(MyModule); }
+```
+
+Plugins without these entry points are still loaded but will emit a warning and skip ABI checks.
+
+See `docs/plugins.md` for the ABI policy and plugin developer guide.
+See `docs/versioning.md` for versioning policy and API.
 
 ## Configuration
 

@@ -2,6 +2,7 @@
 #include "AnalysisModuleRegistry.hh"
 #include "InterruptManager.hh"
 #include "Logger.hh"
+#include "PluginABI.hh"
 #include <chrono>
 #include <dlfcn.h>
 #include <filesystem>
@@ -189,6 +190,45 @@ void AMCM::LoadPlugins(const std::string &path)
         {
             void *handle = dlopen(p.path().c_str(), RTLD_NOW);
             if (!handle) LOG_ERROR("CONTROL", "dlopen failed for '" << p.path().string() << "': " << dlerror());
+            if (!handle) continue;
+            dlerror();
+            using AbiFn = int (*)();
+            using RegisterFn = void (*)();
+            auto abiFn = reinterpret_cast<AbiFn>(dlsym(handle, "CascadePluginAbiVersion"));
+            const char *abiErr = dlerror();
+            if (abiErr) abiFn = nullptr;
+            dlerror();
+            auto regFn = reinterpret_cast<RegisterFn>(dlsym(handle, "CascadeRegisterPlugin"));
+            const char *regErr = dlerror();
+            if (regErr) regFn = nullptr;
+
+            if (abiFn)
+            {
+                int abi = abiFn();
+                if (abi != CASCADE_PLUGIN_ABI_VERSION)
+                {
+                    LOG_ERROR("CONTROL", "Plugin ABI mismatch for '" << p.path().string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
+                    dlclose(handle);
+                    continue;
+                }
+                if (regFn)
+                {
+                    regFn();
+                }
+                else
+                {
+                    LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' provides ABI version but no CascadeRegisterPlugin()");
+                }
+            }
+            else if (regFn)
+            {
+                LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' has no ABI version; calling CascadeRegisterPlugin()");
+                regFn();
+            }
+            else
+            {
+                LOG_WARN("CONTROL", "Legacy plugin loaded without ABI entry points: " << p.path().string());
+            }
         }
     }
 }

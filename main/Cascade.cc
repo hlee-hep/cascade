@@ -6,6 +6,8 @@
 #include "InterruptManager.hh"
 #include "Logger.hh"
 #include "ParamManager.hh"
+#include "PluginABI.hh"
+#include "Version.hh"
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -40,6 +42,11 @@ PYBIND11_MODULE(_cascade, m)
     m.def("set_log_level", [](logger::LogLevel level) { logger::Logger::Get().SetLogLevel(level); });
     m.def("set_log_file", [](const std::string &path) { logger::Logger::Get().InitLogFile(path); });
     m.def("log", [](logger::LogLevel level, const std::string &mod, const std::string &msg) { logger::Logger::Get().Log(level, mod, msg); });
+    m.def("get_version", []() { return std::string(CascadeVersionString()); });
+    m.def("get_version_major", []() { return CascadeVersionMajor(); });
+    m.def("get_version_minor", []() { return CascadeVersionMinor(); });
+    m.def("get_version_patch", []() { return CascadeVersionPatch(); });
+    m.def("get_abi_version", []() { return CASCADE_PLUGIN_ABI_VERSION; });
     m.def("init_interrupt", &InterruptManager::Init);
     m.def("is_interrupted", &InterruptManager::IsInterrupted);
     py::class_<DAGManager>(m, "DAGManager")
