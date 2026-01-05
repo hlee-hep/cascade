@@ -1,7 +1,13 @@
 from cascade import is_interrupted, log, log_level
 import cascade
+import hashlib
+import json
+import os
 
 class base_module:
+    _hash_cache = set()
+    _hash_cache_loaded = False
+
     def __init__(self):
         self.params = {}
         self.status = "Pending"
@@ -69,7 +75,19 @@ class base_module:
         
         if self.check_interrupt():
             return
-        
+
+        self._load_hash_cache()
+        if self.params.get("dry_run", False):
+            self.set_status("Skipped")
+            return
+
+        if not self.params.get("force_run", False):
+            snapshot_hash = self._compute_snapshot_hash()
+            if snapshot_hash in base_module._hash_cache:
+                log(log_level.ERROR, self.m_name, "Duplication of hash is detected.")
+                self.set_status("Skipped")
+                return
+
         self.set_status("Running")
         self.execute()
         
@@ -82,6 +100,9 @@ class base_module:
         if self.check_interrupt():
             return
         else:
+            snapshot_hash = self._compute_snapshot_hash()
+            base_module._hash_cache.add(snapshot_hash)
+            self._save_hash_cache()
             self.set_status("Done")
 
     def init(self):
@@ -92,3 +113,40 @@ class base_module:
     
     def finalize(self):
         raise NotImplementedError("PythonModuleBase: finalize() must be implemented by subclass")
+
+    def _compute_snapshot_hash(self):
+        payload = {
+            "basename": self.basename,
+            "code_hash": self.code_version_hash,
+            "params": self.params,
+        }
+        raw = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _hash_cache_path(self):
+        base = os.path.join(os.path.expanduser("~"), ".cache", "cascade")
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, "py_module_hashes.json")
+
+    def _load_hash_cache(self):
+        if base_module._hash_cache_loaded:
+            return
+        base_module._hash_cache_loaded = True
+        path = self._hash_cache_path()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    base_module._hash_cache.update(data)
+        except Exception:
+            return
+
+    def _save_hash_cache(self):
+        path = self._hash_cache_path()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(sorted(base_module._hash_cache), f, indent=2)
+        except Exception:
+            return

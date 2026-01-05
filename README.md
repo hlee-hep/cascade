@@ -152,6 +152,7 @@ SCons installs to `${PREFIX}` with per-component overrides:
 - Python modules: `${PYMODULEDIR}` (default: `${PYTHONDIR}/pymodule`)
 
 The pybind library `libCascade.so` is installed to `${LIBDIR}` and symlinked into `${PYTHONDIR}` as `_cascade.so`.
+See `docs/build.md` for a detailed build/install flow and output layout.
 
 ## Plugin ABI
 
@@ -169,6 +170,11 @@ Plugins without these entry points are still loaded but will emit a warning and 
 
 See `docs/plugins.md` for the ABI policy and plugin developer guide.
 See `docs/versioning.md` for versioning policy and API.
+See `docs/build.md` for a detailed build/install flow and output layout.
+See `docs/troubleshooting.md` for common issues and fixes.
+See `docs/faq.md` for short example answers.
+See `docs/examples.md` for runnable examples.
+See `docs/quickstart.md` for an end-to-end walkthrough.
 
 Plugin loading notes:
 

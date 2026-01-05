@@ -1,7 +1,7 @@
 from cascade.pymodule import base_module
 from cascade._cascade import AMCM, IAnalysisModule
 from cascade import init_interrupt, is_interrupted, log, log_level
-import yaml, os
+import yaml, os, subprocess
 from datetime import datetime
 import json
 #wrapper class for python module
@@ -253,6 +253,12 @@ class py_amcm:
         modules.extend(self.python_modules.keys())
         return modules
 
+    def get_status(self, name):
+        return self.ctrl.get_status(name)
+
+    def get_all_progress(self):
+        return self.ctrl.get_all_progress()
+
     def get_python_module(self, name):
         return self.python_modules.get(name, None)
 
@@ -288,7 +294,11 @@ class py_amcm:
         filename_suffix = []
         for i, mod in enumerate(self.executed_modules):
             if isinstance(mod,IAnalysisModule):
-                raw = json.loads(mod.get_params_to_json())
+                if hasattr(mod, "get_params_to_json"):
+                    raw_json = mod.get_params_to_json()
+                else:
+                    raw_json = mod.dump_params_to_json(4)
+                raw = json.loads(raw_json)
                 params = {k: v["value"] for k, v in raw.items()}
             elif isinstance(mod, base_module):
                 params = mod.get_parameters()
