@@ -135,6 +135,12 @@ Versioning:
 - `cascade.__version__` exposes the semantic version string.
 - `cascade.__abi_version__` exposes the plugin ABI version.
 
+Module metadata:
+
+- `ctrl.get_list_available_module_metadata()` returns per-module metadata (name, version, summary, tags).
+- C++ modules can register metadata via `REGISTER_MODULE_WITH_METADATA`.
+- Python modules can provide a `METADATA` dict or class attributes (`VERSION`, `SUMMARY`, `TAGS`) without instantiation.
+
 ## Build and Install Layout
 
 SCons installs to `${PREFIX}` with per-component overrides:
@@ -163,6 +169,14 @@ Plugins without these entry points are still loaded but will emit a warning and 
 
 See `docs/plugins.md` for the ABI policy and plugin developer guide.
 See `docs/versioning.md` for versioning policy and API.
+
+Plugin loading notes:
+
+- Only shared libraries ending with `Module.so` are loaded from the plugin directory.
+- Plugins require a `plugin_pubkey.pem` in the plugin directory; otherwise they are skipped.
+- When the key exists, plugins must provide a valid `.sig` signature.
+- The signing helper installs to `${PREFIX}/share/cascade/scripts/sign_plugin.sh`.
+- Python plugins apply the same signature rule when a `plugin_pubkey.pem` exists in their directory.
 
 ## Configuration
 

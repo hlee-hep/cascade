@@ -21,6 +21,7 @@ PYBIND11_MODULE(_cascade, m)
         .def("register_module", py::overload_cast<const std::string &>(&AMCM::RegisterModule), py::return_value_policy::reference_internal)
         .def("register_module", py::overload_cast<const std::string &, const std::string &>(&AMCM::RegisterModule), py::return_value_policy::reference_internal)
         .def("get_list_available_modules", &AMCM::ListAvailableModules)
+        .def("get_list_available_module_metadata", &AMCM::ListAvailableModuleMetadata)
         .def("get_list_registered_modules", &AMCM::ListRegisteredModules)
         .def("get_status", &AMCM::GetStatus)
         .def("get_module", &AMCM::GetModule, py::return_value_policy::reference_internal)
@@ -67,5 +68,12 @@ PYBIND11_MODULE(_cascade, m)
         .def("name", &IAnalysisModule::Name)
         .def("get_basename", &IAnalysisModule::BaseName)
         .def("get_status", &IAnalysisModule::GetStatus)
-        .def("get_code_hash", &IAnalysisModule::GetCodeHash);
+        .def("get_code_hash", &IAnalysisModule::GetCodeHash)
+        .def("get_metadata", &IAnalysisModule::GetMetadata);
+
+    py::class_<ModuleMetadata>(m, "ModuleMetadata")
+        .def_readonly("name", &ModuleMetadata::Name)
+        .def_readonly("version", &ModuleMetadata::Version)
+        .def_readonly("summary", &ModuleMetadata::Summary)
+        .def_readonly("tags", &ModuleMetadata::Tags);
 }

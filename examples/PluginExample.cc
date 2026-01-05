@@ -21,5 +21,5 @@ class ExamplePluginModule : public IAnalysisModule
     void Finalize() override {}
 };
 
-CASCADE_PLUGIN_EXPORT int CascadePluginAbiVersion() { return CASCADE_PLUGIN_ABI_VERSION; }
+CASCADE_PLUGIN_EXPORT_ABI
 CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() { CASCADE_REGISTER_MODULE(ExamplePluginModule); }

@@ -3,9 +3,11 @@
 #include "CacheManager.hh"
 #include "InterruptManager.hh"
 #include "Logger.hh"
+#include "ModuleMetadata.hh"
 #include "ParamManager.hh"
 #include "SnapshotHasher.hh"
 #include "sha256.hh"
+#include "Version.hh"
 #include <memory>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -75,6 +77,13 @@ class IAnalysisModule
     }
 
     virtual void Description() const = 0;
+    virtual ModuleMetadata GetMetadata() const
+    {
+        ModuleMetadata info;
+        info.Name = m_Basename;
+        info.Version = CascadeVersionString();
+        return info;
+    }
 
     std::string GetParamsToJSON() { return m_Param.DumpJSON(); }
 

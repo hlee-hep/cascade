@@ -51,21 +51,61 @@ class py_amcm:
         import importlib
         import importlib.util
         import pkgutil
+        import subprocess
+        import os
         modules = self.ctrl.get_list_available_modules()
 
         def is_base_module(base):
             if isinstance(base, ast.Name):
-                return base.id in ("base_module", "py_base_module")
+                return base.id in ("base_module", "base_module")
             if isinstance(base, ast.Attribute):
-                return base.attr in ("base_module", "py_base_module")
+                return base.attr in ("base_module", "base_module")
             return False
 
-        def list_python_modules(pkg_name):
+        def list_python_modules(pkg_name, verify_signatures):
             try:
                 pkg = importlib.import_module(pkg_name)
             except Exception:
                 return []
-            return [modname for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + ".")]
+            key_path = None
+            if verify_signatures:
+                for root in pkg.__path__:
+                    candidate = os.path.join(root, "plugin_pubkey.pem")
+                    if os.path.exists(candidate):
+                        key_path = candidate
+                        break
+                if not key_path:
+                    log(log_level.ERROR, "CONTROL", f"Python plugin public key not found for {pkg_name}; skipping python plugins.")
+                    return []
+
+            modules = []
+            for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + "."):
+                if not modname.endswith("module"):
+                    continue
+                if not verify_signatures or not key_path:
+                    modules.append(modname)
+                    continue
+                try:
+                    spec = importlib.util.find_spec(modname)
+                except Exception:
+                    continue
+                if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                    continue
+                sig_path = spec.origin + ".sig"
+                if not os.path.exists(sig_path):
+                    log(log_level.ERROR, "CONTROL", f"Missing python plugin signature: {sig_path}")
+                    continue
+                cmd = [
+                    "openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", key_path, "-rawin",
+                    "-in", spec.origin, "-sigfile", sig_path,
+                ]
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if result.returncode != 0:
+                    log(log_level.ERROR, "CONTROL", f"Python plugin signature invalid: {spec.origin}")
+                    continue
+                modules.append(modname)
+            return modules
 
         def classes_from_module(modname):
             try:
@@ -88,11 +128,125 @@ class py_amcm:
                             break
             return classes
 
-        for modname in list_python_modules("cascade.pymodule"):
+        for modname in list_python_modules("cascade.pymodule", False):
             modules.extend(classes_from_module(modname))
-        for modname in list_python_modules("cascade.pyplugin"):
+        for modname in list_python_modules("cascade.pyplugin", True):
             modules.extend(classes_from_module(modname))
         return modules
+
+    def get_list_available_module_metadata(self, include_python=True, instantiate_python=False):
+        metadata = []
+        for item in self.ctrl.get_list_available_module_metadata():
+            metadata.append({
+                "name": item.name,
+                "version": item.version,
+                "summary": item.summary,
+                "tags": list(item.tags),
+                "language": "cpp",
+            })
+
+        if not include_python:
+            return metadata
+
+        import importlib
+        import pkgutil
+        import inspect
+        import cascade
+
+        def list_modules(pkg_name, verify_signatures):
+            try:
+                pkg = importlib.import_module(pkg_name)
+            except Exception:
+                return []
+            key_path = None
+            if verify_signatures:
+                for root in pkg.__path__:
+                    candidate = os.path.join(root, "plugin_pubkey.pem")
+                    if os.path.exists(candidate):
+                        key_path = candidate
+                        break
+                if not key_path:
+                    log(log_level.ERROR, "CONTROL", f"Python plugin public key not found for {pkg_name}; skipping python plugins.")
+                    return []
+
+            modules = []
+            for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + "."):
+                if not modname.endswith("module"):
+                    continue
+                if not verify_signatures or not key_path:
+                    modules.append(modname)
+                    continue
+                try:
+                    spec = importlib.util.find_spec(modname)
+                except Exception:
+                    continue
+                if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                    continue
+                sig_path = spec.origin + ".sig"
+                if not os.path.exists(sig_path):
+                    log(log_level.WARN, "CONTROL", f"Missing python plugin signature: {sig_path}")
+                    continue
+                cmd = [
+                    "openssl", "pkeyutl", "-verify", "-pubin",
+                    "-inkey", key_path, "-rawin",
+                    "-in", spec.origin, "-sigfile", sig_path,
+                ]
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if result.returncode != 0:
+                    log(log_level.WARN, "CONTROL", f"Python plugin signature invalid: {spec.origin}")
+                    continue
+                modules.append(modname)
+            return modules
+
+        def add_python_metadata(modname):
+            try:
+                mod = importlib.import_module(modname)
+            except Exception:
+                return
+            for name, obj in inspect.getmembers(mod, inspect.isclass):
+                if issubclass(obj, base_module) and obj is not base_module:
+                    info = getattr(obj, "METADATA", None)
+                    if isinstance(info, dict):
+                        entry = {
+                            "name": info.get("name", name),
+                            "version": info.get("version", ""),
+                            "summary": info.get("summary", ""),
+                            "tags": list(info.get("tags", [])),
+                            "language": "python",
+                        }
+                        metadata.append(entry)
+                        continue
+
+                    if instantiate_python:
+                        try:
+                            info = obj().get_metadata()
+                        except Exception:
+                            info = None
+                        if isinstance(info, dict):
+                            entry = {
+                                "name": info.get("name", name),
+                                "version": info.get("version", ""),
+                                "summary": info.get("summary", ""),
+                                "tags": list(info.get("tags", [])),
+                                "language": "python",
+                            }
+                            metadata.append(entry)
+                        continue
+
+                    entry = {
+                        "name": name,
+                        "version": getattr(obj, "VERSION", getattr(cascade, "__version__", "")),
+                        "summary": getattr(obj, "SUMMARY", ""),
+                        "tags": list(getattr(obj, "TAGS", [])),
+                        "language": "python",
+                    }
+                    metadata.append(entry)
+
+        for modname in list_modules("cascade.pymodule", False):
+            add_python_metadata(modname)
+        for modname in list_modules("cascade.pyplugin", True):
+            add_python_metadata(modname)
+        return metadata
 
     def get_list_registered_modules(self):
         modules = self.ctrl.get_list_registered_modules()

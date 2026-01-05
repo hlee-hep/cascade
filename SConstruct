@@ -250,6 +250,10 @@ cascade_cli = Glob("python/cascade")
 cli_install = env.Install(cascade_cli_dir, cascade_cli)
 env.AddPostAction(cli_install,make_executable)
 
+scripts_dir = os.path.join(env['PREFIX'], "share", "cascade", "scripts")
+sign_script = env.Install(scripts_dir, "scripts/sign_plugin.sh")
+env.AddPostAction(sign_script, make_executable)
+
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
 cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
 
@@ -283,7 +287,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install
+install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)

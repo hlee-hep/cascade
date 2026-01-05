@@ -1,4 +1,5 @@
 from cascade import is_interrupted, log, log_level
+import cascade
 
 class base_module:
     def __init__(self):
@@ -7,6 +8,8 @@ class base_module:
         self.code_version_hash = ""
         self.basename = ""
         self.m_name = ""
+        self.summary = ""
+        self.tags = []
 
     def check_interrupt(self):
         if is_interrupted():
@@ -48,6 +51,14 @@ class base_module:
 
     def get_code_hash(self):
         return self.code_version_hash
+
+    def get_metadata(self):
+        return {
+            "name": self.get_basename() or self.__class__.__name__,
+            "version": getattr(cascade, "__version__", ""),
+            "summary": self.summary,
+            "tags": list(self.tags),
+        }
 
     def print_description(self):
         raise NotImplementedError("PythonModuleBase: print_description() must be implemented by subclass")

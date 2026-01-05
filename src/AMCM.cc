@@ -9,6 +9,8 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <thread>
@@ -19,7 +21,17 @@ AMCM::AMCM()
 {
     InterruptManager::Init();
     m_Dag = std::make_unique<DAGManager>();
-    LoadPlugins(std::string(std::getenv("HOME")) + "/.local/lib/cascade/plugin");
+    const char *pluginDir = std::getenv("CASCADE_PLUGIN_DIR");
+    if (!pluginDir || std::string(pluginDir).empty())
+    {
+        const char *home = std::getenv("HOME");
+        if (home && std::string(home).size() > 0)
+            LoadPlugins(std::string(home) + "/.local/lib/cascade/plugin");
+    }
+    else
+    {
+        LoadPlugins(pluginDir);
+    }
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)
@@ -184,19 +196,103 @@ void AMCM::SaveRunLog() const
 void AMCM::LoadPlugins(const std::string &path)
 {
     namespace fs = std::filesystem;
+    if (!fs::exists(path))
+    {
+        LOG_WARN("CONTROL", "Plugin directory not found: " << path);
+        return;
+    }
+    fs::path keyPath = fs::path(path) / "plugin_pubkey.pem";
+    bool verifySignatures = fs::exists(keyPath);
+    EVP_PKEY *publicKey = nullptr;
+    if (verifySignatures)
+    {
+        FILE *keyFile = fopen(keyPath.string().c_str(), "r");
+        if (!keyFile)
+        {
+            LOG_ERROR("CONTROL", "Failed to open plugin public key: " << keyPath.string());
+            return;
+        }
+        publicKey = PEM_read_PUBKEY(keyFile, nullptr, nullptr, nullptr);
+        fclose(keyFile);
+        if (!publicKey)
+        {
+            LOG_ERROR("CONTROL", "Failed to read plugin public key: " << keyPath.string());
+            return;
+        }
+        LOG_INFO("CONTROL", "Plugin signature verification enabled with " << keyPath.string());
+    }
+    else
+    {
+        LOG_ERROR("CONTROL", "Plugin public key not found; skipping plugin load: " << keyPath.string());
+        return;
+    }
+
     for (auto &p : fs::directory_iterator(path))
     {
         if (p.path().extension() == ".so")
         {
+            std::string filename = p.path().filename().string();
+            if (filename.size() < 9 || filename.rfind("Module.so") != filename.size() - 9)
+            {
+                continue;
+            }
+            if (verifySignatures)
+            {
+                fs::path sigPath = p.path();
+                sigPath += ".sig";
+                if (!fs::exists(sigPath))
+                {
+                    LOG_ERROR("CONTROL", "Missing plugin signature: " << sigPath.string());
+                    continue;
+                }
+
+                std::ifstream bin(p.path(), std::ios::binary);
+                std::ifstream sig(sigPath, std::ios::binary);
+                if (!bin || !sig)
+                {
+                    LOG_ERROR("CONTROL", "Failed to read plugin or signature: " << p.path().string());
+                    continue;
+                }
+
+                std::vector<unsigned char> data((std::istreambuf_iterator<char>(bin)), std::istreambuf_iterator<char>());
+                std::vector<unsigned char> sigData((std::istreambuf_iterator<char>(sig)), std::istreambuf_iterator<char>());
+
+                EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+                if (!ctx)
+                {
+                    LOG_ERROR("CONTROL", "Failed to create EVP_MD_CTX for signature verification");
+                    continue;
+                }
+
+                int ok = EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, publicKey);
+                if (ok != 1)
+                {
+                    LOG_ERROR("CONTROL", "Signature verify init failed for " << p.path().string());
+                    EVP_MD_CTX_free(ctx);
+                    continue;
+                }
+                ok = EVP_DigestVerify(ctx, sigData.data(), sigData.size(), data.data(), data.size());
+                EVP_MD_CTX_free(ctx);
+                if (ok != 1)
+                {
+                    LOG_ERROR("CONTROL", "Plugin signature invalid: " << p.path().string());
+                    continue;
+                }
+            }
             void *handle = dlopen(p.path().c_str(), RTLD_NOW);
             if (!handle) LOG_ERROR("CONTROL", "dlopen failed for '" << p.path().string() << "': " << dlerror());
             if (!handle) continue;
             dlerror();
             using AbiFn = int (*)();
+            using AbiTagFn = const char *(*)();
             using RegisterFn = void (*)();
             auto abiFn = reinterpret_cast<AbiFn>(dlsym(handle, "CascadePluginAbiVersion"));
             const char *abiErr = dlerror();
             if (abiErr) abiFn = nullptr;
+            dlerror();
+            auto abiTagFn = reinterpret_cast<AbiTagFn>(dlsym(handle, "CascadePluginAbiTag"));
+            const char *abiTagErr = dlerror();
+            if (abiTagErr) abiTagFn = nullptr;
             dlerror();
             auto regFn = reinterpret_cast<RegisterFn>(dlsym(handle, "CascadeRegisterPlugin"));
             const char *regErr = dlerror();
@@ -210,6 +306,20 @@ void AMCM::LoadPlugins(const std::string &path)
                     LOG_ERROR("CONTROL", "Plugin ABI mismatch for '" << p.path().string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
                     dlclose(handle);
                     continue;
+                }
+                if (abiTagFn)
+                {
+                    std::string tag = abiTagFn();
+                    if (tag != CASCADE_ABI_TAG)
+                    {
+                        LOG_ERROR("CONTROL", "Plugin ABI tag mismatch for '" << p.path().string() << "'");
+                        dlclose(handle);
+                        continue;
+                    }
+                }
+                else
+                {
+                    LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' missing ABI tag; skipping strict tag check");
                 }
                 if (regFn)
                 {
@@ -231,4 +341,5 @@ void AMCM::LoadPlugins(const std::string &path)
             }
         }
     }
+    if (publicKey) EVP_PKEY_free(publicKey);
 }
