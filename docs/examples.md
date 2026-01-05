@@ -57,3 +57,7 @@ Plugin Example
 Notes:
 - Build the plugin with `-DCASCADE_PLUGIN_NO_AUTO_REGISTER`.
 - Sign the resulting `libExamplePluginModule.so` and place it in `${CASCADE_PLUGIN_DIR}`.
+
+ROOT Managers Example
+- Example macro: `examples/RootManagersExample.C`
+- Demonstrates `AnalysisManager`, `ParamManager`, and `PlotManager` directly in ROOT.

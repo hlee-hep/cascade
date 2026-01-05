@@ -193,3 +193,11 @@ Inputs and cuts are YAML-driven:
 - Histogram config defines expressions and bins.
 
 These configs can be generated and written by `AnalysisManager` as part of your pipeline.
+
+## ROOT Usage (Direct)
+
+The core managers are available directly in ROOT (dictionary/rootmap), so you can use:
+
+- `AnalysisManager` — inputs, cuts, histograms, RDF workflows.
+- `PlotManager` — plotting helpers for histogram output.
+- `ParamManager` — parameter loading and serialization (YAML/JSON).
