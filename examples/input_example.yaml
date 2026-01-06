@@ -1,7 +1,0 @@
-input:
-  files:
-    - dummy.root
-  tree: t
-branches:
-  x:
-    name: x

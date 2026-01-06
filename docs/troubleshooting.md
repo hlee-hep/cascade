@@ -19,3 +19,7 @@ _cascade Import Errors
 Runtime Crash After Plugin Update
 - Ensure plugins are built with `-DCASCADE_PLUGIN_NO_AUTO_REGISTER`.
 - Remove old `.so` files before reinstalling new ones.
+
+Snapshot Cache Location
+- C++ module cache: `~/.cache/cascade/snapshot_cache/`
+- Python module cache: `~/.cache/cascade/py_module_hashes.json`

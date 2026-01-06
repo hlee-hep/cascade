@@ -101,13 +101,15 @@ module_py = list(py_dir.glob("*.py"))
 pymodules = [f.stem for f in module_py if f.suffix == ".py"]
 
 for mod in modules:
+    base_input = "modules/base/IAnalysisModule.hh"
     cc_input = f"modules/src/{mod}.cc"
     hh_input = f"modules/include/{mod}.hh"
-    cc_output = f"build/modules/src/{mod}.cc"
-    hh_output = f"build/modules/include/{mod}.hh"
+    cc_output = f"build/patched/modules/src/{mod}.cc"
+    hh_output = f"build/patched/modules/include/{mod}.hh"
+    base_hash = hash_file(base_input)
     cc_hash = hash_file(cc_input)
     hh_hash = hash_file(hh_input)
-    combined_hash = (cc_hash + hh_hash)
+    combined_hash = (base_hash + cc_hash + hh_hash)
 
     substitutions = {
         "@BASENAME@": f"{mod}",

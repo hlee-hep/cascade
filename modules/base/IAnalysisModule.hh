@@ -26,6 +26,7 @@ class IAnalysisModule
 
     virtual void Run()
     {
+        m_Managers.clear();
         RegisterAnalysisManager("main");
         SetStatus("Initializing");
         Init();
@@ -159,13 +160,13 @@ class IAnalysisModule
             LOG_INFO("ParamManager", m_Param.DumpJSON());
             return false;
         }
+        m_Hash = ComputeSnapshotHash_();
         if (m_Param.Get<bool>("force_run"))
         {
             LOG_INFO(Name(), "Force run is enabled. Run will be started.");
             return true;
         }
 
-        m_Hash = ComputeSnapshotHash_();
         bool dupl = CacheManager::IsHashCached(m_Basename, m_Hash);
         if (dupl) LOG_ERROR(Name(), "Duplication of hash is detected.");
         return !dupl;

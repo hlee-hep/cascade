@@ -1,8 +1,9 @@
-import os, glob
+import os
+from SCons.Script import Glob
 
 Import("env", "lib_param_obj")
 
-modules = glob.glob("src/*Module.cc")
+modules = [str(p) for p in Glob("#build/patched/modules/src/*Module.cc")]
 
 modenv = env.Clone()
 libname = os.path.basename(lib_param_obj[0].name)[3:-3]
@@ -13,7 +14,7 @@ libs = []
 installs = []
 for mod in modules:
     mod = os.path.splitext(os.path.basename(mod))[0]
-    lib = modenv.SharedLibrary(f"lib{mod}", [f"src/{mod}.cc"])
+    lib = modenv.SharedLibrary(f"lib{mod}", [f"#build/patched/modules/src/{mod}.cc"])
     libs.append(lib)
     installs.append(modenv.Install(modenv["LIBDIR"], lib))
 
