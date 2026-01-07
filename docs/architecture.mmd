@@ -1,0 +1,77 @@
+flowchart TD
+    %% Core entry points
+    A1["Python user code"] --> A2["python/py_amcm.py<br/>py_amcm"]
+    A3["ROOT macro"] --> A4["ROOT runtime"]
+    A5["CLI wrapper<br/>python/cascade"] --> A4
+    A5 --> Z1["JSON params temp file"]
+    Z1 --> A4
+
+    %% Python API -> C++ binding
+    A2 --> B1["_cascade (pybind)<br/>main/Cascade.cc"]
+    B1 --> B2["AMCM (C++)<br/>include/AMCM.hh"]
+
+    %% AMCM responsibilities
+    B2 --> C1["AnalysisModuleRegistry<br/>include/AnalysisModuleRegistry.hh"]
+    B2 --> C2["DAGManager<br/>include/DAGManager.hh"]
+    B2 --> C3["Plugin Loader<br/>AMCM::LoadPlugins"]
+    B2 --> C4["Run logs (Python)<br/>py_amcm.save_run_log_all"]
+
+    %% Registry and modules
+    C1 --> D1["Module factories<br/>REGISTER_MODULE"]
+    C1 --> D2["Metadata providers<br/>REGISTER_MODULE_WITH_METADATA"]
+    D1 --> E1["IAnalysisModule instances"]
+
+    %% C++ module lifecycle
+    E1 --> F1["IAnalysisModule::Run<br/>Init→Execute→Finalize"]
+    F1 --> F2["AnalysisManager map<br/>RegisterAnalysisManager"]
+    F1 --> F3["CacheManager + SnapshotHasher"]
+    F1 --> F4["Status updates + Logger"]
+
+    %% AnalysisManager
+    F2 --> G1["AnalysisManager<br/>AnalysisManager.hh"]
+    G1 --> G2["Inputs / Trees / Branches"]
+    G1 --> G3["Cuts / Cut expressions"]
+    G1 --> G4["Histograms (classic)"]
+    G1 --> G5["RDataFrame pipeline"]
+    G1 --> G6["Metadata output"]
+
+    %% ParamManager
+    F1 --> H1["ParamManager<br/>ParamManager.hh"]
+    H1 --> H2["YAML/JSON I/O"]
+    H1 --> H3["ParamValue variants"]
+
+    %% PlotManager (ROOT usage)
+    A4 --> P1["PlotManager<br/>PlotManager.hh"]
+    P1 --> P2["PlotSpec / DrawSpec"]
+    P1 --> P3["Draw() → TCanvas"]
+
+    %% ROOT direct usage
+    A4 --> G1
+    A4 --> H1
+
+    %% Plugins (C++)
+    C3 --> J1["Plugin dir<br/>CASCADE_PLUGIN_DIR"]
+    J1 --> J2["plugin_pubkey.pem (required)"]
+    J1 --> J3["lib*Module.so + .sig"]
+    J3 --> J4["OpenSSL verify (Ed25519)"]
+    J4 --> J5["ABI version + ABI tag check"]
+    J5 --> J6["CascadeRegisterPlugin()"]
+    J6 --> C1
+
+    %% Plugins (Python)
+    A2 --> K1["Python plugin discovery<br/>cascade.pyplugin"]
+    K1 --> K2["Suffix filter<br/>*module.py"]
+    K2 --> K3["plugin_pubkey.pem (required)"]
+    K3 --> K4["openssl pkeyutl verify"]
+    K4 --> K5["Metadata extraction"]
+
+    %% Python modules
+    A2 --> L1["Python modules<br/>modules/python/base_module.py"]
+    L1 --> L2["Lifecycle: init/execute/finalize"]
+    L1 --> L3["Cache file<br/>~/.cache/cascade/py_module_hashes.json"]
+
+    %% C++ cache
+    F3 --> M1["C++ cache dir<br/>~/.cache/cascade/snapshot_cache"]
+
+    %% Run logs
+    C4 --> N1["Run logs YAML<br/>~/.cache/cascade/run_logs"]
