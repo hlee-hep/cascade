@@ -326,7 +326,7 @@ struct BandSpec
     int FillStyle = 3254;
     int FillColor = 1;
     float Alpha = 1;
-    std::string Name = "Stat. err.";
+    std::string Name = "stat. err.";
 };
 
 struct LayoutSpec // not global
