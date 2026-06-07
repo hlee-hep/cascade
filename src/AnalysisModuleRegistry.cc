@@ -7,10 +7,15 @@ AnalysisModuleRegistry &AnalysisModuleRegistry::Get()
     return instance;
 }
 
-void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory) { m_Factories[name] = std::move(factory); }
+void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory)
+{
+    if (m_Factories.count(name)) throw std::runtime_error("Duplicate module registration: " + name);
+    m_Factories[name] = std::move(factory);
+}
 
 void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory factory, MetadataProvider metadata)
 {
+    if (m_Factories.count(name)) throw std::runtime_error("Duplicate module registration: " + name);
     m_Factories[name] = std::move(factory);
     m_MetadataProviders[name] = std::move(metadata);
 }

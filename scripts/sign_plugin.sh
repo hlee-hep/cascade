@@ -2,16 +2,16 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <plugin.so> <private_key_pem>" >&2
+  echo "Usage: $0 <payload_file> <private_key_pem>" >&2
   exit 1
 fi
 
-plugin="$1"
+payload="$1"
 privkey="$2"
-sig="${plugin}.sig"
+sig="${payload}.sig"
 
-if [[ ! -f "$plugin" ]]; then
-  echo "Plugin not found: $plugin" >&2
+if [[ ! -f "$payload" ]]; then
+  echo "Payload not found: $payload" >&2
   exit 1
 fi
 
@@ -20,5 +20,5 @@ if [[ ! -f "$privkey" ]]; then
   exit 1
 fi
 
-openssl pkeyutl -sign -inkey "$privkey" -rawin -in "$plugin" -out "$sig"
+openssl pkeyutl -sign -inkey "$privkey" -rawin -in "$payload" -out "$sig"
 echo "Signature written to $sig"

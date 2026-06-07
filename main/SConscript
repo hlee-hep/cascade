@@ -1,12 +1,9 @@
 import os
 from collections import defaultdict
 
-Import("env", "core_objs", "utils_obj", "lib_param_obj" ,"module_libs_obj", "lib_analysis_obj", "lib_plot_obj")
+Import("env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj")
 
 all_objs = core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj
-
-for sublist in module_libs_obj:
-    all_objs.extend(sublist)
 
 modenv = env.Clone()
 for obj in all_objs:

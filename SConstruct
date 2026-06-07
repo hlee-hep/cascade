@@ -1,22 +1,6 @@
-import os, subprocess, hashlib, stat
-from pathlib import Path
+import os, subprocess, stat
 from SCons.Script import Environment, Variables
 import SCons.Util
-
-def hash_file(path):
-    if not os.path.exists(path):
-        return ""
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()[:12]
-
-def patch_file(input_path, output_path, substitutions):
-    with open(input_path, "r") as f:
-        content = f.read()
-    for key, val in substitutions.items():
-        content = content.replace(key, val)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as f:
-        f.write(content)
 
 def generate_init_py(target, source, env):
     target_dir = os.path.dirname(str(target[0]))
@@ -92,49 +76,6 @@ def create_symlink(target, source, env):
     print(f"[SCons] symlink {link_path} -> {rel_target}")
     return 0
 
-include_dir = Path("modules/include")
-module_headers = list(include_dir.glob("*Module.hh"))
-modules = [f.stem for f in module_headers if f.suffix == ".hh"]
-
-py_dir = Path("modules/python")
-module_py = list(py_dir.glob("*.py"))
-pymodules = [f.stem for f in module_py if f.suffix == ".py"]
-
-for mod in modules:
-    base_input = "modules/base/IAnalysisModule.hh"
-    cc_input = f"modules/src/{mod}.cc"
-    hh_input = f"modules/include/{mod}.hh"
-    cc_output = f"build/patched/modules/src/{mod}.cc"
-    hh_output = f"build/patched/modules/include/{mod}.hh"
-    base_hash = hash_file(base_input)
-    cc_hash = hash_file(cc_input)
-    hh_hash = hash_file(hh_input)
-    combined_hash = (base_hash + cc_hash + hh_hash)
-
-    substitutions = {
-        "@BASENAME@": f"{mod}",
-        "@VERSION_HASH@": f"src:{combined_hash}"
-    }
-
-    if os.path.exists(cc_input):
-        patch_file(cc_input, cc_output, substitutions)
-    if os.path.exists(hh_input):
-        patch_file(hh_input, hh_output, substitutions)
-
-for mod in pymodules:
-    py_input = f"modules/python/{mod}.py"
-    py_output = f"build/modules/python/{mod}.py"
-    py_hash = hash_file(py_input)
-    combined_hash = (py_hash + py_hash)
-    print(py_input)
-    substitutions = {
-        "@BASENAME@": f"{mod}",
-        "@VERSION_HASH@": f"src:{combined_hash}"
-    }
-
-    if os.path.exists(py_input):
-        patch_file(py_input, py_output, substitutions)
-
 vars = Variables()
 vars.Add('PREFIX', 'install directory', '~/.local')
 vars.Add('LIBDIR', 'library install directory', '')
@@ -172,13 +113,11 @@ VariantDir("build/utils", "utils", duplicate=0)
 VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
 VariantDir("build/PlotManager", "PlotManager", duplicate=0)
 VariantDir("build/ParamManager", "ParamManager", duplicate=0)
-VariantDir("build/modules", "modules", duplicate=0)
 VariantDir("build/python", "python", duplicate=0)
 VariantDir("build/main", "main", duplicate=0)
 TOP = os.getcwd()
 
 env.Append(CPPPATH=[
-    os.path.join(TOP, "build/modules/include"),
     os.path.join(TOP, "modules/base"),
     os.path.join(TOP, "src"),
     os.path.join(TOP, "AnalysisManager"),
@@ -223,7 +162,7 @@ all_srcs += Glob('src/*.cc') + Glob('src/*.hh')
 all_srcs += Glob('AnalysisManager/*.cc') + Glob('AnalysisManager/*.hh')
 all_srcs += Glob('PlotManager/*.cc') + Glob('PlotManager/*.hh')
 all_srcs += Glob('ParamManager/*.cc') + Glob('ParamManager/*.hh')
-all_srcs += Glob('modules/src/*.cc') + Glob('modules/include/*.hh')
+all_srcs += Glob('modules/base/IAnalysisModule.hh')
 
 env.Alias('tidy', env.Tidy('tidy.log', all_srcs))
 Depends('tidy', compdb)
@@ -237,9 +176,8 @@ lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisManager/SCons
 lib_plot_obj, lib_plot_install = SConscript("build/PlotManager/SConscript", exports=["env","TOP"])
 lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env","TOP"])
 core_objs, _ = SConscript("build/src/SConscript", exports=["env" , "lib_param_obj"])
-module_libs_obj, module_libs_install = SConscript("build/modules/SConscript", exports=["env", "lib_param_obj"])
 pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
-    "env", "core_objs", "utils_obj", "lib_param_obj" ,"module_libs_obj", "lib_analysis_obj", "lib_plot_obj"
+    "env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj"
 ])
 
 # pyinstall
@@ -255,6 +193,7 @@ env.AddPostAction(cli_install,make_executable)
 scripts_dir = os.path.join(env['PREFIX'], "share", "cascade", "scripts")
 sign_script = env.Install(scripts_dir, "scripts/sign_plugin.sh")
 env.AddPostAction(sign_script, make_executable)
+plugin_sconstruct = env.Install(scripts_dir, "scripts/plugin_sconstruct")
 
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
 cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
@@ -264,7 +203,7 @@ cascade_so_link = env.Command(cascade_so_target, pybind_install, create_symlink)
 Depends(cascade_so_link, pybind_install)
 
 pymodule_dir = env['PYMODULEDIR']
-pymodule_files = Glob("build/modules/python/*.py")
+pymodule_files = Glob("modules/python/base_module.py")
 pymodule_install = env.Install(pymodule_dir, pymodule_files)
 py_install += pymodule_install
 
@@ -274,11 +213,8 @@ pymodule_init = env.Command(pymodule_init_target, pymodule_install, generate_ini
 
 hdr_install = []
 
-if os.path.isdir('build/modules/include'):
-    hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('build/modules/include/*.hh'))
-
 if os.path.isdir('modules'):
-    hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('modules/base/*.hh'))
+    hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('modules/base/IAnalysisModule.hh'))
 if os.path.isdir('include'):
     hdr_install += env.Install(env['INCLUDEDIR'], Glob('include/*.hh'))
 
@@ -289,8 +225,8 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + module_libs_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script
-build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + module_libs_obj + pybind_obj
+install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
+build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)
 build_targets = SCons.Util.unique(build_targets)

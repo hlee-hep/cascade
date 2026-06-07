@@ -2,7 +2,7 @@ Build and Install Flow
 
 Overview
 - Build system: SCons
-- Outputs: shared libraries, headers, Python package, CLI, plugins
+- Outputs: core shared libraries, headers, Python package, CLI, and plugin helper scripts
 
 Key Install Variables
 - `PREFIX` (default: `~/.local`)
@@ -28,11 +28,19 @@ What Gets Installed
 - Core libraries: `${LIBDIR}/libCascade.so`, `libAMCM.so`, others
 - Headers: `${INCLUDEDIR}/*.hh`
 - Python package: `${PYTHONDIR}/*` (includes `_cascade.so` symlink)
-- Python modules: `${PYMODULEDIR}/*.py`
+- Python base module support: `${PYMODULEDIR}/base_module.py`
 - CLI: `${BINDIR}/cascade`
-- Helper scripts: `${PREFIX}/share/cascade/scripts/sign_plugin.sh`
+- Helper scripts: `${PREFIX}/share/cascade/scripts/sign_plugin.sh`, `${PREFIX}/share/cascade/scripts/plugin_sconstruct`
+- CLI diagnostics: `${BINDIR}/cascade doctor plugins`
 
 Plugin Directories
 - C++ plugins live in `${CASCADE_PLUGIN_DIR}`.
 - Python plugins live in `${CASCADE_PYPLUGIN_DIR}`.
-- Place `plugin_pubkey.pem` in each plugin directory to enable signature verification.
+- Place `plugin_pubkey.pem`, `plugin_manifest.json`, and `plugin_manifest.json.sig` in each plugin directory.
+
+Plugin Diagnostics
+```bash
+cascade doctor plugins
+```
+
+This verifies signed manifests, file hashes, stale unlisted files, Python classes, and C++ ABI compatibility.

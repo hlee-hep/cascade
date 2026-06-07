@@ -1,4 +1,5 @@
-import os, sys, hashlib, json
+import ast
+import os, sys, hashlib, json, subprocess
 from pathlib import Path
 from SCons.Script import Environment, Glob
 
@@ -7,6 +8,13 @@ def hash_file(path):
         return ""
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()[:12]
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 def hash_tree(paths):
     h = hashlib.sha256()
@@ -34,6 +42,69 @@ def read_text(path):
 def write_text(path, content):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(content)
+
+def python_plugin_classes(path):
+    try:
+        tree = ast.parse(Path(path).read_text(), filename=str(path))
+    except Exception:
+        return []
+
+    def is_base_module(base):
+        if isinstance(base, ast.Name):
+            return base.id == "base_module"
+        if isinstance(base, ast.Attribute):
+            return base.attr == "base_module"
+        return False
+
+    classes = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(is_base_module(base) for base in node.bases):
+            classes.append(node.name)
+    return classes
+
+def generate_manifest(target, source, env):
+    language = env["CASCADE_MANIFEST_LANGUAGE"]
+    entries = []
+    for src in source:
+        path = str(src)
+        rel = os.path.basename(path)
+        name = os.path.splitext(rel)[0]
+        entry = {
+            "name": name,
+            "language": language,
+            "path": rel,
+            "sha256": sha256_file(path),
+        }
+        if language == "cpp":
+            if name.startswith("lib"):
+                name = name[3:]
+            entry["name"] = name
+        elif language == "python":
+            entry["classes"] = python_plugin_classes(path)
+        entries.append(entry)
+
+    manifest = {
+        "schema": 1,
+        "package": os.path.basename(os.getcwd()),
+        "modules": sorted(entries, key=lambda item: (item["language"], item["name"], item["path"])),
+    }
+    Path(str(target[0])).parent.mkdir(parents=True, exist_ok=True)
+    Path(str(target[0])).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    print(f"[SCons] generated signed-manifest payload {target[0]}")
+    return 0
+
+def sign_manifest(target, source, env):
+    key = os.environ.get("CASCADE_PLUGIN_PRIVATE_KEY", "")
+    if not key:
+        raise RuntimeError("CASCADE_PLUGIN_PRIVATE_KEY is required to sign plugin manifests")
+    subprocess.check_call([
+        "openssl", "pkeyutl", "-sign",
+        "-inkey", key, "-rawin",
+        "-in", str(source[0]),
+        "-out", str(target[0]),
+    ])
+    print(f"[SCons] signed plugin manifest {source[0]}")
+    return 0
 
 # -------- config --------
 def require_env(name, default=None):
@@ -98,6 +169,8 @@ env.Append(CXXFLAGS=["-DCASCADE_PLUGIN_NO_AUTO_REGISTER"])
 
 install_targets = []
 libs = []
+cpp_install = []
+public_key = os.environ.get("CASCADE_PLUGIN_PUBLIC_KEY", "")
 
 # -------- C++ modules --------
 headers = [str(h) for h in Glob("include/*.hh")]
@@ -137,7 +210,9 @@ CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() {{ CASCADE_REGISTER_MODULE({c
     lib = env.SharedLibrary(mod, sources)
     libs.append(lib)
 
-    install_targets += env.Install(plugin_lib_dir, lib)
+    installed_lib = env.Install(plugin_lib_dir, lib)
+    install_targets += installed_lib
+    cpp_install += installed_lib
     install_targets += env.Install(plugin_include_dir, [hh_out])
 
 # -------- Python modules --------
@@ -189,6 +264,31 @@ def generate_init_py(target, source, env):
 init_py_target = os.path.join(site_packages, "__init__.py")
 init_py = env.Command(init_py_target, py_install, generate_init_py)
 install_targets.append(init_py)
+
+manifest_targets = []
+if cpp_install:
+    cpp_manifest_env = env.Clone(CASCADE_MANIFEST_LANGUAGE="cpp")
+    cpp_manifest = cpp_manifest_env.Command(os.path.join(plugin_lib_dir, "plugin_manifest.json"), cpp_install, generate_manifest)
+    manifest_targets += cpp_manifest
+    install_targets += cpp_manifest
+    if os.environ.get("CASCADE_PLUGIN_PRIVATE_KEY", ""):
+        cpp_manifest_sig = env.Command(os.path.join(plugin_lib_dir, "plugin_manifest.json.sig"), cpp_manifest, sign_manifest)
+        manifest_targets += cpp_manifest_sig
+        install_targets += cpp_manifest_sig
+    if public_key:
+        install_targets += env.InstallAs(os.path.join(plugin_lib_dir, "plugin_pubkey.pem"), public_key)
+
+if py_install:
+    py_manifest_env = env.Clone(CASCADE_MANIFEST_LANGUAGE="python")
+    py_manifest = py_manifest_env.Command(os.path.join(site_packages, "plugin_manifest.json"), py_install, generate_manifest)
+    manifest_targets += py_manifest
+    install_targets += py_manifest
+    if os.environ.get("CASCADE_PLUGIN_PRIVATE_KEY", ""):
+        py_manifest_sig = env.Command(os.path.join(site_packages, "plugin_manifest.json.sig"), py_manifest, sign_manifest)
+        manifest_targets += py_manifest_sig
+        install_targets += py_manifest_sig
+    if public_key:
+        install_targets += env.InstallAs(os.path.join(site_packages, "plugin_pubkey.pem"), public_key)
 
 # -------- Alias --------
 Default(libs)

@@ -1,138 +1,256 @@
 from cascade.pymodule import base_module
 from cascade._cascade import AMCM, IAnalysisModule
 from cascade import init_interrupt, is_interrupted, log, log_level
-import yaml, os, subprocess
-from datetime import datetime
+import ast
+import hashlib
+import importlib
+import importlib.util
 import json
-#wrapper class for python module
+import os
+import subprocess
+import yaml
+from datetime import datetime
+
+
+_PYPLUGIN_CACHE = None
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_manifest(manifest_path, public_key_path):
+    sig_path = manifest_path + ".sig"
+    if not os.path.exists(manifest_path) or not os.path.exists(sig_path):
+        raise RuntimeError(f"Signed plugin manifest missing: {manifest_path}")
+    cmd = [
+        "openssl", "pkeyutl", "-verify", "-pubin",
+        "-inkey", public_key_path, "-rawin",
+        "-in", manifest_path, "-sigfile", sig_path,
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        raise RuntimeError(f"Plugin manifest signature invalid: {manifest_path}")
+
+
+def _is_base_module(base):
+    if isinstance(base, ast.Name):
+        return base.id == "base_module"
+    if isinstance(base, ast.Attribute):
+        return base.attr == "base_module"
+    return False
+
+
+def _classes_from_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+    except Exception:
+        return []
+    classes = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            if any(_is_base_module(base) for base in node.bases):
+                classes.append(node.name)
+    return classes
+
+
+def _load_python_plugin_index():
+    global _PYPLUGIN_CACHE
+    if _PYPLUGIN_CACHE is not None:
+        return _PYPLUGIN_CACHE
+
+    index = {}
+    try:
+        pkg = importlib.import_module("cascade.pyplugin")
+    except Exception:
+        _PYPLUGIN_CACHE = index
+        return index
+
+    for root in pkg.__path__:
+        manifest_path = os.path.join(root, "plugin_manifest.json")
+        public_key_path = os.path.join(root, "plugin_pubkey.pem")
+        if not os.path.exists(public_key_path):
+            log(log_level.WARN, "PLUGIN", f"Python plugin public key not found in {root}; skipping python plugins.")
+            continue
+        try:
+            _verify_manifest(manifest_path, public_key_path)
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception as e:
+            log(log_level.WARN, "PLUGIN", str(e))
+            continue
+
+        for entry in manifest.get("modules", []):
+            if entry.get("language") != "python":
+                continue
+            rel_path = entry.get("path", "")
+            if not rel_path or os.path.isabs(rel_path):
+                log(log_level.WARN, "PLUGIN", f"Ignoring invalid python plugin manifest path: {rel_path}")
+                continue
+            path = os.path.join(root, rel_path)
+            if not os.path.exists(path):
+                log(log_level.WARN, "PLUGIN", f"Manifest-listed python plugin file missing: {path}")
+                continue
+            if _sha256_file(path) != entry.get("sha256", ""):
+                log(log_level.WARN, "PLUGIN", f"Python plugin hash mismatch: {path}")
+                continue
+            modname = "cascade.pyplugin." + os.path.splitext(os.path.basename(path))[0]
+            for class_name in entry.get("classes") or _classes_from_file(path):
+                if class_name in index:
+                    previous = index[class_name]
+                    raise RuntimeError(
+                        "Duplicate python plugin module name "
+                        f"{class_name}: {previous['path']} and {path}"
+                    )
+                index[class_name] = {
+                    "module": modname,
+                    "class": class_name,
+                    "path": path,
+                    "manifest": manifest_path,
+                }
+
+    _PYPLUGIN_CACHE = index
+    return index
+
+
+class _CppModuleHandle:
+    language = "cpp"
+
+    def __init__(self, ctrl, module):
+        self._ctrl = ctrl
+        self._module = module
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def name(self):
+        return self._module.name()
+
+    def get_basename(self):
+        return self._module.get_basename()
+
+    def get_status(self):
+        return self._module.get_status()
+
+    def get_code_hash(self):
+        return self._module.get_code_hash()
+
+    def get_parameters(self):
+        raw = self._module.dump_params_to_json(4)
+        data = json.loads(raw)
+        return {k: v["value"] for k, v in data.items()}
+
+    def set_param(self, key, value):
+        return self._module.set_param(key, value)
+
+    def run(self):
+        return self._ctrl.run_module(self.name())
+
+
+class _PythonModuleHandle:
+    language = "python"
+
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def name(self):
+        return self._module.name()
+
+    def get_basename(self):
+        return self._module.get_basename()
+
+    def get_status(self):
+        return self._module.get_status()
+
+    def get_code_hash(self):
+        return self._module.get_code_hash()
+
+    def get_parameters(self):
+        return self._module.get_parameters()
+
+    def set_param(self, key, value):
+        return self._module.set_param(key, value)
+
+    def run(self):
+        return self._module.run()
+
 
 class py_amcm:
     def __init__(self):
-        self.ctrl = AMCM()  # py_amcm instance
-        self.python_modules = {}  # name -> PythonModuleBase instance
+        self.ctrl = AMCM()
+        self.modules = {}
         self.executed_modules = []
         init_interrupt()
 
-    def register_python_module(self, name, module_obj):
+    def _register_python_plugin(self, class_name, instance_name):
+        index = _load_python_plugin_index()
+        info = index.get(class_name)
+        if not info:
+            raise RuntimeError(f"Module not found: {class_name}")
+        mod = importlib.import_module(info["module"])
+        cls = getattr(mod, info["class"])
+        module_obj = cls()
         if not isinstance(module_obj, base_module):
             raise TypeError("Module must inherit from PythonModuleBase")
-        self.python_modules[name] = module_obj
-        self.python_modules[name].set_name(name)
-        log(log_level.INFO,"CONTROL",f"Module {module_obj.get_basename()} is registered as {name}")
+        module_obj.set_name(instance_name)
+        handle = _PythonModuleHandle(module_obj)
+        self.modules[instance_name] = handle
+        log(log_level.INFO, "CONTROL", f"Module {module_obj.get_basename()} is registered as {instance_name}")
+        return handle
+
+    def register_module(self, class_name, name=None):
+        instance_name = name or f"{class_name}_{sum(1 for h in self.modules.values() if h.get_basename() == class_name) + 1}"
+        cpp_modules = set(self.ctrl.get_list_available_modules())
+        py_modules = set(_load_python_plugin_index().keys())
+        if class_name in cpp_modules and class_name in py_modules:
+            raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
+        if class_name in cpp_modules:
+            module = self.ctrl.register_module(class_name, instance_name)
+            handle = _CppModuleHandle(self.ctrl, module)
+            self.modules[instance_name] = handle
+            return handle
+        return self._register_python_plugin(class_name, instance_name)
+
+    def register_python_module(self, name, module_obj):
+        modname = module_obj.__class__.__module__
+        if not modname.startswith("cascade.pyplugin."):
+            raise RuntimeError(f"Python module {modname} is not a signed cascade.pyplugin module; refusing to register it.")
+        return self.register_module(module_obj.__class__.__name__, name)
 
     def run_module(self, name_or_mod):
         if is_interrupted():
-            log(log_level.WARN,"CONTROL","Global SIGINT detected. Skipping the module...")
-            return 
-        if isinstance(name_or_mod,str):
-            name = name_or_mod
-            if name in self.python_modules:
-                self.python_modules[name].run()
-                self.executed_modules.append(self.python_modules[name])
-            else:
-                self.ctrl.run_module(name)
-                self.executed_modules.append(self.ctrl.get_module(name))
-        elif isinstance(name_or_mod, base_module):
-            mod = name_or_mod
-            if mod in self.python_modules.values():
-                mod.run()
-                self.executed_modules.append(mod)
-            else:
-                print("No such module exists.")
+            log(log_level.WARN, "CONTROL", "Global SIGINT detected. Skipping the module...")
+            return
+        if isinstance(name_or_mod, str):
+            handle = self.modules.get(name_or_mod)
+            if handle is None:
+                raise RuntimeError(f"Module not registered: {name_or_mod}")
+        elif isinstance(name_or_mod, (_CppModuleHandle, _PythonModuleHandle)):
+            handle = name_or_mod
         elif isinstance(name_or_mod, IAnalysisModule):
-            mod = name_or_mod
-            self.ctrl.run_module(mod)
-            self.executed_modules.append(mod)
+            handle = _CppModuleHandle(self.ctrl, name_or_mod)
+        elif isinstance(name_or_mod, base_module):
+            raise RuntimeError("Direct Python module execution is disabled; register a signed cascade.pyplugin module by name.")
         else:
             raise TypeError(f"Unsupported argument type: {type(name_or_mod)}")
+        handle.run()
+        self.executed_modules.append(handle)
 
     def get_list_available_modules(self):
-        import ast
-        import importlib
-        import importlib.util
-        import pkgutil
-        import subprocess
-        import os
-        modules = self.ctrl.get_list_available_modules()
-
-        def is_base_module(base):
-            if isinstance(base, ast.Name):
-                return base.id in ("base_module", "base_module")
-            if isinstance(base, ast.Attribute):
-                return base.attr in ("base_module", "base_module")
-            return False
-
-        def list_python_modules(pkg_name, verify_signatures):
-            try:
-                pkg = importlib.import_module(pkg_name)
-            except Exception:
-                return []
-            key_path = None
-            if verify_signatures:
-                for root in pkg.__path__:
-                    candidate = os.path.join(root, "plugin_pubkey.pem")
-                    if os.path.exists(candidate):
-                        key_path = candidate
-                        break
-                if not key_path:
-                    log(log_level.ERROR, "CONTROL", f"Python plugin public key not found for {pkg_name}; skipping python plugins.")
-                    return []
-
-            modules = []
-            for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + "."):
-                if not modname.endswith("module"):
-                    continue
-                if not verify_signatures or not key_path:
-                    modules.append(modname)
-                    continue
-                try:
-                    spec = importlib.util.find_spec(modname)
-                except Exception:
-                    continue
-                if spec is None or not spec.origin or not spec.origin.endswith(".py"):
-                    continue
-                sig_path = spec.origin + ".sig"
-                if not os.path.exists(sig_path):
-                    log(log_level.ERROR, "CONTROL", f"Missing python plugin signature: {sig_path}")
-                    continue
-                cmd = [
-                    "openssl", "pkeyutl", "-verify", "-pubin",
-                    "-inkey", key_path, "-rawin",
-                    "-in", spec.origin, "-sigfile", sig_path,
-                ]
-                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if result.returncode != 0:
-                    log(log_level.ERROR, "CONTROL", f"Python plugin signature invalid: {spec.origin}")
-                    continue
-                modules.append(modname)
-            return modules
-
-        def classes_from_module(modname):
-            try:
-                spec = importlib.util.find_spec(modname)
-            except Exception:
-                return []
-            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
-                return []
-            try:
-                with open(spec.origin, "r", encoding="utf-8") as f:
-                    tree = ast.parse(f.read(), filename=spec.origin)
-            except Exception:
-                return []
-            classes = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    for base in node.bases:
-                        if is_base_module(base):
-                            classes.append(node.name)
-                            break
-            return classes
-
-        for modname in list_python_modules("cascade.pymodule", False):
-            modules.extend(classes_from_module(modname))
-        for modname in list_python_modules("cascade.pyplugin", True):
-            modules.extend(classes_from_module(modname))
-        return modules
+        cpp_modules = set(self.ctrl.get_list_available_modules())
+        py_modules = set(_load_python_plugin_index().keys())
+        duplicates = sorted(cpp_modules & py_modules)
+        if duplicates:
+            raise RuntimeError(f"Duplicate module names across C++ and Python plugins: {duplicates}")
+        return sorted(cpp_modules | py_modules)
 
     def get_list_available_module_metadata(self, include_python=True, instantiate_python=False):
         metadata = []
@@ -144,123 +262,75 @@ class py_amcm:
                 "tags": list(item.tags),
                 "language": "cpp",
             })
-
         if not include_python:
             return metadata
 
-        import importlib
-        import pkgutil
-        import inspect
-        import cascade
-
-        def list_modules(pkg_name, verify_signatures):
+        cpp_names = {entry["name"] for entry in metadata}
+        for class_name, info in _load_python_plugin_index().items():
+            if class_name in cpp_names:
+                raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
             try:
-                pkg = importlib.import_module(pkg_name)
+                mod = importlib.import_module(info["module"])
+                obj = getattr(mod, class_name)
             except Exception:
-                return []
-            key_path = None
-            if verify_signatures:
-                for root in pkg.__path__:
-                    candidate = os.path.join(root, "plugin_pubkey.pem")
-                    if os.path.exists(candidate):
-                        key_path = candidate
-                        break
-                if not key_path:
-                    log(log_level.ERROR, "CONTROL", f"Python plugin public key not found for {pkg_name}; skipping python plugins.")
-                    return []
-
-            modules = []
-            for _, modname, _ in pkgutil.iter_modules(pkg.__path__, pkg_name + "."):
-                if not modname.endswith("module"):
-                    continue
-                if not verify_signatures or not key_path:
-                    modules.append(modname)
-                    continue
+                continue
+            plugin_info = getattr(obj, "METADATA", None)
+            if isinstance(plugin_info, dict):
+                metadata.append({
+                    "name": plugin_info.get("name", class_name),
+                    "version": plugin_info.get("version", ""),
+                    "summary": plugin_info.get("summary", ""),
+                    "tags": list(plugin_info.get("tags", [])),
+                    "language": "python",
+                })
+            elif instantiate_python:
                 try:
-                    spec = importlib.util.find_spec(modname)
+                    plugin_info = obj().get_metadata()
                 except Exception:
-                    continue
-                if spec is None or not spec.origin or not spec.origin.endswith(".py"):
-                    continue
-                sig_path = spec.origin + ".sig"
-                if not os.path.exists(sig_path):
-                    log(log_level.WARN, "CONTROL", f"Missing python plugin signature: {sig_path}")
-                    continue
-                cmd = [
-                    "openssl", "pkeyutl", "-verify", "-pubin",
-                    "-inkey", key_path, "-rawin",
-                    "-in", spec.origin, "-sigfile", sig_path,
-                ]
-                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if result.returncode != 0:
-                    log(log_level.WARN, "CONTROL", f"Python plugin signature invalid: {spec.origin}")
-                    continue
-                modules.append(modname)
-            return modules
-
-        def add_python_metadata(modname):
-            try:
-                mod = importlib.import_module(modname)
-            except Exception:
-                return
-            for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if issubclass(obj, base_module) and obj is not base_module:
-                    info = getattr(obj, "METADATA", None)
-                    if isinstance(info, dict):
-                        entry = {
-                            "name": info.get("name", name),
-                            "version": info.get("version", ""),
-                            "summary": info.get("summary", ""),
-                            "tags": list(info.get("tags", [])),
-                            "language": "python",
-                        }
-                        metadata.append(entry)
-                        continue
-
-                    if instantiate_python:
-                        try:
-                            info = obj().get_metadata()
-                        except Exception:
-                            info = None
-                        if isinstance(info, dict):
-                            entry = {
-                                "name": info.get("name", name),
-                                "version": info.get("version", ""),
-                                "summary": info.get("summary", ""),
-                                "tags": list(info.get("tags", [])),
-                                "language": "python",
-                            }
-                            metadata.append(entry)
-                        continue
-
-                    entry = {
-                        "name": name,
-                        "version": getattr(obj, "VERSION", getattr(cascade, "__version__", "")),
-                        "summary": getattr(obj, "SUMMARY", ""),
-                        "tags": list(getattr(obj, "TAGS", [])),
+                    plugin_info = None
+                if isinstance(plugin_info, dict):
+                    metadata.append({
+                        "name": plugin_info.get("name", class_name),
+                        "version": plugin_info.get("version", ""),
+                        "summary": plugin_info.get("summary", ""),
+                        "tags": list(plugin_info.get("tags", [])),
                         "language": "python",
-                    }
-                    metadata.append(entry)
-
-        for modname in list_modules("cascade.pymodule", False):
-            add_python_metadata(modname)
-        for modname in list_modules("cascade.pyplugin", True):
-            add_python_metadata(modname)
+                    })
+            else:
+                import cascade
+                metadata.append({
+                    "name": class_name,
+                    "version": getattr(obj, "VERSION", getattr(cascade, "__version__", "")),
+                    "summary": getattr(obj, "SUMMARY", ""),
+                    "tags": list(getattr(obj, "TAGS", [])),
+                    "language": "python",
+                })
         return metadata
 
     def get_list_registered_modules(self):
-        modules = self.ctrl.get_list_registered_modules()
-        modules.extend(self.python_modules.keys())
-        return modules
+        return list(self.modules.keys())
 
     def get_status(self, name):
-        return self.ctrl.get_status(name)
+        handle = self.modules.get(name)
+        if handle is None:
+            raise RuntimeError(f"Module not registered: {name}")
+        return handle.get_status()
 
     def get_all_progress(self):
-        return self.ctrl.get_all_progress()
+        progress = self.ctrl.get_all_progress()
+        for name, handle in self.modules.items():
+            if handle.language == "python":
+                progress.setdefault(name, {})
+        return progress
+
+    def get_module(self, name):
+        return self.modules.get(name, None)
 
     def get_python_module(self, name):
-        return self.python_modules.get(name, None)
+        handle = self.modules.get(name)
+        if isinstance(handle, _PythonModuleHandle):
+            return handle._module
+        return None
 
     def get_dag(self):
         return self.ctrl.get_dag()
@@ -270,12 +340,6 @@ class py_amcm:
 
     def save_run_log(self):
         self.ctrl.save_run_log()
-
-    def register_module(self, class_name, name=None):
-        if name is None:
-            return self.ctrl.register_module(class_name)
-        else:
-            return self.ctrl.register_module(class_name, name)
 
     def run_group(self, group):
         if isinstance(group, (list, tuple)):
@@ -287,33 +351,20 @@ class py_amcm:
     def save_run_log_all(self, log_dir=None):
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        log_data = {
-        "modules": []
-        }
+        log_data = {"modules": []}
 
         filename_suffix = []
-        for i, mod in enumerate(self.executed_modules):
-            if isinstance(mod,IAnalysisModule):
-                if hasattr(mod, "get_params_to_json"):
-                    raw_json = mod.get_params_to_json()
-                else:
-                    raw_json = mod.dump_params_to_json(4)
-                raw = json.loads(raw_json)
-                params = {k: v["value"] for k, v in raw.items()}
-            elif isinstance(mod, base_module):
-                params = mod.get_parameters()
-            else:
-                params = None
+        for i, handle in enumerate(self.executed_modules):
             entry = {
-            "name": mod.name(),
-            "module": mod.get_basename(),
-            "codehash": mod.get_code_hash(),
-            "status": mod.get_status(),
-            "params": params
+                "name": handle.name(),
+                "module": handle.get_basename(),
+                "codehash": handle.get_code_hash(),
+                "status": handle.get_status(),
+                "params": handle.get_parameters(),
             }
             log_data["modules"].append(entry)
             if i < 5:
-                filename_suffix.append(mod.name())
+                filename_suffix.append(handle.name())
 
         suffix = "_".join(filename_suffix)
         filename = f"control_log_{timestamp}_{suffix}.yaml"
@@ -324,4 +375,4 @@ class py_amcm:
         with open(os.path.join(log_dir, filename), "w") as f:
             yaml.dump(log_data, f, sort_keys=False)
 
-        log(log_level.INFO,"CONTROL",f"Run log '{filename}' is saved in {log_dir}.")
+        log(log_level.INFO, "CONTROL", f"Run log '{filename}' is saved in {log_dir}.")

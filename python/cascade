@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cascade CLI — ROOT macro wrapper:
-- inject YAML/kv params
+Cascade CLI:
+- ROOT macro wrapper with YAML/kv param injection
+- plugin diagnostics
 """
-import argparse, sys, os, json, tempfile, shlex, subprocess, signal
+import argparse, sys, os, json, tempfile, shlex, subprocess, signal, hashlib, ctypes
 from typing import Any, List, Dict, Tuple, Optional
 
 # ------------ logging  ------------
 def _log(level: str, msg: str) -> None:
     stream = sys.stderr if level in ("WARN", "ERROR") else sys.stdout
-    print(f"[{level}] {msg}", file=stream)
+    print(f"[{level}] {msg}", file=stream, flush=True)
 
 # ------------ SIGINT handler ------------
 def _install_sigint_handler() -> None:
@@ -39,6 +40,196 @@ def _parse_kv(s: str) -> Tuple[str, Any]:
     except Exception:
         pass
     return k, v
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _verify_manifest_signature(manifest: str, pubkey: str) -> bool:
+    sig = manifest + ".sig"
+    result = subprocess.run(
+        ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pubkey, "-rawin", "-in", manifest, "-sigfile", sig],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+def _default_plugin_dirs() -> Tuple[str, str]:
+    prefix = os.environ.get("CASCADE_PREFIX", os.path.expanduser("~/.local"))
+    cpp_dir = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "plugin"))
+    py_dir = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "pyplugin"))
+    return cpp_dir, py_dir
+
+def _manifest_classes(path: str) -> List[str]:
+    try:
+        import ast
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+    except Exception:
+        return []
+
+    def is_base_module(base) -> bool:
+        if isinstance(base, ast.Name):
+            return base.id == "base_module"
+        if isinstance(base, ast.Attribute):
+            return base.attr == "base_module"
+        return False
+
+    classes = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(is_base_module(base) for base in node.bases):
+            classes.append(node.name)
+    return classes
+
+def _check_cpp_abi(path: str) -> Tuple[str, Optional[str]]:
+    try:
+        import cascade
+        expected = int(getattr(cascade, "__abi_version__"))
+    except Exception as e:
+        return "WARN", f"cannot import cascade ABI version: {e}"
+
+    try:
+        lib = ctypes.CDLL(path)
+    except OSError as e:
+        return "ERROR", f"dlopen failed: {e}"
+
+    try:
+        fn = lib.CascadePluginAbiVersion
+    except AttributeError:
+        return "ERROR", "missing CascadePluginAbiVersion"
+    fn.restype = ctypes.c_int
+    try:
+        actual = int(fn())
+    except Exception as e:
+        return "ERROR", f"CascadePluginAbiVersion failed: {e}"
+    if actual != expected:
+        return "ERROR", f"ABI mismatch: plugin={actual} cascade={expected}"
+    return "OK", f"ABI {actual}"
+
+def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, List[str]]:
+    errors = 0
+    warnings = 0
+    names = []
+    _log("INFO", f"[{language}] directory: {path}")
+    if not os.path.isdir(path):
+        _log("WARN", f"[{language}] directory not found")
+        return 0, names
+
+    pubkey = os.path.join(path, "plugin_pubkey.pem")
+    manifest = os.path.join(path, "plugin_manifest.json")
+    manifest_sig = manifest + ".sig"
+    for required in (pubkey, manifest, manifest_sig):
+        if not os.path.exists(required):
+            _log("ERROR", f"[{language}] missing {os.path.basename(required)}")
+            errors += 1
+    if errors:
+        return errors, names
+
+    if _verify_manifest_signature(manifest, pubkey):
+        _log("INFO", f"[{language}] manifest signature: OK")
+    else:
+        _log("ERROR", f"[{language}] manifest signature: invalid")
+        return errors + 1, names
+
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        _log("ERROR", f"[{language}] cannot parse plugin_manifest.json: {e}")
+        return errors + 1, names
+
+    listed = set()
+    modules = data.get("modules", [])
+    if not isinstance(modules, list):
+        _log("ERROR", f"[{language}] manifest field 'modules' must be a list")
+        return errors + 1, names
+
+    for entry in modules:
+        if not isinstance(entry, dict):
+            _log("ERROR", f"[{language}] invalid manifest module entry: {entry!r}")
+            errors += 1
+            continue
+        if entry.get("language") != language:
+            continue
+        rel = entry.get("path", "")
+        name = entry.get("name", rel)
+        if name in names:
+            _log("ERROR", f"[{language}] duplicate module name in manifest: {name}")
+            errors += 1
+        names.append(name)
+        if not rel or os.path.isabs(rel):
+            _log("ERROR", f"[{language}] {name}: invalid relative path {rel!r}")
+            errors += 1
+            continue
+        listed.add(rel)
+        full = os.path.join(path, rel)
+        if not os.path.exists(full):
+            _log("ERROR", f"[{language}] {name}: listed file missing: {rel}")
+            errors += 1
+            continue
+        expected = entry.get("sha256", "")
+        actual = _sha256_file(full)
+        if actual != expected:
+            _log("ERROR", f"[{language}] {name}: hash mismatch")
+            errors += 1
+            continue
+        if language == "cpp":
+            if not os.path.basename(full).endswith("Module.so"):
+                _log("WARN", f"[{language}] {name}: filename does not end with Module.so")
+                warnings += 1
+            elif check_abi:
+                level, msg = _check_cpp_abi(full)
+                _log(level, f"[{language}] {name}: {msg}")
+                if level == "ERROR":
+                    errors += 1
+                elif level == "WARN":
+                    warnings += 1
+            else:
+                _log("INFO", f"[{language}] {name}: hash OK")
+        elif language == "python":
+            if not os.path.basename(full).endswith("module.py"):
+                _log("WARN", f"[{language}] {name}: filename does not end with module.py")
+                warnings += 1
+            declared = entry.get("classes", [])
+            discovered = _manifest_classes(full)
+            missing = [cls for cls in declared if cls not in discovered]
+            if missing:
+                _log("ERROR", f"[{language}] {name}: classes missing from source: {missing}")
+                errors += 1
+            else:
+                _log("INFO", f"[{language}] {name}: hash OK, classes={declared or discovered}")
+
+    expected_suffix = "Module.so" if language == "cpp" else "module.py"
+    ignored = []
+    for fname in sorted(os.listdir(path)):
+        if fname in {"plugin_pubkey.pem", "plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
+            continue
+        if fname.endswith(expected_suffix) and fname not in listed:
+            ignored.append(fname)
+    if ignored:
+        _log("WARN", f"[{language}] files ignored because they are not in manifest: {', '.join(ignored)}")
+        warnings += 1
+
+    _log("INFO", f"[{language}] checked modules={len(listed)} errors={errors} warnings={warnings}")
+    return errors, names
+
+def cmd_doctor_plugins(args) -> None:
+    cpp_default, py_default = _default_plugin_dirs()
+    cpp_dir = args.cpp_dir or cpp_default
+    py_dir = args.py_dir or py_default
+    errors = 0
+    cpp_errors, cpp_names = _doctor_plugin_dir(cpp_dir, "cpp", not args.no_abi)
+    py_errors, py_names = _doctor_plugin_dir(py_dir, "python", False)
+    errors += cpp_errors + py_errors
+    duplicates = sorted(set(cpp_names) & set(py_names))
+    if duplicates:
+        _log("ERROR", f"duplicate module names across C++ and Python plugins: {duplicates}")
+        errors += 1
+    if errors:
+        raise SystemExit(1)
 
 # ------------ ROOT mode ------------
 def _root_invoke(macro: str,
@@ -89,8 +280,18 @@ def cmd_macro_run(args) -> None:
 
 # ------------ argparse ------------
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cascade", description="Cascade ROOT macro wrapper")
-    p.add_argument("--macro", required=True, help="Path to ROOT macro (e.g., macros/My.C)")
+    p = argparse.ArgumentParser(prog="cascade", description="Cascade command line tools")
+    sub = p.add_subparsers(dest="command")
+
+    doctor = sub.add_parser("doctor", help="Run Cascade diagnostics")
+    doctor_sub = doctor.add_subparsers(dest="doctor_command")
+    plugins = doctor_sub.add_parser("plugins", help="Verify plugin manifests, hashes, signatures, and ABI")
+    plugins.add_argument("--cpp-dir", help="C++ plugin directory")
+    plugins.add_argument("--py-dir", help="Python plugin directory")
+    plugins.add_argument("--no-abi", action="store_true", help="Skip C++ plugin dlopen/ABI checks")
+    plugins.set_defaults(func=cmd_doctor_plugins)
+
+    p.add_argument("--macro", help="Path to ROOT macro (e.g., macros/My.C)")
     p.add_argument("--yaml", help="YAML config path (packed into JSON as _yaml_path)")
     p.add_argument("--set", action="append", help="k=v (repeatable)")
     p.add_argument("--extra", action="append", help="extra string args to macro", default=[])
@@ -104,6 +305,10 @@ def main(argv=None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "command", None) == "doctor" and getattr(args, "doctor_command", None) != "plugins":
+        parser.error("doctor requires a diagnostic command, such as: cascade doctor plugins")
+    if getattr(args, "func", None) == cmd_macro_run and not args.macro:
+        parser.error("--macro or a subcommand is required")
 
     try:
         args.func(args)

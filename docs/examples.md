@@ -2,7 +2,7 @@ Examples
 
 Quickstart (End-to-End)
 - Example script: `examples/QuickstartExample.py`
-- Runs a C++ module and a Python module, then executes a DAG.
+- Runs the example plugin C++ module when it is installed.
 
 Run:
 
@@ -10,10 +10,9 @@ Run:
 python3 examples/QuickstartExample.py
 ```
 
-DAG with Mixed C++ and Python Modules
+DAG with Plugin Module
 - Example script: `examples/DAGMixedExample.py`
-- C++ module: `ExampleModule` (registered by name)
-- Python module: `py_stage` (defined in the script)
+- C++ plugin module: `ExampleModule` from `/home/hlee/cascade_plugin` (registered by name)
 
 Run:
 
@@ -24,15 +23,12 @@ python3 examples/DAGMixedExample.py
 The script emits `dag_example.dot` to visualize the DAG.
 
 What it does
-- Registers a built-in C++ module using `ctrl.register_module("HistModule", "cpp_stage")`.
-- Registers a Python module instance with `ctrl.register_python_module("py_stage", py_stage())`.
-- Adds two DAG nodes:
-  - `cpp_stage` runs first.
-  - `py_stage` depends on `cpp_stage`.
+- Registers a plugin C++ module using `ctrl.register_module("ExampleModule", "cpp_stage")`.
+- Adds a DAG node for `cpp_stage`.
 - Executes the DAG with `ctrl.run_dag()`.
 
 Customize
-- Replace `HistModule` with any C++ module name from `ctrl.get_list_available_modules()`.
+- Replace `ExampleModule` with any plugin module name from `ctrl.get_list_available_modules()`.
 - Add parameters through the module APIs before `run_dag()`.
 - Use `dag.dump_dot("name.dot")` and render with Graphviz:
 
@@ -50,13 +46,24 @@ Run (via CLI wrapper):
 ./python/cascade --macro examples/RootMacroExample.C --set n=1000 --set mode="fast"
 ```
 
-Plugin Example
-- Example plugin: `examples/PluginExample.cc`
-- Demonstrates ABI exports and manual registration.
+Plugin Package Example
+- Example plugin package: `/home/hlee/cascade_plugin`
+- Demonstrates the supported manifest-based plugin build and install flow.
 
 Notes:
-- Build the plugin with `-DCASCADE_PLUGIN_NO_AUTO_REGISTER`.
-- Sign the resulting `libExamplePluginModule.so` and place it in `${CASCADE_PLUGIN_DIR}`.
+- The package SConstruct follows the installed template at `${PREFIX}/share/cascade/scripts/plugin_sconstruct`.
+- The template builds modules from `include/*.hh` and `src/*.cc`.
+- It generates `plugin_manifest.json` for installed C++ and Python plugin files.
+- Set `CASCADE_PLUGIN_PRIVATE_KEY` to sign manifests during install.
+- Set `CASCADE_PLUGIN_PUBLIC_KEY` to install `plugin_pubkey.pem` beside the manifests.
+- The quickstart and DAG examples expect `ExampleModule` from this package to be installed and loadable.
+
+```bash
+cd /home/hlee/cascade_plugin
+CASCADE_PLUGIN_PRIVATE_KEY=/path/to/plugin_private.pem \
+CASCADE_PLUGIN_PUBLIC_KEY=/path/to/plugin_pubkey.pem \
+scons install
+```
 
 ROOT Managers Example
 - Example macro: `examples/RootManagersExample.C`

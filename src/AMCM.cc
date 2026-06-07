@@ -9,13 +9,111 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/sha.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <sstream>
 #include <thread>
 #include <yaml-cpp/yaml.h>
 namespace py = pybind11;
+
+namespace
+{
+std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("cannot open " + path.string());
+    return std::vector<unsigned char>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::string Sha256File(const std::filesystem::path &path)
+{
+    auto data = ReadBinaryFile(path);
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(data.data(), data.size(), hash);
+    std::ostringstream out;
+    for (unsigned char c : hash)
+        out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+    return out.str();
+}
+
+bool VerifySignature(const std::filesystem::path &payloadPath, const std::filesystem::path &sigPath, EVP_PKEY *publicKey)
+{
+    auto payload = ReadBinaryFile(payloadPath);
+    auto sig = ReadBinaryFile(sigPath);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return false;
+    int ok = EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, publicKey);
+    if (ok == 1) ok = EVP_DigestVerify(ctx, sig.data(), sig.size(), payload.data(), payload.size());
+    EVP_MD_CTX_free(ctx);
+    return ok == 1;
+}
+
+std::vector<std::filesystem::path> VerifiedCppPluginPaths(const std::filesystem::path &pluginDir, EVP_PKEY *publicKey)
+{
+    namespace fs = std::filesystem;
+    fs::path manifestPath = pluginDir / "plugin_manifest.json";
+    fs::path sigPath = pluginDir / "plugin_manifest.json.sig";
+    if (!fs::exists(manifestPath) || !fs::exists(sigPath))
+    {
+        LOG_WARN("PLUGIN", "Signed plugin manifest missing in " << pluginDir.string() << "; skipping C++ plugins");
+        return {};
+    }
+
+    try
+    {
+        if (!VerifySignature(manifestPath, sigPath, publicKey))
+        {
+            LOG_WARN("PLUGIN", "Plugin manifest signature invalid: " << manifestPath.string());
+            return {};
+        }
+
+        std::ifstream in(manifestPath);
+        nlohmann::json manifest;
+        in >> manifest;
+        std::vector<fs::path> result;
+        for (const auto &entry : manifest.value("modules", nlohmann::json::array()))
+        {
+            if (entry.value("language", "") != "cpp") continue;
+            fs::path rel = entry.value("path", "");
+            if (rel.empty() || rel.is_absolute())
+            {
+                LOG_WARN("PLUGIN", "Ignoring invalid manifest path in " << manifestPath.string() << ": " << rel.string());
+                continue;
+            }
+            fs::path full = pluginDir / rel;
+            if (!fs::exists(full))
+            {
+                LOG_WARN("PLUGIN", "Manifest-listed plugin file missing: " << full.string());
+                continue;
+            }
+            std::string filename = full.filename().string();
+            if (filename.size() < 9 || filename.rfind("Module.so") != filename.size() - 9)
+            {
+                LOG_WARN("PLUGIN", "Ignoring C++ plugin whose filename does not end with Module.so: " << full.string());
+                continue;
+            }
+            std::string expected = entry.value("sha256", "");
+            std::string actual = Sha256File(full);
+            if (expected.empty() || actual != expected)
+            {
+                LOG_WARN("PLUGIN", "Plugin hash mismatch: " << full.string());
+                continue;
+            }
+            result.push_back(full);
+        }
+        return result;
+    }
+    catch (const std::exception &e)
+    {
+        LOG_WARN("PLUGIN", "Failed to verify plugin manifest " << manifestPath.string() << ": " << e.what());
+        return {};
+    }
+}
+} // namespace
 
 AMCM::AMCM()
 {
@@ -201,10 +299,10 @@ void AMCM::LoadPlugins(const std::string &path)
         LOG_WARN("CONTROL", "Plugin directory not found: " << path);
         return;
     }
-    fs::path keyPath = fs::path(path) / "plugin_pubkey.pem";
-    bool verifySignatures = fs::exists(keyPath);
+    fs::path pluginPath(path);
+    fs::path keyPath = pluginPath / "plugin_pubkey.pem";
     EVP_PKEY *publicKey = nullptr;
-    if (verifySignatures)
+    if (fs::exists(keyPath))
     {
         FILE *keyFile = fopen(keyPath.string().c_str(), "r");
         if (!keyFile)
@@ -219,68 +317,18 @@ void AMCM::LoadPlugins(const std::string &path)
             LOG_ERROR("CONTROL", "Failed to read plugin public key: " << keyPath.string());
             return;
         }
-        LOG_INFO("CONTROL", "Plugin signature verification enabled with " << keyPath.string());
+        LOG_DEBUG("PLUGIN", "Plugin manifest verification enabled with " << keyPath.string());
     }
     else
     {
-        LOG_ERROR("CONTROL", "Plugin public key not found; skipping plugin load: " << keyPath.string());
+        LOG_WARN("PLUGIN", "Plugin public key not found; skipping plugin load: " << keyPath.string());
         return;
     }
 
-    for (auto &p : fs::directory_iterator(path))
+    for (const auto &pluginFile : VerifiedCppPluginPaths(pluginPath, publicKey))
     {
-        if (p.path().extension() == ".so")
-        {
-            std::string filename = p.path().filename().string();
-            if (filename.size() < 9 || filename.rfind("Module.so") != filename.size() - 9)
-            {
-                continue;
-            }
-            if (verifySignatures)
-            {
-                fs::path sigPath = p.path();
-                sigPath += ".sig";
-                if (!fs::exists(sigPath))
-                {
-                    LOG_ERROR("CONTROL", "Missing plugin signature: " << sigPath.string());
-                    continue;
-                }
-
-                std::ifstream bin(p.path(), std::ios::binary);
-                std::ifstream sig(sigPath, std::ios::binary);
-                if (!bin || !sig)
-                {
-                    LOG_ERROR("CONTROL", "Failed to read plugin or signature: " << p.path().string());
-                    continue;
-                }
-
-                std::vector<unsigned char> data((std::istreambuf_iterator<char>(bin)), std::istreambuf_iterator<char>());
-                std::vector<unsigned char> sigData((std::istreambuf_iterator<char>(sig)), std::istreambuf_iterator<char>());
-
-                EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-                if (!ctx)
-                {
-                    LOG_ERROR("CONTROL", "Failed to create EVP_MD_CTX for signature verification");
-                    continue;
-                }
-
-                int ok = EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, publicKey);
-                if (ok != 1)
-                {
-                    LOG_ERROR("CONTROL", "Signature verify init failed for " << p.path().string());
-                    EVP_MD_CTX_free(ctx);
-                    continue;
-                }
-                ok = EVP_DigestVerify(ctx, sigData.data(), sigData.size(), data.data(), data.size());
-                EVP_MD_CTX_free(ctx);
-                if (ok != 1)
-                {
-                    LOG_ERROR("CONTROL", "Plugin signature invalid: " << p.path().string());
-                    continue;
-                }
-            }
-            void *handle = dlopen(p.path().c_str(), RTLD_NOW);
-            if (!handle) LOG_ERROR("CONTROL", "dlopen failed for '" << p.path().string() << "': " << dlerror());
+            void *handle = dlopen(pluginFile.c_str(), RTLD_NOW);
+            if (!handle) LOG_WARN("PLUGIN", "dlopen failed for '" << pluginFile.string() << "': " << dlerror());
             if (!handle) continue;
             dlerror();
             using AbiFn = int (*)();
@@ -303,7 +351,7 @@ void AMCM::LoadPlugins(const std::string &path)
                 int abi = abiFn();
                 if (abi != CASCADE_PLUGIN_ABI_VERSION)
                 {
-                    LOG_ERROR("CONTROL", "Plugin ABI mismatch for '" << p.path().string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
+                    LOG_ERROR("CONTROL", "Plugin ABI mismatch for '" << pluginFile.string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
                     dlclose(handle);
                     continue;
                 }
@@ -312,14 +360,14 @@ void AMCM::LoadPlugins(const std::string &path)
                     std::string tag = abiTagFn();
                     if (tag != CASCADE_ABI_TAG)
                     {
-                        LOG_ERROR("CONTROL", "Plugin ABI tag mismatch for '" << p.path().string() << "'");
+                        LOG_ERROR("CONTROL", "Plugin ABI tag mismatch for '" << pluginFile.string() << "'");
                         dlclose(handle);
                         continue;
                     }
                 }
                 else
                 {
-                    LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' missing ABI tag; skipping strict tag check");
+                    LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' missing ABI tag; skipping strict tag check");
                 }
                 if (regFn)
                 {
@@ -327,19 +375,18 @@ void AMCM::LoadPlugins(const std::string &path)
                 }
                 else
                 {
-                    LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' provides ABI version but no CascadeRegisterPlugin()");
+                    LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' provides ABI version but no CascadeRegisterPlugin()");
                 }
             }
             else if (regFn)
             {
-                LOG_WARN("CONTROL", "Plugin '" << p.path().string() << "' has no ABI version; calling CascadeRegisterPlugin()");
+                LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' has no ABI version; calling CascadeRegisterPlugin()");
                 regFn();
             }
             else
             {
-                LOG_WARN("CONTROL", "Legacy plugin loaded without ABI entry points: " << p.path().string());
+                LOG_WARN("CONTROL", "Legacy plugin loaded without ABI entry points: " << pluginFile.string());
             }
-        }
     }
     if (publicKey) EVP_PKEY_free(publicKey);
 }
