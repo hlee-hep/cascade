@@ -3,387 +3,388 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <sstream>
 
 using json = nlohmann::json;
 
-ParamManager::ParamManager() { RegisterCommon(); }
-
-// ================= YAML -> ParamValue =================
-ParamValue ParamManager::ConvertFromYaml_(const YAML::Node &val)
+namespace
 {
-    if (val.IsScalar())
+template <typename Target, typename Source> Target CheckedIntegralCast(Source value, const std::string &key)
+{
+    static_assert(std::is_integral_v<Target>);
+    long double numeric = static_cast<long double>(value);
+    if constexpr (std::is_floating_point_v<Source>)
     {
-        const std::string s = val.Scalar();
-        if (s == "true") return true;
-        if (s == "false") return false;
+        if (!std::isfinite(value) || std::floor(value) != value)
+            throw std::runtime_error("ParamManager: non-integral value for integer parameter '" + key + "'.");
+    }
+    if (numeric < static_cast<long double>(std::numeric_limits<Target>::lowest()) ||
+        numeric > static_cast<long double>(std::numeric_limits<Target>::max()))
+        throw std::runtime_error("ParamManager: integer value out of range for parameter '" + key + "'.");
+    return static_cast<Target>(value);
+}
+
+bool IsNumeric(const MixedElement &value)
+{
+    return std::holds_alternative<long long>(value) || std::holds_alternative<double>(value);
+}
+
+double MixedAsDouble(const MixedElement &value, const std::string &key)
+{
+    if (const auto *integer = std::get_if<long long>(&value)) return static_cast<double>(*integer);
+    if (const auto *real = std::get_if<double>(&value)) return *real;
+    throw std::runtime_error("ParamManager: non-numeric list element for parameter '" + key + "'.");
+}
+
+json MixedToJSON(const MixedElement &value)
+{
+    return std::visit([](const auto &item) -> json { return json(item); }, value);
+}
+
+YAML::Node MixedToYAML(const MixedElement &value)
+{
+    return std::visit([](const auto &item) -> YAML::Node { return YAML::Node(item); }, value);
+}
+} // namespace
+
+ParamManager::ParamManager() = default;
+
+ParamValue ParamManager::ConvertFromYaml_(const YAML::Node &value)
+{
+    if (!value || value.IsNull()) return std::monostate{};
+    if (value.IsMap()) throw std::runtime_error("ParamManager: map values are not supported.");
+
+    if (value.IsScalar())
+    {
+        const std::string scalar = value.Scalar();
+        if (scalar == "true" || scalar == "True" || scalar == "TRUE") return true;
+        if (scalar == "false" || scalar == "False" || scalar == "FALSE") return false;
+
+        std::size_t parsed = 0;
         try
         {
-            double d = std::stod(s);
-            if (std::floor(d) == d) return static_cast<long long>(d);
-            return d;
+            const long long integer = std::stoll(scalar, &parsed);
+            if (parsed == scalar.size()) return integer;
         }
-        catch (...)
+        catch (const std::exception &)
         {
-            return s;
         }
+        try
+        {
+            const double real = std::stod(scalar, &parsed);
+            if (parsed == scalar.size()) return real;
+        }
+        catch (const std::exception &)
+        {
+        }
+        return scalar;
     }
 
-    if (val.IsSequence())
+    if (value.IsSequence())
     {
-        if (val.size() == 0) return std::monostate{};
-
-        bool allInt = true, allDouble = true, allStr = true;
-        for (const auto &e : val)
+        MixedVector result;
+        result.reserve(value.size());
+        for (const auto &item : value)
         {
-            if (!e.IsScalar())
-            {
-                allInt = allDouble = allStr = false;
-                break;
-            }
-            const std::string s = e.Scalar();
-            try
-            {
-                std::stoll(s);
-            }
-            catch (...)
-            {
-                allInt = false;
-            }
-            try
-            {
-                std::stod(s);
-            }
-            catch (...)
-            {
-                allDouble = false;
-            }
+            const ParamValue converted = ConvertFromYaml_(item);
+            std::visit(
+                [&](const auto &element)
+                {
+                    using T = std::decay_t<decltype(element)>;
+                    if constexpr (std::is_same_v<T, bool> || std::is_same_v<T, long long> || std::is_same_v<T, double> ||
+                                  std::is_same_v<T, std::string>)
+                        result.emplace_back(element);
+                    else
+                        throw std::runtime_error("ParamManager: nested or null YAML sequences are not supported.");
+                },
+                converted);
         }
-
-        if (allInt) return val.as<std::vector<int>>();
-        if (allDouble) return val.as<std::vector<double>>();
-        if (allStr) return val.as<std::vector<std::string>>();
-
-        // heterogeneous → MixedVector
-        MixedVector mv;
-        mv.reserve(val.size());
-        for (const auto &e : val)
-        {
-            const std::string s = e.Scalar();
-            if (s == "true")
-            {
-                mv.emplace_back(true);
-                continue;
-            }
-            if (s == "false")
-            {
-                mv.emplace_back(false);
-                continue;
-            }
-            try
-            {
-                mv.emplace_back(std::stoll(s));
-                continue;
-            }
-            catch (...)
-            {
-            }
-            try
-            {
-                mv.emplace_back(std::stod(s));
-                continue;
-            }
-            catch (...)
-            {
-            }
-            mv.emplace_back(s);
-        }
-        return mv;
+        return result;
     }
 
-    if (val.IsMap())
-    {
-        json j;
-        for (const auto &kv : val)
-            j[kv.first.as<std::string>()] = kv.second.as<std::string>();
-        return j.dump();
-    }
-
-    return std::monostate{};
+    throw std::runtime_error("ParamManager: unsupported YAML value.");
 }
 
-// ================= PY -> ParamValue =================
-ParamValue ParamManager::ConvertFromPy_(const py::object &obj) const
+ParamValue ParamManager::ConvertFromJson_(const json &value) const
 {
-    if (py::isinstance<py::bool_>(obj)) return obj.cast<bool>();
-    if (py::isinstance<py::int_>(obj)) return static_cast<long long>(obj.cast<long long>());
-    if (py::isinstance<py::float_>(obj)) return obj.cast<double>();
-    if (py::isinstance<py::str>(obj)) return obj.cast<std::string>();
-
-    if (py::isinstance<py::list>(obj))
+    if (value.is_null()) return std::monostate{};
+    if (value.is_boolean()) return value.get<bool>();
+    if (value.is_number_integer()) return value.get<long long>();
+    if (value.is_number_float()) return value.get<double>();
+    if (value.is_string()) return value.get<std::string>();
+    if (value.is_array())
     {
-        py::list lst = obj.cast<py::list>();
-        if (lst.empty()) return std::monostate{};
-
-        bool allStr = true, allInt = true, allFloat = true;
-        for (auto item : lst)
+        MixedVector result;
+        result.reserve(value.size());
+        for (const auto &item : value)
         {
-            allStr &= py::isinstance<py::str>(item);
-            allInt &= py::isinstance<py::int_>(item);
-            allFloat &= py::isinstance<py::float_>(item);
-            if (!(allStr || allInt || allFloat)) break;
-        }
-
-        if (allStr) return lst.cast<std::vector<std::string>>();
-        if (allInt) return lst.cast<std::vector<int>>();
-        if (allFloat) return lst.cast<std::vector<double>>();
-
-        MixedVector mv;
-        mv.reserve(py::len(lst));
-        for (auto item : lst)
-        {
-            if (py::isinstance<py::bool_>(item))
-                mv.emplace_back(item.cast<bool>());
-            else if (py::isinstance<py::int_>(item))
-                mv.emplace_back(static_cast<long long>(item.cast<long long>()));
-            else if (py::isinstance<py::float_>(item))
-                mv.emplace_back(item.cast<double>());
-            else if (py::isinstance<py::str>(item))
-                mv.emplace_back(item.cast<std::string>());
+            if (item.is_boolean())
+                result.emplace_back(item.get<bool>());
+            else if (item.is_number_integer())
+                result.emplace_back(item.get<long long>());
+            else if (item.is_number_float())
+                result.emplace_back(item.get<double>());
+            else if (item.is_string())
+                result.emplace_back(item.get<std::string>());
             else
-                throw std::runtime_error("ParamManager: unsupported element type in Python list.");
+                throw std::runtime_error("ParamManager: nested JSON values are not supported.");
         }
-        return mv;
+        return result;
     }
-
-    throw std::runtime_error("ParamManager: unsupported Python type.");
+    throw std::runtime_error("ParamManager: object values are not supported.");
 }
 
-// ============== Internal ==============
-static json MixedToJSON(const MixedElement &e)
+ParamValue ParamManager::CoerceToRegisteredType_(const std::string &key, const ParamValue &value) const
 {
-    return std::visit([](auto &&v) -> json { return json(v); }, e);
-}
-static YAML::Node MixedToYAML(const MixedElement &e)
-{
-    return std::visit([](auto &&v) -> YAML::Node { return YAML::Node(v); }, e);
+    const auto current = m_RawValues.find(key);
+    if (current == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
+
+    return std::visit(
+        [&](const auto &registered) -> ParamValue
+        {
+            using Target = std::decay_t<decltype(registered)>;
+            if constexpr (std::is_same_v<Target, std::monostate>)
+            {
+                if (!std::holds_alternative<std::monostate>(value))
+                    throw std::runtime_error("ParamManager: parameter '" + key + "' is registered as none.");
+                return std::monostate{};
+            }
+            else if constexpr (std::is_same_v<Target, bool>)
+            {
+                if (const auto *typed = std::get_if<bool>(&value)) return *typed;
+            }
+            else if constexpr (std::is_same_v<Target, int> || std::is_same_v<Target, long> || std::is_same_v<Target, long long>)
+            {
+                if (const auto *typed = std::get_if<int>(&value)) return CheckedIntegralCast<Target>(*typed, key);
+                if (const auto *typed = std::get_if<long>(&value)) return CheckedIntegralCast<Target>(*typed, key);
+                if (const auto *typed = std::get_if<long long>(&value)) return CheckedIntegralCast<Target>(*typed, key);
+                if (const auto *typed = std::get_if<double>(&value)) return CheckedIntegralCast<Target>(*typed, key);
+            }
+            else if constexpr (std::is_same_v<Target, double>)
+            {
+                if (const auto *typed = std::get_if<int>(&value)) return static_cast<double>(*typed);
+                if (const auto *typed = std::get_if<long>(&value)) return static_cast<double>(*typed);
+                if (const auto *typed = std::get_if<long long>(&value)) return static_cast<double>(*typed);
+                if (const auto *typed = std::get_if<double>(&value)) return *typed;
+            }
+            else if constexpr (std::is_same_v<Target, std::string>)
+            {
+                if (const auto *typed = std::get_if<std::string>(&value)) return *typed;
+            }
+            else if constexpr (std::is_same_v<Target, std::vector<int>>)
+            {
+                if (const auto *typed = std::get_if<std::vector<int>>(&value)) return *typed;
+                if (const auto *mixed = std::get_if<MixedVector>(&value))
+                {
+                    std::vector<int> result;
+                    result.reserve(mixed->size());
+                    for (const auto &item : *mixed)
+                    {
+                        if (const auto *integer = std::get_if<long long>(&item))
+                            result.push_back(CheckedIntegralCast<int>(*integer, key));
+                        else if (const auto *real = std::get_if<double>(&item))
+                            result.push_back(CheckedIntegralCast<int>(*real, key));
+                        else
+                            throw std::runtime_error("ParamManager: non-integer list element for parameter '" + key + "'.");
+                    }
+                    return result;
+                }
+            }
+            else if constexpr (std::is_same_v<Target, std::vector<double>>)
+            {
+                if (const auto *typed = std::get_if<std::vector<double>>(&value)) return *typed;
+                if (const auto *integers = std::get_if<std::vector<int>>(&value))
+                    return std::vector<double>(integers->begin(), integers->end());
+                if (const auto *mixed = std::get_if<MixedVector>(&value))
+                {
+                    std::vector<double> result;
+                    result.reserve(mixed->size());
+                    for (const auto &item : *mixed)
+                        result.push_back(MixedAsDouble(item, key));
+                    return result;
+                }
+            }
+            else if constexpr (std::is_same_v<Target, std::vector<std::string>>)
+            {
+                if (const auto *typed = std::get_if<std::vector<std::string>>(&value)) return *typed;
+                if (const auto *mixed = std::get_if<MixedVector>(&value))
+                {
+                    std::vector<std::string> result;
+                    result.reserve(mixed->size());
+                    for (const auto &item : *mixed)
+                    {
+                        const auto *text = std::get_if<std::string>(&item);
+                        if (!text) throw std::runtime_error("ParamManager: non-string list element for parameter '" + key + "'.");
+                        result.push_back(*text);
+                    }
+                    return result;
+                }
+            }
+            else if constexpr (std::is_same_v<Target, MixedVector>)
+            {
+                if (const auto *typed = std::get_if<MixedVector>(&value)) return *typed;
+                if (const auto *integers = std::get_if<std::vector<int>>(&value))
+                {
+                    MixedVector result;
+                    for (const int item : *integers)
+                        result.emplace_back(static_cast<long long>(item));
+                    return result;
+                }
+                if (const auto *reals = std::get_if<std::vector<double>>(&value))
+                {
+                    MixedVector result;
+                    for (const double item : *reals)
+                        result.emplace_back(item);
+                    return result;
+                }
+                if (const auto *strings = std::get_if<std::vector<std::string>>(&value))
+                {
+                    MixedVector result;
+                    for (const auto &item : *strings)
+                        result.emplace_back(item);
+                    return result;
+                }
+            }
+
+            throw std::runtime_error("ParamManager: cannot assign " +
+                                     std::visit([](const auto &item) { return ::TypeName<std::decay_t<decltype(item)>>(); }, value) +
+                                     " to parameter '" + key + "' registered as " + ::TypeName<Target>() + ".");
+        },
+        current->second);
 }
 
 json ParamManager::ToJsonInternal_() const
 {
-    json j;
-    for (const auto &[k, v] : m_RawValues)
+    json document;
+    for (const auto &[key, value] : m_RawValues)
     {
         json entry;
-        entry["description"] = m_Descriptions.count(k) ? m_Descriptions.at(k) : "";
+        entry["description"] = m_Descriptions.count(key) ? m_Descriptions.at(key) : "";
         std::visit(
-            [&](auto &&val)
+            [&](const auto &typed)
             {
-                using T = std::decay_t<decltype(val)>;
-
+                using T = std::decay_t<decltype(typed)>;
+                entry["type"] = TypeName<T>();
                 if constexpr (std::is_same_v<T, std::monostate>)
-                {
-                    entry["value"] = nullptr; // monostate → null
-                }
+                    entry["value"] = nullptr;
                 else if constexpr (std::is_same_v<T, MixedVector>)
                 {
-                    json arr = json::array();
-                    for (const auto &e : val)
-                        arr.push_back(MixedToJSON(e));
-                    entry["value"] = std::move(arr);
+                    entry["value"] = json::array();
+                    for (const auto &item : typed)
+                        entry["value"].push_back(MixedToJSON(item));
                 }
                 else
-                {
-                    entry["value"] = val;
-                }
-
-                entry["type"] = TypeName<T>();
+                    entry["value"] = typed;
             },
-            v);
-
-        j[k] = std::move(entry);
+            value);
+        document[key] = std::move(entry);
     }
-    return j;
+    return document;
 }
 
 YAML::Node ParamManager::ToYamlInternal_() const
 {
-    YAML::Node node;
-    for (const auto &[k, v] : m_RawValues)
+    YAML::Node document;
+    for (const auto &[key, value] : m_RawValues)
     {
         YAML::Node entry;
         std::visit(
-            [&](auto &&val)
+            [&](const auto &typed)
             {
-                using T = std::decay_t<decltype(val)>;
-
+                using T = std::decay_t<decltype(typed)>;
+                entry["type"] = TypeName<T>();
                 if constexpr (std::is_same_v<T, std::monostate>)
-                {
-                    entry["value"] = YAML::Node(); // monostate → Null Node
-                }
+                    entry["value"] = YAML::Node();
                 else if constexpr (std::is_same_v<T, MixedVector>)
                 {
-                    YAML::Node seq(YAML::NodeType::Sequence);
-                    for (const auto &e : val)
-                        seq.push_back(MixedToYAML(e));
-                    entry["value"] = seq;
+                    YAML::Node sequence(YAML::NodeType::Sequence);
+                    for (const auto &item : typed)
+                        sequence.push_back(MixedToYAML(item));
+                    entry["value"] = sequence;
                 }
                 else
-                {
-                    entry["value"] = val;
-                }
-
-                entry["type"] = TypeName<T>();
+                    entry["value"] = typed;
             },
-            v);
-
-        if (m_Descriptions.count(k)) entry["desc"] = m_Descriptions.at(k);
-
-        node[k] = entry;
+            value);
+        entry["description"] = m_Descriptions.count(key) ? m_Descriptions.at(key) : "";
+        document[key] = entry;
     }
-    return node;
+    return document;
 }
 
-// ============== Public I/O ==============
-void ParamManager::LoadYAMLFile(const std::string &path)
-{
-    YAML::Node node = YAML::LoadFile(path);
-    SetParamsFromYAML(node);
-}
+void ParamManager::LoadYAMLFile(const std::string &path) { SetParamsFromYAML(YAML::LoadFile(path)); }
 
 void ParamManager::SaveYAMLFile(const std::string &path) const
 {
-    YAML::Emitter out;
-    out.SetIndent(4);
-    out.SetMapFormat(YAML::Block);
-    out.SetSeqFormat(YAML::Flow);
-    out << ToYamlInternal_();
-
-    std::ofstream fout(path);
-    if (!fout.is_open()) throw std::runtime_error("ParamManager: cannot open YAML file: " + path);
-    fout << out.c_str();
+    std::ofstream output(path);
+    if (!output) throw std::runtime_error("ParamManager: cannot open YAML file: " + path);
+    output << DumpYAML(4);
+    if (!output) throw std::runtime_error("ParamManager: failed to write YAML file: " + path);
 }
 
 void ParamManager::LoadJSONFile(const std::string &path)
 {
-    std::ifstream fin(path);
-    if (!fin.is_open()) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
-    json j;
-    fin >> j;
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
+    json document;
+    input >> document;
+    if (!document.is_object()) throw std::runtime_error("ParamManager: JSON root must be an object.");
 
-    for (auto &[k, entry] : j.items())
+    for (const auto &[key, entry] : document.items())
     {
-        if (!Has(k)) throw std::runtime_error("ParamManager: key '" + k + "' not registered (LoadJSONFile).");
-
-        if (!entry.contains("value")) continue;
-
-        // value
-        if (entry["value"].is_boolean())
-            UpdateExisting_(k, entry["value"].get<bool>());
-        else if (entry["value"].is_number_integer())
-            UpdateExisting_(k, static_cast<long long>(entry["value"].get<long long>()));
-        else if (entry["value"].is_number_float())
-            UpdateExisting_(k, entry["value"].get<double>());
-        else if (entry["value"].is_string())
-            UpdateExisting_(k, entry["value"].get<std::string>());
-        else if (entry["value"].is_array())
-        {
-            auto arr = entry["value"];
-            bool allInt = true, allDouble = true, allStr = true;
-            for (auto &a : arr)
-            {
-                allInt &= a.is_number_integer();
-                allDouble &= a.is_number_float();
-                allStr &= a.is_string();
-            }
-            if (allInt)
-                UpdateExisting_(k, arr.get<std::vector<int>>());
-            else if (allDouble)
-                UpdateExisting_(k, arr.get<std::vector<double>>());
-            else if (allStr)
-                UpdateExisting_(k, arr.get<std::vector<std::string>>());
-            else
-            {
-                MixedVector mv;
-                mv.reserve(arr.size());
-                for (auto &a : arr)
-                {
-                    if (a.is_boolean())
-                        mv.emplace_back(a.get<bool>());
-                    else if (a.is_number_integer())
-                        mv.emplace_back(static_cast<long long>(a.get<long long>()));
-                    else if (a.is_number_float())
-                        mv.emplace_back(a.get<double>());
-                    else if (a.is_string())
-                        mv.emplace_back(a.get<std::string>());
-                }
-                UpdateExisting_(k, mv);
-            }
-        }
-        else
-        {
-            throw std::runtime_error("ParamManager: unsupported JSON value type for key: " + k);
-        }
+        if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
+        if (entry.is_object() && entry.contains("type") && entry.at("type").get<std::string>() != TypeOf(key))
+            throw std::runtime_error("ParamManager: serialized type for '" + key + "' does not match its registered type.");
+        const json &value = entry.is_object() && entry.contains("value") ? entry.at("value") : entry;
+        const std::string description =
+            entry.is_object() && entry.contains("description") ? entry.at("description").get<std::string>() : "";
+        UpdateExisting_(key, ConvertFromJson_(value), description);
+        if (entry.is_object() && entry.contains("description")) m_Descriptions[key] = description;
     }
 }
 
 void ParamManager::SaveJSONFile(const std::string &path) const
 {
-    std::ofstream fout(path);
-    if (!fout.is_open()) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
-    fout << ToJsonInternal_().dump(2);
+    std::ofstream output(path);
+    if (!output) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
+    output << DumpJSON(2);
+    if (!output) throw std::runtime_error("ParamManager: failed to write JSON file: " + path);
 }
 
 std::string ParamManager::DumpYAML(int indent) const
 {
-    YAML::Emitter out;
-    out.SetIndent(indent);
-    out.SetMapFormat(YAML::Block);
-    out.SetSeqFormat(YAML::Flow);
-    out << ToYamlInternal_();
-    return out.c_str();
+    YAML::Emitter output;
+    output.SetIndent(indent);
+    output.SetMapFormat(YAML::Block);
+    output.SetSeqFormat(YAML::Flow);
+    output << ToYamlInternal_();
+    if (!output.good()) throw std::runtime_error("ParamManager: failed to serialize YAML.");
+    return output.c_str();
 }
 
 std::string ParamManager::DumpJSON(int indent) const { return ToJsonInternal_().dump(indent); }
 
-// ============== Bulk setters ==============
-void ParamManager::SetParamsFromYAML(const YAML::Node &node)
+void ParamManager::SetParamsFromYAML(const YAML::Node &document)
 {
-    for (const auto &it : node)
+    if (!document.IsMap()) throw std::runtime_error("ParamManager: YAML root must be a map.");
+    for (const auto &item : document)
     {
-        const std::string key = it.first.as<std::string>();
-        if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' not registered (SetParamsFromYAML).");
-
-        ParamValue v = ConvertFromYaml_(it.second);
-        std::visit([&](auto &&x) { UpdateExisting_(key, x); }, v);
+        const std::string key = item.first.as<std::string>();
+        if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
+        const YAML::Node entry = item.second;
+        if (entry.IsMap() && entry["type"] && entry["type"].as<std::string>() != TypeOf(key))
+            throw std::runtime_error("ParamManager: serialized type for '" + key + "' does not match its registered type.");
+        const YAML::Node value = entry.IsMap() && entry["value"] ? entry["value"] : entry;
+        const std::string description = entry.IsMap() && entry["description"] ? entry["description"].as<std::string>() : "";
+        UpdateExisting_(key, ConvertFromYaml_(value), description);
+        if (entry.IsMap() && entry["description"]) m_Descriptions[key] = description;
     }
 }
 
-void ParamManager::SetParamsFromDict(const py::dict &d)
-{
-    for (auto item : d)
-    {
-        const std::string key = py::str(item.first);
-        if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' not registered (SetParamsFromDict).");
-
-        py::object val = py::reinterpret_borrow<py::object>(item.second);
-        SetParamFromPy(key, val);
-    }
-}
-
-void ParamManager::SetParamFromPy(const std::string &key, const py::object &obj, const std::string &desc)
-{
-    if (!Has(key)) throw std::runtime_error("ParamManager: key '" + key + "' not registered (SetParamFromPy).");
-
-    ParamValue v = ConvertFromPy_(obj);
-    std::visit([&](auto &&val) { UpdateExisting_(key, val, desc); }, v);
-}
-
-// ======== AMCM compatibility ========
 YAML::Node ParamManager::ToYAMLNode() const { return ToYamlInternal_(); }
 
-// ============== Common ==============
 void ParamManager::RegisterCommon()
 {
-    Register("dry_run", false, "simulate execution only");
-    Register("force_run", false, "force execution");
+    if (!Has("dry_run")) Register("dry_run", false, "simulate execution only");
+    if (!Has("force_run")) Register("force_run", false, "force execution");
 }

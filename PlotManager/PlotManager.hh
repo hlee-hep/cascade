@@ -9,6 +9,7 @@
 #include <TLatex.h>
 #include <TLegend.h>
 #include <TLine.h>
+#include <TObject.h>
 #include <TPad.h>
 #include <TStyle.h>
 #include <algorithm>
@@ -433,6 +434,7 @@ struct RenderPlan
     TH1 *Frame = nullptr;                   //
     TH1 *StackSum = nullptr;                //
     TGraphAsymmErrors *StackBand = nullptr; //
+    std::vector<TObject *> OwnedInputs;
     double YMax = 1.0;
 
     void Clear()
@@ -442,6 +444,7 @@ struct RenderPlan
         Frame = nullptr;
         StackSum = nullptr;
         StackBand = nullptr;
+        OwnedInputs.clear();
         YMax = 1.0;
     }
 };
@@ -479,6 +482,7 @@ class PlotManager
     static void ApplyStyleGraph_(TGraph *g, const ColorSpec &c);
     static void ApplyStyleGraphAsymm_(TGraphAsymmErrors *g, const ColorSpec &c);
     static void ApplyViewOps_(TH1 *h, const DrawSpec &d);
+    static void ValidateSpec_(const PlotSpec &spec);
 
     static TH1 *MakeEmptyLike_(const TH1 *src, const char *name);
     static TH1 *MakeStackSum_(const std::vector<PlanStackItem> &stacks, const TH1 *templ);

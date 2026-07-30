@@ -3,7 +3,12 @@
 #include "InterruptManager.hh"
 #include "Logger.hh"
 #include "PluginABI.hh"
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
@@ -13,15 +18,48 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <sstream>
+#include <set>
 #include <thread>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
-namespace py = pybind11;
 
 namespace
 {
+namespace fs = std::filesystem;
+
+struct TrustedKey
+{
+    fs::path Path;
+    EVP_PKEY *Value = nullptr;
+
+    TrustedKey(fs::path path, EVP_PKEY *value) : Path(std::move(path)), Value(value) {}
+    TrustedKey(const TrustedKey &) = delete;
+    TrustedKey &operator=(const TrustedKey &) = delete;
+    TrustedKey(TrustedKey &&other) noexcept : Path(std::move(other.Path)), Value(other.Value) { other.Value = nullptr; }
+    TrustedKey &operator=(TrustedKey &&other) noexcept
+    {
+        if (this == &other) return *this;
+        if (Value) EVP_PKEY_free(Value);
+        Path = std::move(other.Path);
+        Value = other.Value;
+        other.Value = nullptr;
+        return *this;
+    }
+    ~TrustedKey()
+    {
+        if (Value) EVP_PKEY_free(Value);
+    }
+};
+
+std::string SafeFilenamePart(std::string value)
+{
+    for (char &character : value)
+        if (!std::isalnum(static_cast<unsigned char>(character)) && character != '-' && character != '_') character = '_';
+    return value.empty() ? "unnamed" : value;
+}
+
 std::vector<unsigned char> ReadBinaryFile(const std::filesystem::path &path)
 {
     std::ifstream in(path, std::ios::binary);
@@ -52,28 +90,111 @@ bool VerifySignature(const std::filesystem::path &payloadPath, const std::filesy
     return ok == 1;
 }
 
-std::vector<std::filesystem::path> VerifiedCppPluginPaths(const std::filesystem::path &pluginDir, EVP_PKEY *publicKey)
+fs::path DefaultTrustStore(const fs::path &pluginRoot)
 {
-    namespace fs = std::filesystem;
-    fs::path manifestPath = pluginDir / "plugin_manifest.json";
-    fs::path sigPath = pluginDir / "plugin_manifest.json.sig";
+    if (const char *configured = std::getenv("CASCADE_PLUGIN_TRUST_STORE"); configured && *configured) return configured;
+    fs::path prefix = pluginRoot;
+    for (int level = 0; level < 3 && prefix.has_parent_path(); ++level)
+        prefix = prefix.parent_path();
+    return prefix / "share" / "cascade" / "trusted_keys";
+}
+
+fs::path RuntimePrefix()
+{
+    if (const char *configured = std::getenv("CASCADE_PREFIX"); configured && *configured) return configured;
+    Dl_info libraryInfo{};
+    if (dladdr(reinterpret_cast<void *>(&RuntimePrefix), &libraryInfo) != 0 && libraryInfo.dli_fname)
+        return fs::weakly_canonical(libraryInfo.dli_fname).parent_path().parent_path();
+    const char *home = std::getenv("HOME");
+    return home && *home ? fs::path(home) / ".local" : fs::path(".");
+}
+
+std::vector<TrustedKey> LoadTrustedKeys(const fs::path &trustStore)
+{
+    std::vector<TrustedKey> keys;
+    if (!fs::is_directory(trustStore))
+    {
+        LOG_WARN("PLUGIN", "Plugin trust store not found: " << trustStore.string());
+        return keys;
+    }
+    std::vector<fs::path> paths;
+    for (const auto &entry : fs::directory_iterator(trustStore))
+        if (entry.is_regular_file() && entry.path().extension() == ".pem") paths.push_back(entry.path());
+    std::sort(paths.begin(), paths.end());
+
+    for (const auto &path : paths)
+    {
+        FILE *file = fopen(path.string().c_str(), "r");
+        if (!file)
+        {
+            LOG_WARN("PLUGIN", "Cannot open trusted plugin key: " << path.string());
+            continue;
+        }
+        EVP_PKEY *key = PEM_read_PUBKEY(file, nullptr, nullptr, nullptr);
+        fclose(file);
+        if (!key)
+        {
+            LOG_WARN("PLUGIN", "Cannot parse trusted plugin key: " << path.string());
+            continue;
+        }
+        keys.emplace_back(path, key);
+    }
+    return keys;
+}
+
+const TrustedKey *VerifyWithTrustedKey(const fs::path &manifest, const fs::path &signature, const std::vector<TrustedKey> &keys)
+{
+    for (const auto &key : keys)
+        if (VerifySignature(manifest, signature, key.Value)) return &key;
+    return nullptr;
+}
+
+bool IsContainedPath(const fs::path &root, const fs::path &candidate)
+{
+    const fs::path canonicalRoot = fs::weakly_canonical(root);
+    const fs::path canonicalCandidate = fs::weakly_canonical(candidate);
+    const fs::path relative = canonicalCandidate.lexically_relative(canonicalRoot);
+    return !relative.empty() && *relative.begin() != "..";
+}
+
+std::vector<fs::path> PackageDirectories(const fs::path &pluginRoot)
+{
+    std::vector<fs::path> packages;
+    if (!fs::is_directory(pluginRoot)) return packages;
+    for (const auto &entry : fs::directory_iterator(pluginRoot))
+        if (entry.is_directory()) packages.push_back(entry.path());
+    std::sort(packages.begin(), packages.end());
+    return packages;
+}
+
+std::vector<fs::path> VerifiedCppPluginPaths(const fs::path &packageDir, const std::vector<TrustedKey> &keys)
+{
+    fs::path manifestPath = packageDir / "plugin_manifest.json";
+    fs::path sigPath = packageDir / "plugin_manifest.json.sig";
     if (!fs::exists(manifestPath) || !fs::exists(sigPath))
     {
-        LOG_WARN("PLUGIN", "Signed plugin manifest missing in " << pluginDir.string() << "; skipping C++ plugins");
+        LOG_WARN("PLUGIN", "Signed plugin manifest missing in package " << packageDir.string());
         return {};
     }
 
     try
     {
-        if (!VerifySignature(manifestPath, sigPath, publicKey))
+        const TrustedKey *trustedKey = VerifyWithTrustedKey(manifestPath, sigPath, keys);
+        if (!trustedKey)
         {
-            LOG_WARN("PLUGIN", "Plugin manifest signature invalid: " << manifestPath.string());
+            LOG_WARN("PLUGIN", "Plugin manifest is not signed by a trusted key: " << manifestPath.string());
             return {};
         }
 
         std::ifstream in(manifestPath);
         nlohmann::json manifest;
         in >> manifest;
+        if (manifest.value("schema", 0) != 2)
+            throw std::runtime_error("unsupported manifest schema");
+        if (manifest.value("package", "") != packageDir.filename().string())
+            throw std::runtime_error("manifest package name does not match its directory");
+
+        LOG_DEBUG("PLUGIN", "Verified package " << packageDir.filename().string() << " with " << trustedKey->Path.string());
         std::vector<fs::path> result;
         for (const auto &entry : manifest.value("modules", nlohmann::json::array()))
         {
@@ -84,10 +205,10 @@ std::vector<std::filesystem::path> VerifiedCppPluginPaths(const std::filesystem:
                 LOG_WARN("PLUGIN", "Ignoring invalid manifest path in " << manifestPath.string() << ": " << rel.string());
                 continue;
             }
-            fs::path full = pluginDir / rel;
-            if (!fs::exists(full))
+            fs::path full = packageDir / rel;
+            if (!fs::is_regular_file(full) || !IsContainedPath(packageDir, full))
             {
-                LOG_WARN("PLUGIN", "Manifest-listed plugin file missing: " << full.string());
+                LOG_WARN("PLUGIN", "Manifest plugin path is missing or escapes its package: " << full.string());
                 continue;
             }
             std::string filename = full.filename().string();
@@ -105,6 +226,7 @@ std::vector<std::filesystem::path> VerifiedCppPluginPaths(const std::filesystem:
             }
             result.push_back(full);
         }
+        std::sort(result.begin(), result.end());
         return result;
     }
     catch (const std::exception &e)
@@ -112,6 +234,52 @@ std::vector<std::filesystem::path> VerifiedCppPluginPaths(const std::filesystem:
         LOG_WARN("PLUGIN", "Failed to verify plugin manifest " << manifestPath.string() << ": " << e.what());
         return {};
     }
+}
+
+struct IsolatedRunHeader
+{
+    std::uint32_t Magic = 0x43534344;
+    std::int32_t Status = static_cast<std::int32_t>(ModuleStatus::Failed);
+    std::int32_t Phase = static_cast<std::int32_t>(ModulePhase::Execute);
+    std::uint32_t MessageSize = 0;
+};
+
+bool WriteAll(int descriptor, const void *data, std::size_t size)
+{
+    const auto *bytes = static_cast<const unsigned char *>(data);
+    while (size > 0)
+    {
+        const ssize_t written = write(descriptor, bytes, size);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return false;
+        bytes += written;
+        size -= static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+bool ReadAll(int descriptor, void *data, std::size_t size)
+{
+    auto *bytes = static_cast<unsigned char *>(data);
+    while (size > 0)
+    {
+        const ssize_t count = read(descriptor, bytes, size);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return false;
+        bytes += count;
+        size -= static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+RunResult ExternalFailure(ModuleStatus status, const std::string &message)
+{
+    RunResult result;
+    result.Status = status;
+    result.Phase = ModulePhase::Execute;
+    result.Message = message;
+    if (status == ModuleStatus::Failed) result.Exception = std::make_exception_ptr(std::runtime_error(message));
+    return result;
 }
 } // namespace
 
@@ -121,11 +289,7 @@ AMCM::AMCM()
     m_Dag = std::make_unique<DAGManager>();
     const char *pluginDir = std::getenv("CASCADE_PLUGIN_DIR");
     if (!pluginDir || std::string(pluginDir).empty())
-    {
-        const char *home = std::getenv("HOME");
-        if (home && std::string(home).size() > 0)
-            LoadPlugins(std::string(home) + "/.local/lib/cascade/plugin");
-    }
+        LoadPlugins((RuntimePrefix() / "lib" / "cascade" / "plugin").string());
     else
     {
         LoadPlugins(pluginDir);
@@ -134,21 +298,30 @@ AMCM::AMCM()
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)
 {
+    if (instanceName.empty()) throw std::invalid_argument("Module instance name cannot be empty");
     auto mod = AnalysisModuleRegistry::Get().Create(base);
     mod->SetName(instanceName);
-    LOG_DEBUG("CONTROL", "mod ptr before shared_ptr: " << mod.get());
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
-    LOG_DEBUG("CONTROL", "shared_ptr made");
-    m_Modules[instanceName] = ptr;
-    LOG_DEBUG("CONTROL", "mod ptr = " << ptr.get() << ", &param manager = " << &ptr->GetParamManager());
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
+    {
+        std::lock_guard<std::mutex> lock(m_ControlMutex);
+        if (m_Modules.count(instanceName)) throw std::runtime_error("Module instance already registered: " + instanceName);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_ControlMutex);
+        m_Modules[instanceName] = ptr;
+    }
     LOG_INFO("CONTROL", "Module " << base << " is registered as " << instanceName);
-    m_Dag->SetParamManagerMap({{instanceName, &ptr->GetParamManager()}});
     return ptr;
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base)
 {
-    int count = ++m_ModuleNameCounter[base];
+    int count = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_ControlMutex);
+        count = ++m_ModuleNameCounter[base];
+    }
     std::string autoName = base + "_" + std::to_string(count);
     return RegisterModule(base, autoName);
 }
@@ -156,6 +329,7 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base)
 std::vector<std::string> AMCM::ListRegisteredModules() const
 {
     std::vector<std::string> names = {};
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
     for (auto &[_, mod] : m_Modules)
         names.push_back(mod->Name());
 
@@ -164,23 +338,15 @@ std::vector<std::string> AMCM::ListRegisteredModules() const
 
 std::shared_ptr<IAnalysisModule> AMCM::GetModule(const std::string &name)
 {
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
     auto it = m_Modules.find(name);
-
-    if (it == m_Modules.end())
-    {
-        LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
-        return nullptr;
-    }
-    else
-    {
-        auto mod = it->second;
-        return mod;
-    }
+    if (it == m_Modules.end()) throw std::runtime_error("Module not registered: " + name);
+    return it->second;
 }
 
 std::string AMCM::GetStatus(const std::string &name) const
 {
-    std::lock_guard<std::mutex> lock(m_StatusMutex);
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
     if (m_Modules.count(name) == 0) throw std::runtime_error("Module not found");
     return m_Modules.at(name)->GetStatus();
 }
@@ -188,74 +354,272 @@ std::string AMCM::GetStatus(const std::string &name) const
 std::map<std::string, std::map<std::string, double>> AMCM::GetAllProgress() const
 {
     std::map<std::string, std::map<std::string, double>> result;
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
     for (const auto &[modName, mod] : m_Modules)
     {
-        for (const auto &[mgrName, mgr] : mod->GetAllManagers())
-        {
-            result[modName][mgrName] = mgr->GetProgress();
-        }
+        result[modName] = mod->GetProgressSnapshot();
     }
     return result;
 }
 
-void AMCM::RunAModule(const std::string &name)
+RunResult AMCM::RunAModule(const std::string &name)
 {
-    py::gil_scoped_release release;
-    auto it = m_Modules.find(name);
-    if (it == m_Modules.end())
+    auto mod = RegisteredModule_(name);
+    LOG_INFO("CONTROL", "Running module " << name);
+    RunResult result = mod->Run();
+    RecordRun_(mod, result);
+    LOG_INFO("CONTROL", "Module " << name << " finished execution with status " << ToString(result.Status));
+    return result;
+}
+
+RunResult AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod)
+{
+    mod = ValidateModuleHandle_(mod);
+    LOG_INFO("CONTROL", "Running module " << mod->Name());
+    RunResult result = mod->Run();
+    RecordRun_(mod, result);
+    LOG_INFO("CONTROL", "Module " << mod->Name() << " finished execution with status " << ToString(result.Status));
+    return result;
+}
+
+void AMCM::RecordRun_(const std::shared_ptr<IAnalysisModule> &module, const RunResult &result)
+{
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
+    m_ExecutedModules.push_back({module->Name(), module->BaseName(), module->GetCodeHash(), module->DumpParamsToYAML(), result});
+}
+
+RunResult AMCM::RunAModuleIsolated(const std::string &name)
+{
+    auto module = RegisteredModule_(name);
+
+    LOG_INFO("CONTROL", "Running module " << name << " in a subprocess");
+    module->PrepareExternalRun();
+
+    int channel[2];
+    if (pipe(channel) != 0)
     {
-        LOG_ERROR("CONTROL", "Cannot found " << name << " module in the registry...");
+        const std::string message = "Cannot create isolated execution channel: " + std::string(std::strerror(errno));
+        RunResult result = module->AdoptExternalRunResult(ExternalFailure(ModuleStatus::Failed, message));
+        RecordRun_(module, result);
+        return result;
+    }
+
+    const pid_t child = fork();
+    if (child < 0)
+    {
+        const std::string message = "Cannot fork isolated module: " + std::string(std::strerror(errno));
+        close(channel[0]);
+        close(channel[1]);
+        RunResult result = module->AdoptExternalRunResult(ExternalFailure(ModuleStatus::Failed, message));
+        RecordRun_(module, result);
+        return result;
+    }
+
+    if (child == 0)
+    {
+        close(channel[0]);
+        signal(SIGSEGV, SIG_DFL);
+        signal(SIGABRT, SIG_DFL);
+        signal(SIGBUS, SIG_DFL);
+        signal(SIGILL, SIG_DFL);
+        signal(SIGFPE, SIG_DFL);
+        RunResult childResult;
+        try
+        {
+            childResult = module->RunPreparedExternal();
+        }
+        catch (const std::exception &error)
+        {
+            childResult = ExternalFailure(ModuleStatus::Failed, error.what());
+        }
+        catch (...)
+        {
+            childResult = ExternalFailure(ModuleStatus::Failed, "Unknown exception escaped isolated module runner");
+        }
+        if (childResult.Message.size() > 4096) childResult.Message.resize(4096);
+        IsolatedRunHeader header;
+        header.Status = static_cast<std::int32_t>(childResult.Status);
+        header.Phase = static_cast<std::int32_t>(childResult.Phase);
+        header.MessageSize = static_cast<std::uint32_t>(childResult.Message.size());
+        const bool written = WriteAll(channel[1], &header, sizeof(header)) &&
+                             WriteAll(channel[1], childResult.Message.data(), childResult.Message.size());
+        close(channel[1]);
+        _exit(written ? 0 : 125);
+    }
+
+    close(channel[1]);
+    int childStatus = 0;
+    bool cancellationSent = false;
+    int cancellationPolls = 0;
+    while (true)
+    {
+        const pid_t waited = waitpid(child, &childStatus, WNOHANG);
+        if (waited == child) break;
+        if (waited < 0 && errno != EINTR)
+        {
+            childStatus = 0;
+            break;
+        }
+        if (module->IsCancellationRequested())
+        {
+            if (!cancellationSent)
+            {
+                kill(child, SIGTERM);
+                cancellationSent = true;
+            }
+            else if (++cancellationPolls >= 50)
+            {
+                kill(child, SIGKILL);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    RunResult externalResult;
+    if (cancellationSent)
+    {
+        externalResult = ExternalFailure(ModuleStatus::Interrupted, "Isolated module was cancelled");
+    }
+    else if (WIFSIGNALED(childStatus))
+    {
+        externalResult = ExternalFailure(ModuleStatus::Failed,
+                                         "Isolated module terminated by signal " + std::to_string(WTERMSIG(childStatus)));
     }
     else
     {
-        auto mod = it->second;
-        LOG_INFO("CONTROL", "Running module " << name);
-        mod->Run();
-        m_ExecutedModules.push_back(mod);
-        LOG_INFO("CONTROL", "Module " << name << " finished execution");
+        IsolatedRunHeader header;
+        if (!ReadAll(channel[0], &header, sizeof(header)) || header.Magic != 0x43534344 || header.MessageSize > 4096)
+        {
+            externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module exited without a valid result");
+        }
+        else
+        {
+            std::string message(header.MessageSize, '\0');
+            if (!ReadAll(channel[0], message.data(), message.size()))
+                externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module result was truncated");
+            else if (header.Status < static_cast<std::int32_t>(ModuleStatus::Pending) ||
+                     header.Status > static_cast<std::int32_t>(ModuleStatus::Failed) ||
+                     header.Phase < static_cast<std::int32_t>(ModulePhase::None) ||
+                     header.Phase > static_cast<std::int32_t>(ModulePhase::Commit))
+                externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module returned invalid status values");
+            else
+            {
+                externalResult.Status = static_cast<ModuleStatus>(header.Status);
+                externalResult.Phase = static_cast<ModulePhase>(header.Phase);
+                externalResult.Message = std::move(message);
+            }
+        }
     }
+    close(channel[0]);
+
+    RunResult result = module->AdoptExternalRunResult(std::move(externalResult));
+    RecordRun_(module, result);
+    LOG_INFO("CONTROL", "Isolated module " << name << " finished with status " << ToString(result.Status));
+    return result;
 }
 
-void AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod) { RunAModule(mod->Name()); }
+RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
+{
+    module = ValidateModuleHandle_(module);
+    return RunAModuleIsolated(module->Name());
+}
 
-void AMCM::SequentialRun()
+std::vector<RunResult> AMCM::SequentialRun(bool failFast)
 {
     LOG_INFO("CONTROL", "Sequential Run is starting.");
-    for (auto &[_, mod] : m_Modules)
-        RunAModule(mod);
+    auto results = RunModules(ListRegisteredModules(), failFast);
     LOG_INFO("CONTROL", "Sequential Run is ended.");
+    return results;
 }
 
-void AMCM::RunModules(const std::vector<std::string> &group)
+std::vector<RunResult> AMCM::RunModules(const std::vector<std::string> &group, bool failFast)
 {
     LOG_INFO("CONTROL", "Running " << group.size() << " modules from provided list");
+    std::vector<RunResult> results;
+    results.reserve(group.size());
     for (const auto &name : group)
-        RunAModule(name);
+    {
+        results.push_back(RunAModule(name));
+        if (failFast && !results.back().AllowsDependents()) break;
+    }
     LOG_INFO("CONTROL", "Finished running provided module list");
+    return results;
 }
 
-void AMCM::RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group)
+std::vector<RunResult> AMCM::RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group, bool failFast)
 {
     LOG_INFO("CONTROL", "Running " << group.size() << " provided module handles");
+    std::vector<RunResult> results;
+    results.reserve(group.size());
     for (const auto &mod : group)
-        RunAModule(mod);
+    {
+        results.push_back(RunAModule(mod));
+        if (failFast && !results.back().AllowsDependents()) break;
+    }
     LOG_INFO("CONTROL", "Finished running provided module handles");
+    return results;
 }
 
-void AMCM::RunDAG()
+void AMCM::AddModuleToDAG(const std::string &name, const std::vector<std::string> &dependencies, bool isolated)
 {
+    RegisteredModule_(name);
+    m_Dag->AddNode(
+        name, dependencies,
+        [this, name, isolated]()
+        {
+            const RunResult result = isolated ? RunAModuleIsolated(name) : RunAModule(name);
+            if (!result.AllowsDependents())
+                throw std::runtime_error("Module " + name + " finished with status " + ToString(result.Status) +
+                                         (result.Message.empty() ? std::string() : ": " + result.Message));
+        });
+}
+
+void AMCM::LinkDAGModuleParameter(const std::string &fromNode, const std::string &fromKey, const std::string &toNode,
+                                  const std::string &toKey)
+{
+    auto source = RegisteredModule_(fromNode);
+    auto target = RegisteredModule_(toNode);
+    if (!source->HasParam(fromKey)) throw std::runtime_error("DAG source parameter is not registered: " + fromNode + "." + fromKey);
+    if (!target->HasParam(toKey)) throw std::runtime_error("DAG target parameter is not registered: " + toNode + "." + toKey);
+    m_Dag->AddDataLink(
+        fromNode, toNode, fromKey + " -> " + toKey,
+        [source = std::move(source), target = std::move(target), fromKey, toKey]()
+        { target->SetParamValue(toKey, source->GetParamValue(fromKey)); });
+}
+
+DAGRunResult AMCM::RunDAG(bool failFast)
+{
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     LOG_INFO("CONTROL", "Executing DAG workflow");
-    m_Dag->Execute();
+    auto result = m_Dag->Execute(failFast);
     LOG_INFO("CONTROL", "DAG workflow execution completed");
+    return result;
+}
+
+std::shared_ptr<IAnalysisModule> AMCM::RegisteredModule_(const std::string &name) const
+{
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
+    const auto iterator = m_Modules.find(name);
+    if (iterator == m_Modules.end()) throw std::runtime_error("Module not registered: " + name);
+    return iterator->second;
+}
+
+std::shared_ptr<IAnalysisModule> AMCM::ValidateModuleHandle_(const std::shared_ptr<IAnalysisModule> &module) const
+{
+    if (!module) throw std::invalid_argument("Cannot run a null module");
+    const auto registered = RegisteredModule_(module->Name());
+    if (registered != module) throw std::runtime_error("Module handle is not owned by this controller: " + module->Name());
+    return registered;
 }
 
 void AMCM::SaveRunLog() const
 {
-    // DEPRECATED//
+    std::lock_guard<std::mutex> lock(m_ControlMutex);
     std::time_t t = std::time(nullptr);
-    std::tm *now = std::localtime(&t);
+    std::tm localTime{};
+    localtime_r(&t, &localTime);
     char buf[20];
-    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", now);
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &localTime);
     std::string filename = "control_log_" + std::string(buf);
     int counter = 0;
 
@@ -263,22 +627,19 @@ void AMCM::SaveRunLog() const
     out << YAML::BeginMap;
     out << YAML::Key << "modules" << YAML::Value << YAML::BeginSeq;
 
-    for (const auto &mod : m_ExecutedModules)
+    for (const auto &entry : m_ExecutedModules)
     {
-        std::string name = mod->Name();
-        std::string baseName = mod->BaseName();
-        std::string codeHash = mod->GetCodeHash();
-        std::string status = mod->GetStatus();
-        auto &params = mod->GetParamManager();
         out << YAML::BeginMap;
-        out << YAML::Key << "name" << YAML::Value << name;
-        out << YAML::Key << "module" << YAML::Value << baseName;
-        out << YAML::Key << "codehash" << YAML::Value << codeHash;
-        out << YAML::Key << "status" << YAML::Value << status;
-        out << YAML::Key << "params" << YAML::Value << params.ToYAMLNode();
+        out << YAML::Key << "name" << YAML::Value << entry.Name;
+        out << YAML::Key << "module" << YAML::Value << entry.BaseName;
+        out << YAML::Key << "codehash" << YAML::Value << entry.CodeHash;
+        out << YAML::Key << "status" << YAML::Value << ToString(entry.Result.Status);
+        out << YAML::Key << "phase" << YAML::Value << ToString(entry.Result.Phase);
+        out << YAML::Key << "message" << YAML::Value << entry.Result.Message;
+        out << YAML::Key << "params" << YAML::Value << YAML::Load(entry.ParamsYaml);
         out << YAML::EndMap;
 
-        if (counter++ < 5) filename += ("_" + name);
+        if (counter++ < 5) filename += ("_" + SafeFilenamePart(entry.Name));
     }
 
     out << YAML::EndSeq;
@@ -287,49 +648,51 @@ void AMCM::SaveRunLog() const
     filename += ".yaml";
     std::filesystem::create_directories("run_logs");
     std::ofstream fout("run_logs/" + filename);
+    if (!fout) throw std::runtime_error("Cannot open run log for writing: " + filename);
     fout << out.c_str();
+    if (!fout) throw std::runtime_error("Failed while writing run log: " + filename);
     LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
 }
 
 void AMCM::LoadPlugins(const std::string &path)
 {
     namespace fs = std::filesystem;
-    if (!fs::exists(path))
+    static std::mutex pluginLoadMutex;
+    static std::set<std::string> loadedPlugins;
+    const fs::path pluginRoot(path);
+    if (!fs::is_directory(pluginRoot))
     {
         LOG_WARN("CONTROL", "Plugin directory not found: " << path);
         return;
     }
-    fs::path pluginPath(path);
-    fs::path keyPath = pluginPath / "plugin_pubkey.pem";
-    EVP_PKEY *publicKey = nullptr;
-    if (fs::exists(keyPath))
-    {
-        FILE *keyFile = fopen(keyPath.string().c_str(), "r");
-        if (!keyFile)
-        {
-            LOG_ERROR("CONTROL", "Failed to open plugin public key: " << keyPath.string());
-            return;
-        }
-        publicKey = PEM_read_PUBKEY(keyFile, nullptr, nullptr, nullptr);
-        fclose(keyFile);
-        if (!publicKey)
-        {
-            LOG_ERROR("CONTROL", "Failed to read plugin public key: " << keyPath.string());
-            return;
-        }
-        LOG_DEBUG("PLUGIN", "Plugin manifest verification enabled with " << keyPath.string());
-    }
-    else
-    {
-        LOG_WARN("PLUGIN", "Plugin public key not found; skipping plugin load: " << keyPath.string());
-        return;
-    }
+    const fs::path trustStore = DefaultTrustStore(pluginRoot);
+    const auto trustedKeys = LoadTrustedKeys(trustStore);
+    if (trustedKeys.empty()) return;
 
-    for (const auto &pluginFile : VerifiedCppPluginPaths(pluginPath, publicKey))
+    for (const auto &packageDir : PackageDirectories(pluginRoot))
     {
+        for (const auto &pluginFile : VerifiedCppPluginPaths(packageDir, trustedKeys))
+        {
+            std::lock_guard<std::mutex> loadLock(pluginLoadMutex);
+            const std::string canonicalPlugin = fs::weakly_canonical(pluginFile).string();
+            if (loadedPlugins.count(canonicalPlugin)) continue;
+            const auto modulesBeforeLoad = AnalysisModuleRegistry::Get().ListModules();
+            const std::set<std::string> moduleSetBeforeLoad(modulesBeforeLoad.begin(), modulesBeforeLoad.end());
+            auto rollbackRegistrations = [&]()
+            {
+                for (const auto &module : AnalysisModuleRegistry::Get().ListModules())
+                    if (!moduleSetBeforeLoad.count(module)) AnalysisModuleRegistry::Get().Unregister(module);
+            };
             void *handle = dlopen(pluginFile.c_str(), RTLD_NOW);
             if (!handle) LOG_WARN("PLUGIN", "dlopen failed for '" << pluginFile.string() << "': " << dlerror());
             if (!handle) continue;
+            if (AnalysisModuleRegistry::Get().ListModules() != modulesBeforeLoad)
+            {
+                LOG_ERROR("PLUGIN", "Plugin performed static module registration before ABI validation: " << pluginFile.string());
+                rollbackRegistrations();
+                dlclose(handle);
+                continue;
+            }
             dlerror();
             using AbiFn = int (*)();
             using AbiTagFn = const char *(*)();
@@ -346,47 +709,51 @@ void AMCM::LoadPlugins(const std::string &path)
             const char *regErr = dlerror();
             if (regErr) regFn = nullptr;
 
-            if (abiFn)
+            if (!abiFn || !abiTagFn || !regFn)
             {
-                int abi = abiFn();
-                if (abi != CASCADE_PLUGIN_ABI_VERSION)
-                {
-                    LOG_ERROR("CONTROL", "Plugin ABI mismatch for '" << pluginFile.string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
-                    dlclose(handle);
-                    continue;
-                }
-                if (abiTagFn)
-                {
-                    std::string tag = abiTagFn();
-                    if (tag != CASCADE_ABI_TAG)
-                    {
-                        LOG_ERROR("CONTROL", "Plugin ABI tag mismatch for '" << pluginFile.string() << "'");
-                        dlclose(handle);
-                        continue;
-                    }
-                }
-                else
-                {
-                    LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' missing ABI tag; skipping strict tag check");
-                }
-                if (regFn)
-                {
-                    regFn();
-                }
-                else
-                {
-                    LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' provides ABI version but no CascadeRegisterPlugin()");
-                }
+                LOG_ERROR("PLUGIN", "Plugin is missing required ABI or registration entry points: " << pluginFile.string());
+                rollbackRegistrations();
+                dlclose(handle);
+                continue;
             }
-            else if (regFn)
+
+            const int abi = abiFn();
+            if (abi != CASCADE_PLUGIN_ABI_VERSION)
             {
-                LOG_WARN("CONTROL", "Plugin '" << pluginFile.string() << "' has no ABI version; calling CascadeRegisterPlugin()");
+                LOG_ERROR("PLUGIN", "Plugin ABI mismatch for '" << pluginFile.string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
+                rollbackRegistrations();
+                dlclose(handle);
+                continue;
+            }
+            const char *rawTag = abiTagFn();
+            if (!rawTag || std::string(rawTag) != CASCADE_ABI_TAG)
+            {
+                LOG_ERROR("PLUGIN", "Plugin ABI tag mismatch for '" << pluginFile.string() << "'");
+                rollbackRegistrations();
+                dlclose(handle);
+                continue;
+            }
+
+            try
+            {
                 regFn();
+                if (AnalysisModuleRegistry::Get().ListModules() == modulesBeforeLoad)
+                    throw std::runtime_error("plugin registration did not add a module");
+                loadedPlugins.insert(canonicalPlugin);
+                LOG_INFO("PLUGIN", "Loaded plugin " << pluginFile.string());
             }
-            else
+            catch (const std::exception &error)
             {
-                LOG_WARN("CONTROL", "Legacy plugin loaded without ABI entry points: " << pluginFile.string());
+                LOG_ERROR("PLUGIN", "Plugin registration failed for '" << pluginFile.string() << "': " << error.what());
+                rollbackRegistrations();
+                dlclose(handle);
             }
+            catch (...)
+            {
+                LOG_ERROR("PLUGIN", "Plugin registration failed for '" << pluginFile.string() << "' with an unknown exception");
+                rollbackRegistrations();
+                dlclose(handle);
+            }
+        }
     }
-    if (publicKey) EVP_PKEY_free(publicKey);
 }

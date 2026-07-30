@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: micromamba-shell {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: cascade-ci
+          cache-environment: true
+          create-args: >-
+            -c conda-forge
+            root=6.32
+            scons
+            pybind11
+            pyyaml
+            yaml-cpp
+            nlohmann_json
+            openssl
+            cxx-compiler
+            pkg-config
+
+      - name: Build
+        run: scons -j2
+
+      - name: Test
+        run: scons test -j2

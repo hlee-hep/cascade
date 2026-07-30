@@ -150,7 +150,7 @@ std::string Logger::HighlightWarnings_(std::string msg)
                                                "Missing snapshot",
                                                "Failed to open",
                                                "Continue",
-                                               "No tree found for cuts! Please assign a tree first."
+                                               "No tree found for cuts! Please assign a tree first.",
                                                "Unsupported type",
                                                "Cannot"};
     for (const auto &k : keywords)
@@ -216,6 +216,12 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
 void Logger::PrintProgressBar(const std::string &name, double progress, double elapsed, double eta)
 {
     std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
+    if (!m_IsTerminal)
+    {
+        if (progress >= 1.0)
+            std::cout << "[INFO] [" << name << "] Progress 100.0% | " << std::fixed << std::setprecision(1) << elapsed << "s" << std::endl;
+        return;
+    }
     const int barWidth = 40;
     int pos = static_cast<int>(progress * barWidth);
 
@@ -250,9 +256,11 @@ std::string Logger::GetCurrentTime()
     std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
     auto now = std::chrono::system_clock::now();
     std::time_t nowC = std::chrono::system_clock::to_time_t(now);
+    std::tm localTime{};
+    localtime_r(&nowC, &localTime);
 
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&nowC), "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 

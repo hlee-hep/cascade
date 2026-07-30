@@ -2,8 +2,6 @@
 #include "Logger.hh"
 
 #include <nlohmann/json.hpp>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <yaml-cpp/yaml.h>
 
 #include <stdexcept>
@@ -13,7 +11,6 @@
 #include <variant>
 #include <vector>
 
-namespace py = pybind11;
 using json = nlohmann::json;
 
 // ===== Mixed element / vector =====
@@ -65,42 +62,38 @@ class __attribute__((visibility("default"))) ParamManager
     // ---- operator[] proxy ----
     class ParamProxy
     {
-        ParamValue &m_Value;
+        ParamManager &m_Manager;
+        std::string m_Key;
 
       public:
-        explicit ParamProxy(ParamValue &v) : m_Value(v) {}
-        template <typename T> T Get() const { return std::get<T>(m_Value); }
+        ParamProxy(ParamManager &manager, std::string key) : m_Manager(manager), m_Key(std::move(key)) {}
+        template <typename T> T Get() const { return m_Manager.Get<T>(m_Key); }
         template <typename T, typename = std::enable_if_t<std::is_same_v<T, double> || std::is_same_v<T, int> || std::is_same_v<T, std::string>>> operator T()
         {
-            return std::get<T>(m_Value);
+            return m_Manager.Get<T>(m_Key);
         }
         template <typename T> ParamProxy &operator=(const T &newVal)
         {
-            m_Value = newVal;
+            m_Manager.Set(m_Key, newVal);
             return *this;
         }
-        std::string TypeName() const
-        {
-            return std::visit([](auto &&x) { return ::TypeName<std::decay_t<decltype(x)>>(); }, m_Value);
-        }
+        std::string TypeName() const { return m_Manager.TypeOf(m_Key); }
     };
 
     class ConstParamProxy
     {
-        const ParamValue &m_Value;
+        const ParamManager &m_Manager;
+        std::string m_Key;
 
       public:
-        explicit ConstParamProxy(const ParamValue &v) : m_Value(v) {}
-        template <typename T> T Get() const { return std::get<T>(m_Value); }
+        ConstParamProxy(const ParamManager &manager, std::string key) : m_Manager(manager), m_Key(std::move(key)) {}
+        template <typename T> T Get() const { return m_Manager.Get<T>(m_Key); }
         template <typename T, typename = std::enable_if_t<std::is_same_v<T, double> || std::is_same_v<T, int> || std::is_same_v<T, std::string>>>
         operator T() const
         {
-            return std::get<T>(m_Value);
+            return m_Manager.Get<T>(m_Key);
         }
-        std::string TypeName() const
-        {
-            return std::visit([](auto &&x) { return ::TypeName<std::decay_t<decltype(x)>>(); }, m_Value);
-        }
+        std::string TypeName() const { return m_Manager.TypeOf(m_Key); }
     };
 
   private:
@@ -108,7 +101,8 @@ class __attribute__((visibility("default"))) ParamManager
     std::unordered_map<std::string, std::string> m_Descriptions;
 
     ParamValue ConvertFromYaml_(const YAML::Node &val);
-    ParamValue ConvertFromPy_(const py::object &obj) const;
+    ParamValue ConvertFromJson_(const json &val) const;
+    ParamValue CoerceToRegisteredType_(const std::string &key, const ParamValue &value) const;
     json ToJsonInternal_() const;
     YAML::Node ToYamlInternal_() const;
 
@@ -117,7 +111,7 @@ class __attribute__((visibility("default"))) ParamManager
         static_assert(g_isParamValueV<T>, "[ParamManager] Unsupported type.");
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
-        it->second = value;
+        it->second = CoerceToRegisteredType_(key, ParamValue(value));
         if (!desc.empty()) m_Descriptions[key] = desc;
     }
 
@@ -147,19 +141,25 @@ class __attribute__((visibility("default"))) ParamManager
     }
 
     bool Has(const std::string &key) const { return m_RawValues.count(key) > 0; }
+    std::string TypeOf(const std::string &key) const
+    {
+        auto it = m_RawValues.find(key);
+        if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key not found: " + key);
+        return std::visit([](const auto &value) { return ::TypeName<std::decay_t<decltype(value)>>(); }, it->second);
+    }
 
     ParamProxy operator[](const std::string &key)
     {
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
-        return ParamProxy(it->second);
+        return ParamProxy(*this, key);
     }
 
     ConstParamProxy operator[](const std::string &key) const
     {
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
-        return ConstParamProxy(it->second);
+        return ConstParamProxy(*this, key);
     }
 
     // ===== I/O =====
@@ -173,8 +173,6 @@ class __attribute__((visibility("default"))) ParamManager
     std::string DumpJSON(int indent = 2) const;
 
     void SetParamsFromYAML(const YAML::Node &node);
-    void SetParamsFromDict(const py::dict &d);
-    void SetParamFromPy(const std::string &key, const py::object &obj, const std::string &desc = "");
 
     void SetParamVariant(const std::string &key, const ParamValue &v) { UpdateExisting_(key, v); }
     void RegisterCommon();

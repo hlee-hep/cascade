@@ -2,7 +2,10 @@
 #include <Math/DistFunc.h>
 #include <TArrow.h>
 #include <TLegendEntry.h>
+#include <TList.h>
 #include <TROOT.h>
+#include <cmath>
+#include <stdexcept>
 #include "Logger.hh"
 // ===== style =====
 void PlotManager::ApplyStyleHist_(TH1 *h, const ColorSpec &c)
@@ -43,7 +46,7 @@ void PlotManager::ApplyViewOps_(TH1 *h, const DrawSpec &d)
     if (!h) return;
     if (d.Rebin && *d.Rebin > 1) h->Rebin(*d.Rebin);
     if (d.Smoothing && *d.Smoothing > 0) h->Smooth(*d.Smoothing);
-    if (d.Scale) h->Scale(*d.Scale);
+    if (d.Scale && *d.Scale >= 0) h->Scale(*d.Scale);
 
     if (d.NormBinWidth)
     {
@@ -79,26 +82,138 @@ void PlotManager::ApplyViewOps_(TH1 *h, const DrawSpec &d)
     }
 }
 
+void PlotManager::ValidateSpec_(const PlotSpec &spec)
+{
+    if (spec.Layout.CanvW <= 0 || spec.Layout.CanvH <= 0)
+        throw std::invalid_argument("Plot canvas dimensions must be positive");
+    if (spec.Ratio.Enable && (spec.Layout.RatioSplit <= 0.0 || spec.Layout.RatioSplit >= 1.0))
+        throw std::invalid_argument("Plot ratio split must be between zero and one");
+    if (spec.Ratio.Enable && spec.Ratio.YMin >= spec.Ratio.YMax)
+        throw std::invalid_argument("Plot ratio Y minimum must be smaller than its maximum");
+    if (spec.Theme.LogY && spec.Layout.ForceYMin && spec.Layout.YMin <= 0.0)
+        throw std::invalid_argument("A logarithmic plot requires a positive forced Y minimum");
+
+    auto sameBinning = [](const TH1 *lhs, const DrawSpec &lhsDraw, const TH1 *rhs, const DrawSpec &rhsDraw)
+    {
+        if (!lhs || !rhs || lhs->GetDimension() != 1 || rhs->GetDimension() != 1) return false;
+        if (lhsDraw.Rebin.value_or(1) != rhsDraw.Rebin.value_or(1)) return false;
+        if (lhs->GetNbinsX() != rhs->GetNbinsX()) return false;
+        for (int bin = 1; bin <= lhs->GetNbinsX() + 1; ++bin)
+        {
+            const double left = lhs->GetXaxis()->GetBinLowEdge(bin);
+            const double right = rhs->GetXaxis()->GetBinLowEdge(bin);
+            const double scale = std::max({1.0, std::abs(left), std::abs(right)});
+            if (std::abs(left - right) > 1e-12 * scale) return false;
+        }
+        return true;
+    };
+
+    const StackItemSpec *stackTemplate = nullptr;
+    std::size_t visibleItems = 0;
+    for (const auto &stack : spec.Stacks)
+    {
+        if (!stack.Draw.Visible) continue;
+        ++visibleItems;
+        if (!stack.H) throw std::invalid_argument("Visible stack item '" + stack.Label + "' has no histogram");
+        if (stack.Draw.Rebin && *stack.Draw.Rebin < 1)
+            throw std::invalid_argument("Visible stack item '" + stack.Label + "' has an invalid rebin factor");
+        if (stack.H->GetDimension() != 1)
+            throw std::invalid_argument("Visible stack item '" + stack.Label + "' must be one-dimensional");
+        if (stackTemplate && !sameBinning(stackTemplate->H, stackTemplate->Draw, stack.H, stack.Draw))
+            throw std::invalid_argument("Visible stack item '" + stack.Label + "' has incompatible binning");
+        if (!stackTemplate) stackTemplate = &stack;
+    }
+
+    for (const auto &overlay : spec.Overlays)
+    {
+        if (!overlay.Draw.Visible) continue;
+        ++visibleItems;
+        switch (overlay.Kind)
+        {
+        case ItemKind::Hist:
+            if (!overlay.H) throw std::invalid_argument("Visible histogram overlay '" + overlay.Label + "' has no histogram");
+            if (overlay.Draw.Rebin && *overlay.Draw.Rebin < 1)
+                throw std::invalid_argument("Visible histogram overlay '" + overlay.Label + "' has an invalid rebin factor");
+            break;
+        case ItemKind::Graph:
+            if (!overlay.G) throw std::invalid_argument("Visible graph overlay '" + overlay.Label + "' has no graph");
+            break;
+        case ItemKind::GraphAsymm:
+            if (!overlay.GAE) throw std::invalid_argument("Visible asymmetric graph overlay '" + overlay.Label + "' has no graph");
+            break;
+        }
+        if (overlay.Kind == ItemKind::Hist && overlay.Draw.Scale && *overlay.Draw.Scale < 0.0 && !stackTemplate)
+            throw std::invalid_argument("Overlay '" + overlay.Label + "' cannot normalize to a missing stack");
+    }
+    if (visibleItems == 0) throw std::invalid_argument("Plot requires at least one visible item");
+    if (!spec.Ratio.Enable) return;
+
+    const OverlaySpec *numerator = nullptr;
+    for (const auto &overlay : spec.Overlays)
+    {
+        if (overlay.Draw.Visible && overlay.Kind == ItemKind::Hist && overlay.H &&
+            (overlay.IsData || overlay.Role == RatioRole::Numerator))
+        {
+            numerator = &overlay;
+            break;
+        }
+    }
+    if (!numerator) throw std::invalid_argument("Ratio plot requires a visible histogram numerator");
+    if (numerator->H->GetDimension() != 1)
+        throw std::invalid_argument("Ratio numerator '" + numerator->Label + "' must be one-dimensional");
+
+    const TH1 *denominator = nullptr;
+    const DrawSpec *denominatorDraw = nullptr;
+    if (spec.Ratio.DenominatorOverlayLabel)
+    {
+        std::size_t matches = 0;
+        for (const auto &overlay : spec.Overlays)
+        {
+            if (!overlay.Draw.Visible || overlay.Kind != ItemKind::Hist || !overlay.H ||
+                overlay.Label != *spec.Ratio.DenominatorOverlayLabel)
+                continue;
+            denominator = overlay.H;
+            denominatorDraw = &overlay.Draw;
+            ++matches;
+        }
+        if (matches == 0)
+            throw std::invalid_argument("Ratio denominator overlay '" + *spec.Ratio.DenominatorOverlayLabel + "' was not found");
+        if (matches > 1)
+            throw std::invalid_argument("Ratio denominator overlay label '" + *spec.Ratio.DenominatorOverlayLabel + "' is ambiguous");
+    }
+    else if (stackTemplate)
+    {
+        denominator = stackTemplate->H;
+        denominatorDraw = &stackTemplate->Draw;
+    }
+    else
+    {
+        std::size_t matches = 0;
+        for (const auto &overlay : spec.Overlays)
+        {
+            if (!overlay.Draw.Visible || overlay.Kind != ItemKind::Hist || !overlay.H ||
+                overlay.Role != RatioRole::Denominator)
+                continue;
+            denominator = overlay.H;
+            denominatorDraw = &overlay.Draw;
+            ++matches;
+        }
+        if (matches > 1) throw std::invalid_argument("Ratio denominator role is ambiguous");
+    }
+    if (!denominator || !denominatorDraw)
+        throw std::invalid_argument("Ratio plot requires a visible stack or histogram denominator");
+    if (!sameBinning(numerator->H, numerator->Draw, denominator, *denominatorDraw))
+        throw std::invalid_argument("Ratio numerator and denominator have incompatible binning");
+}
+
 // ===== aux creators =====
 TH1 *PlotManager::MakeEmptyLike_(const TH1 *src, const char *name)
 {
     TH1 *out = nullptr;
     if (src)
     {
-        if (src->GetDimension() == 1)
-        {
-            out = new TH1D(name, "", src->GetNbinsX(), src->GetXaxis()->GetXmin(), src->GetXaxis()->GetXmax());
-        }
-        else if (src->GetDimension() == 2)
-        {
-            auto *h2 = static_cast<const TH2 *>(src);
-            out = new TH2D(name, "", h2->GetNbinsX(), h2->GetXaxis()->GetXmin(), h2->GetXaxis()->GetXmax(), h2->GetNbinsY(), h2->GetYaxis()->GetXmin(),
-                           h2->GetYaxis()->GetXmax());
-        }
-        else
-        {
-            out = new TH1D(name, "", 100, 0, 1);
-        }
+        out = static_cast<TH1 *>(src->Clone(name));
+        out->Reset("ICESM");
     }
     else
     {
@@ -132,14 +247,14 @@ TGraphAsymmErrors *PlotManager::MakeBandFromHist_(const TH1 *hs)
     {
         const double x = hs->GetXaxis()->GetBinCenter(i);
         double sw = hs->GetBinContent(i);
+        const double sw2 = (hs->GetSumw2()->fN > 0) ? hs->GetSumw2()->At(i) : sw;
         if (sw == 0)
         {
             g->SetPoint(i - 1, x, 0);
             g->SetPointError(i - 1, 0., 0., 0., 0.);
         }
-        else
+        else if (sw > 0 && sw2 > 0)
         {
-            double sw2 = (hs->GetSumw2()->fN > 0) ? hs->GetSumw2()->At(i) : sw;
             double nEff = (sw * sw) / std::max(sw2, 1e-12);
             double alpha = 1.0 - 0.682689492;
             double elow = (sw / nEff) * (nEff - ROOT::Math::gamma_quantile(alpha / 2, nEff, 1.0));
@@ -147,6 +262,13 @@ TGraphAsymmErrors *PlotManager::MakeBandFromHist_(const TH1 *hs)
             const double ex = hs->GetXaxis()->GetBinWidth(i) / 2.0;
             g->SetPoint(i - 1, x, sw);
             g->SetPointError(i - 1, ex, ex, elow, eup);
+        }
+        else
+        {
+            const double error = hs->GetBinError(i);
+            const double ex = hs->GetXaxis()->GetBinWidth(i) / 2.0;
+            g->SetPoint(i - 1, x, sw);
+            g->SetPointError(i - 1, ex, ex, error, error);
         }
     }
     g->SetBit(kCanDelete, true); //
@@ -167,6 +289,7 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
     }
     // r->Divide(den);
     TGraphAsymmErrors *g = new TGraphAsymmErrors();
+    g->SetBit(kCanDelete, true);
     g->SetLineWidth(2);
     g->Divide(r, den, "pois");
     for (int i = 0; i < g->GetN(); i++)
@@ -247,7 +370,10 @@ void PlotManager::BuildPlan_(const PlotSpec &spec, RenderPlan &plan)
     {
         if (!s.H || !s.Draw.Visible) continue;
 
-        TH1 *h = s.H; //
+        TH1 *h = static_cast<TH1 *>(s.H->Clone(MakeSafeName_(s.H, "stack").c_str()));
+        h->SetDirectory(nullptr);
+        h->SetBit(kCanDelete, false);
+        plan.OwnedInputs.push_back(h);
         ApplyViewOps_(h, s.Draw);
         ApplyStyleHist_(h, s.Color);
 
@@ -277,7 +403,10 @@ void PlotManager::BuildPlan_(const PlotSpec &spec, RenderPlan &plan)
 
         if (o.Kind == ItemKind::Hist && o.H)
         {
-            TH1 *h = o.H; //
+            TH1 *h = static_cast<TH1 *>(o.H->Clone(MakeSafeName_(o.H, "overlay").c_str()));
+            h->SetDirectory(nullptr);
+            h->SetBit(kCanDelete, false);
+            plan.OwnedInputs.push_back(h);
             ApplyViewOps_(h, o.Draw);
             ApplyStyleHist_(h, o.Color);
             if (!templ) templ = h;
@@ -285,13 +414,17 @@ void PlotManager::BuildPlan_(const PlotSpec &spec, RenderPlan &plan)
         }
         else if (o.Kind == ItemKind::Graph && o.G)
         {
-            ApplyStyleGraph_(o.G, o.Color);
-            it.G = o.G;
+            it.G = static_cast<TGraph *>(o.G->Clone(MakeSafeName_(o.G, "graph").c_str()));
+            it.G->SetBit(kCanDelete, false);
+            plan.OwnedInputs.push_back(it.G);
+            ApplyStyleGraph_(it.G, o.Color);
         }
         else if (o.Kind == ItemKind::GraphAsymm && o.GAE)
         {
-            ApplyStyleGraphAsymm_(o.GAE, o.Color);
-            it.GAE = o.GAE;
+            it.GAE = static_cast<TGraphAsymmErrors *>(o.GAE->Clone(MakeSafeName_(o.GAE, "graph_asymm").c_str()));
+            it.GAE->SetBit(kCanDelete, false);
+            plan.OwnedInputs.push_back(it.GAE);
+            ApplyStyleGraphAsymm_(it.GAE, o.Color);
         }
         plan.Overlays.push_back(std::move(it));
     }
@@ -375,8 +508,23 @@ std::pair<const TH1 *, const TH1 *> PlotManager::FindRatioPair_(const PlotSpec &
                 break;
             }
         }
+        if (!den) return {nullptr, nullptr};
     }
-    if (!den) den = plan.StackSum;
+    else
+    {
+        den = plan.StackSum;
+        if (!den)
+        {
+            for (auto &ov : plan.Overlays)
+            {
+                if (ov.Kind == ItemKind::Hist && ov.H && ov.Role == RatioRole::Denominator)
+                {
+                    den = ov.H;
+                    break;
+                }
+            }
+        }
+    }
     if (!den)
     {
         LOG_INFO("PlotManager", "No valid ratio denominator found for numerator '" << num->GetName() << "'");
@@ -443,6 +591,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     LOG_INFO("PlotManager", "Drawing canvas '" << canvasName << "' with " << spec.Stacks.size() << " stack specs and "
                                              << spec.Overlays.size() << " overlays");
 
+    ValidateSpec_(spec);
     SetupStyle_(spec.Theme);
 
     RenderPlan plan;
@@ -473,6 +622,12 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
 
     // canvas & pads
     auto *canvas = new TCanvas(canvasName.c_str(), canvasName.c_str(), spec.Layout.CanvW, spec.Layout.CanvH);
+    auto *ownedInputs = new TList();
+    ownedInputs->SetOwner(true);
+    ownedInputs->SetBit(kCanDelete, true);
+    for (auto *object : plan.OwnedInputs)
+        ownedInputs->Add(object);
+    canvas->GetListOfPrimitives()->Add(ownedInputs);
 
     TPad *padTop = nullptr, *padBot = nullptr;
     const auto split = std::clamp(spec.Layout.RatioSplit, 0.05, 0.90);
@@ -599,6 +754,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                 else
                 {
                     auto hg = new TGraphAsymmErrors(h);
+                    hg->SetBit(kCanDelete, true);
                     for (int i = hg->GetN() - 1; i >= 0; i--)
                     {
                         double x, y;
@@ -615,7 +771,14 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
             else
             {
                 if (ov.Draw.Scale && *ov.Draw.Scale < 0 && !plan.Stacks.empty())
-                    h->Scale(static_cast<TH1 *>(hs->GetStack()->Last())->Integral() / h->Integral());
+                {
+                    const double overlayIntegral = h->Integral();
+                    auto *stackTotal = hs->GetStack() ? static_cast<TH1 *>(hs->GetStack()->Last()) : nullptr;
+                    if (stackTotal && overlayIntegral != 0.0)
+                        h->Scale(stackTotal->Integral() / overlayIntegral);
+                    else
+                        LOG_WARN("PlotManager", "Cannot normalize overlay '" << h->GetName() << "' to an empty stack or zero integral.");
+                }
                 h->Draw((opt + " SAME").c_str());
             }
 
@@ -655,6 +818,8 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
         auto *carrow = new TArrow(*spec.Cut.UpCut, cutMax, *spec.Cut.UpCut - spec.Cut.ArrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
+        cline->SetBit(kCanDelete, true);
+        carrow->SetBit(kCanDelete, true);
         cline->Draw("SAME");
         carrow->Draw();
     }
@@ -664,6 +829,8 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
         auto *carrow = new TArrow(*spec.Cut.DnCut, cutMax, *spec.Cut.DnCut + spec.Cut.ArrowLength * binWidth, cutMax, 0.025, "|>");
         cline->SetLineWidth(2);
         carrow->SetLineWidth(2);
+        cline->SetBit(kCanDelete, true);
+        carrow->SetBit(kCanDelete, true);
         cline->Draw("SAME");
         carrow->Draw();
     }
@@ -767,13 +934,25 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     TLatex *latLumi = new TLatex();
     if (spec.Sample.Enable)
     {
-        latExp->DrawLatexNDC(spec.Sample.XExp, spec.Sample.YExp, Form("#bf{#it{%s}}  %s", spec.Sample.Experiment.c_str(), spec.Sample.Comment.c_str()));
-        if (spec.Sample.Lumi > 0)
-            latLumi->DrawLatexNDC(spec.Sample.XLumi, spec.Sample.YLumi,
-                                  Form("#scale[0.5]{#int}#scale[0.8]{#it{L}dt = %g %s}", spec.Sample.Lumi, spec.Sample.LumiUnit.c_str()));
-
+        latExp->SetNDC();
+        latExp->SetText(spec.Sample.XExp, spec.Sample.YExp, Form("#bf{#it{%s}}  %s", spec.Sample.Experiment.c_str(), spec.Sample.Comment.c_str()));
         if (m_ExpHook) m_ExpHook(*latExp);
-        if (m_LumiHook) m_ExpHook(*latLumi);
+        latExp->SetBit(kCanDelete, true);
+        latExp->Draw();
+        if (spec.Sample.Lumi > 0)
+        {
+            latLumi->SetNDC();
+            latLumi->SetText(spec.Sample.XLumi, spec.Sample.YLumi,
+                             Form("#scale[0.5]{#int}#scale[0.8]{#it{L}dt = %g %s}", spec.Sample.Lumi, spec.Sample.LumiUnit.c_str()));
+            if (m_LumiHook) m_LumiHook(*latLumi);
+            latLumi->SetBit(kCanDelete, true);
+            latLumi->Draw();
+        }
+        else
+        {
+            delete latLumi;
+            latLumi = nullptr;
+        }
     }
     else
     {
@@ -784,6 +963,8 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     }
 
     TGraphAsymmErrors *gr = new TGraphAsymmErrors();
+    gr->SetBit(kCanDelete, true);
+    bool ratioBandDrawn = false;
     // ratio
     if (spec.Ratio.Enable && padBot)
     {
@@ -836,6 +1017,8 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                     gr->SetFillStyle(3254);
                     gr->SetFillColor(1);
                     gr->Draw("E2 SAME");
+                    ratioBandDrawn = true;
+                    delete gratio;
                 }
                 if (spec.Band.Asymm)
                 {
@@ -862,12 +1045,16 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
                         if (g->GetPointY(i) > spec.Ratio.YMax)
                         {
                             double xarr = g->GetPointX(i);
-                            auto *arr = new TArrow(xarr, 1.95, xarr, 2, 0.015, "|>");
+                            const double arrowTop = spec.Ratio.YMax;
+                            const double arrowBottom = arrowTop - 0.05 * (spec.Ratio.YMax - spec.Ratio.YMin);
+                            auto *arr = new TArrow(xarr, arrowBottom, xarr, arrowTop, 0.015, "|>");
+                            arr->SetBit(kCanDelete, true);
                             arr->Draw();
                         }
                     }
                 }
                 if (m_RatioFrameHook) m_RatioFrameHook(*r);
+                if (!spec.Band.Asymm) delete g;
             }
         }
         else
@@ -893,6 +1080,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
         delete plan.StackSum;
         plan.StackSum = nullptr;
     }
+    if (!ratioBandDrawn) delete gr;
 
     if (m_PostHook) m_PostHook(*canvas);
     LOG_INFO("PlotManager", "Finished drawing canvas '" << canvasName << "'");

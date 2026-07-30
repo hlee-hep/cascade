@@ -1,4 +1,4 @@
-import os, subprocess, stat
+import os, subprocess, stat, sys
 from SCons.Script import Environment, Variables
 import SCons.Util
 
@@ -19,11 +19,12 @@ def generate_init_py_head(target, source, env):
     files = [f for f in os.listdir(target_dir) if f.endswith(".py") and f != "__init__.py"]
     lines = [
         "# Auto-generated cascade __init__.py\n",
-        "from ._cascade import log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version",
+        "from ._cascade import log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version, get_abi_tag",
         "import importlib",
         "",
         "__version__ = get_version()",
         "__abi_version__ = get_abi_version()",
+        "__abi_tag__ = get_abi_tag()",
         "",
         "_LAZY_MODULES = {",
     ]
@@ -39,8 +40,10 @@ def generate_init_py_head(target, source, env):
         "    \"set_log_file\",",
         "    \"get_version\",",
         "    \"get_abi_version\",",
+        "    \"get_abi_tag\",",
         "    \"__version__\",",
         "    \"__abi_version__\",",
+        "    \"__abi_tag__\",",
         "    \"init_interrupt\",",
         "    \"is_interrupted\",",
         "    \"log\",",
@@ -76,6 +79,41 @@ def create_symlink(target, source, env):
     print(f"[SCons] symlink {link_path} -> {rel_target}")
     return 0
 
+def run_tests(target, source, env):
+    test_binary = os.path.abspath(str(source[0]))
+    build_library_paths = [
+        os.path.abspath("build/src"),
+        os.path.abspath("build/utils"),
+        os.path.abspath("build/AnalysisManager"),
+        os.path.abspath("build/ParamManager"),
+        os.path.abspath("build/PlotManager"),
+        os.path.abspath("build/main"),
+    ]
+    test_environment = {
+        **os.environ,
+        "CASCADE_CACHE_DIR": os.path.abspath("build/test-cache"),
+        "TMPDIR": "/tmp",
+        "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
+    }
+    subprocess.check_call([test_binary], env=test_environment)
+    for python_source in (
+        "python/py_amcm.py",
+        "python/plt_plot_manager.py",
+        "python/cascade",
+        "modules/python/base_module.py",
+        "scripts/plugin_sconstruct",
+    ):
+        with open(python_source, "r", encoding="utf-8") as source_file:
+            compile(source_file.read(), python_source, "exec")
+    subprocess.check_call(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+        env=test_environment,
+    )
+    os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
+    with open(str(target[0]), "w") as stamp:
+        stamp.write("ok\n")
+    return 0
+
 vars = Variables()
 vars.Add('PREFIX', 'install directory', '~/.local')
 vars.Add('LIBDIR', 'library install directory', '')
@@ -104,10 +142,10 @@ pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 
 env.ParseConfig('root-config --cflags --libs')
 env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
-env.Append(CXXFLAGS=["-std=c++17","-O2","-fvisibility=default"])
+env.AppendUnique(CXXFLAGS=["-std=c++17", "-O2", "-fvisibility=default"])
 env.Append(CPPPATH=pybind_includes)
 env.Append(LIBS=["ssl","crypto"])
-env.Append(RPATH=[env['LIBDIR'], '$ORIGIN', '$ORIGIN/..'])
+env.Append(RPATH=[env['LIBDIR']])
 VariantDir("build/src", "src", duplicate=0)
 VariantDir("build/utils", "utils", duplicate=0)
 VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
@@ -175,7 +213,7 @@ utils_obj, utils_install = SConscript("build/utils/SConscript", exports=["env", 
 lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisManager/SConscript", exports=["env","TOP"])
 lib_plot_obj, lib_plot_install = SConscript("build/PlotManager/SConscript", exports=["env","TOP"])
 lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env","TOP"])
-core_objs, _ = SConscript("build/src/SConscript", exports=["env" , "lib_param_obj"])
+core_objs, core_install = SConscript("build/src/SConscript", exports=["env" , "lib_param_obj"])
 pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
     "env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj"
 ])
@@ -225,7 +263,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
+install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)
@@ -236,4 +274,31 @@ env.Alias('compdb', compdb)
 
 
 env.Alias("install", install_targets)
-Default(build_targets + install_targets)
+
+test_env = env.Clone()
+test_rpath = [
+    os.path.join(TOP, "build", "src"),
+    os.path.join(TOP, "build", "utils"),
+    os.path.join(TOP, "build", "AnalysisManager"),
+    os.path.join(TOP, "build", "ParamManager"),
+    os.path.join(TOP, "build", "PlotManager"),
+]
+test_env.Replace(RPATH=test_rpath)
+test_env.Append(
+    LIBPATH=[
+        os.path.join(TOP, "build", "src"),
+        os.path.join(TOP, "build", "utils"),
+        os.path.join(TOP, "build", "AnalysisManager"),
+        os.path.join(TOP, "build", "ParamManager"),
+        os.path.join(TOP, "build", "PlotManager"),
+    ],
+    LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
+)
+core_test_object = test_env.Object("build/tests/test_core.o", "tests/test_core.cc")
+core_test = test_env.Program("build/tests/test_core", [core_test_object])
+Depends(core_test, build_targets)
+test_stamp = env.Command("build/tests/.passed", core_test, run_tests)
+AlwaysBuild(test_stamp)
+env.Alias("test", test_stamp)
+
+Default(build_targets)

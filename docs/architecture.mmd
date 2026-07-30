@@ -2,8 +2,9 @@ flowchart TD
     %% Core entry points
     A1["Python user code"] --> A2["python/py_amcm.py<br/>py_amcm"]
     A3["ROOT macro"] --> A4["ROOT runtime"]
-    A5["CLI wrapper<br/>python/cascade"] --> A4
-    A5 --> A6["Doctor<br/>cascade doctor plugins"]
+    A5["CLI<br/>info, doctor, module, dag, macro"] --> A4
+    A5 --> A2
+    A5 --> A6["Diagnostics<br/>environment and signed plugins"]
     A5 --> Z1["JSON params temp file"]
     Z1 --> A4
 
@@ -16,6 +17,8 @@ flowchart TD
     B2 --> C2["DAGManager<br/>include/DAGManager.hh"]
     B2 --> C3["Plugin Loader<br/>AMCM::LoadPlugins"]
     B2 --> C4["Run logs (Python)<br/>py_amcm.save_run_log_all"]
+    C2 --> C5["Node states<br/>Pending / Running / Succeeded / Failed / Blocked"]
+    C2 --> C6["Generic data links<br/>mixed-language parameter transfer"]
 
     %% Registry and modules
     C1 --> D1["Module factories<br/>REGISTER_MODULE"]
@@ -24,10 +27,14 @@ flowchart TD
     D3 --> E1["IAnalysisModule instances"]
 
     %% C++ module lifecycle
-    E1 --> F1["IAnalysisModule::Run<br/>Init→Execute→Finalize"]
+    E1 --> F1["IAnalysisModule::Run<br/>Init→Check→Execute→Finalize→Commit"]
     F1 --> F2["AnalysisManager map<br/>RegisterAnalysisManager"]
     F1 --> F3["CacheManager + SnapshotHasher"]
     F1 --> F4["Status updates + Logger"]
+    F1 --> F5["ExecutionContext<br/>run ID + cancellation + roots"]
+    F5 --> F6["OutputTransaction<br/>staging + journal + rollback"]
+    B2 --> F7["Subprocess runner<br/>signal containment + result IPC"]
+    F7 --> F1
 
     %% AnalysisManager
     F2 --> G1["AnalysisManager<br/>AnalysisManager.hh"]
@@ -53,9 +60,9 @@ flowchart TD
 
     %% Plugins (C++)
     C3 --> J1["Plugin dir<br/>CASCADE_PLUGIN_DIR"]
-    J1 --> J2["plugin_pubkey.pem (required)"]
-    J1 --> J3["plugin_manifest.json + .sig"]
-    J3 --> J4["OpenSSL verify manifest"]
+    J1 --> J2["Package subdirectories"]
+    J1 --> J3["Manifest + signature per package"]
+    J3 --> J4["Verify with external trust store"]
     J4 --> J5["SHA-256 file checks"]
     J5 --> J6["ABI version + ABI tag check"]
     J6 --> J7["CascadeRegisterPlugin()"]
@@ -65,8 +72,8 @@ flowchart TD
     %% Plugins (Python)
     A2 --> K1["Unified module controller<br/>py_amcm.register_module"]
     K1 --> K2["Python plugin discovery<br/>cascade.pyplugin"]
-    K2 --> K3["plugin_manifest.json + .sig"]
-    K3 --> K4["OpenSSL verify manifest"]
+    K2 --> K3["Package-specific manifest + signature"]
+    K3 --> K4["Verify with external trust store"]
     K4 --> K5["SHA-256 file checks"]
     K5 --> K6["Python class extraction"]
     K6 --> K7["Duplicate Python name check"]
@@ -77,8 +84,9 @@ flowchart TD
 
     %% Python modules
     K8 --> L1["Python plugin modules<br/>base_module.py contract"]
-    L1 --> L2["Lifecycle: init/execute/finalize"]
-    L1 --> L3["Cache file<br/>~/.cache/cascade/py_module_hashes.json"]
+    L1 --> L2["Lifecycle: init/check/execute/finalize/commit"]
+    L1 --> L3["Cache file<br/>~/.cache/cascade/snapshot_cache/python_modules.json"]
+    L1 --> F5
 
     %% C++ cache
     F3 --> M1["C++ cache dir<br/>~/.cache/cascade/snapshot_cache"]

@@ -2,11 +2,32 @@
 # -*- coding: utf-8 -*-
 """
 Cascade CLI:
-- ROOT macro wrapper with YAML/kv param injection
-- plugin diagnostics
+- framework and environment diagnostics
+- signed plugin discovery and module execution
+- declarative DAG workflows
+- ROOT macro compatibility wrapper
 """
-import argparse, sys, os, json, tempfile, shlex, subprocess, signal, hashlib, ctypes
-from typing import Any, List, Dict, Tuple, Optional
+import argparse
+import ctypes
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from contextlib import contextmanager
+from typing import Any, Dict, List, Optional, Tuple
+
+_CLI_PREFIX = os.environ.get(
+    "CASCADE_PREFIX",
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+)
+_CLI_PYTHON_ROOT = os.path.join(_CLI_PREFIX, "lib")
+if os.path.isdir(os.path.join(_CLI_PYTHON_ROOT, "cascade")):
+    sys.path.insert(0, _CLI_PYTHON_ROOT)
 
 # ------------ logging  ------------
 def _log(level: str, msg: str) -> None:
@@ -15,15 +36,16 @@ def _log(level: str, msg: str) -> None:
 
 # ------------ SIGINT handler ------------
 def _install_sigint_handler() -> None:
-    def handler(sig, frame):
-        _log("WARN", "Interrupt requested (SIGINT). Exiting soon…")
-    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
 # ------------ utils ------------
 def _parse_kv(s: str) -> Tuple[str, Any]:
     if "=" not in s:
         raise argparse.ArgumentTypeError(f"--set expects k=v, got '{s}'")
     k, v = s.split("=", 1)
+    k = k.strip()
+    if not k:
+        raise argparse.ArgumentTypeError("--set key cannot be empty")
     v = v.strip()
     if v.lower() in ("true", "false"):
         return k, v.lower() == "true"
@@ -50,17 +72,19 @@ def _sha256_file(path: str) -> str:
 
 def _verify_manifest_signature(manifest: str, pubkey: str) -> bool:
     sig = manifest + ".sig"
-    result = subprocess.run(
-        ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pubkey, "-rawin", "-in", manifest, "-sigfile", sig],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = subprocess.run(
+            ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pubkey, "-rawin", "-in", manifest, "-sigfile", sig],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
     return result.returncode == 0
 
 def _default_plugin_dirs() -> Tuple[str, str]:
-    prefix = os.environ.get("CASCADE_PREFIX", os.path.expanduser("~/.local"))
-    cpp_dir = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "plugin"))
-    py_dir = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "pyplugin"))
+    cpp_dir = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(_CLI_PREFIX, "lib", "cascade", "plugin"))
+    py_dir = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(_CLI_PREFIX, "lib", "cascade", "pyplugin"))
     return cpp_dir, py_dir
 
 def _manifest_classes(path: str) -> List[str]:
@@ -79,7 +103,7 @@ def _manifest_classes(path: str) -> List[str]:
         return False
 
     classes = []
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.ClassDef) and any(is_base_module(base) for base in node.bases):
             classes.append(node.name)
     return classes
@@ -88,6 +112,7 @@ def _check_cpp_abi(path: str) -> Tuple[str, Optional[str]]:
     try:
         import cascade
         expected = int(getattr(cascade, "__abi_version__"))
+        expected_tag = str(getattr(cascade, "__abi_tag__"))
     except Exception as e:
         return "WARN", f"cannot import cascade ABI version: {e}"
 
@@ -107,9 +132,21 @@ def _check_cpp_abi(path: str) -> Tuple[str, Optional[str]]:
         return "ERROR", f"CascadePluginAbiVersion failed: {e}"
     if actual != expected:
         return "ERROR", f"ABI mismatch: plugin={actual} cascade={expected}"
-    return "OK", f"ABI {actual}"
+    try:
+        tag_fn = lib.CascadePluginAbiTag
+    except AttributeError:
+        return "ERROR", "missing CascadePluginAbiTag"
+    tag_fn.restype = ctypes.c_char_p
+    try:
+        raw_tag = tag_fn()
+        actual_tag = raw_tag.decode("utf-8") if raw_tag else ""
+    except Exception as e:
+        return "ERROR", f"CascadePluginAbiTag failed: {e}"
+    if actual_tag != expected_tag:
+        return "ERROR", f"ABI tag mismatch: plugin={actual_tag!r} cascade={expected_tag!r}"
+    return "OK", f"ABI {actual}, tag {actual_tag}"
 
-def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, List[str]]:
+def _doctor_plugin_package(path: str, language: str, check_abi: bool, trusted_keys: List[str]) -> Tuple[int, List[str]]:
     errors = 0
     warnings = 0
     names = []
@@ -118,20 +155,20 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
         _log("WARN", f"[{language}] directory not found")
         return 0, names
 
-    pubkey = os.path.join(path, "plugin_pubkey.pem")
     manifest = os.path.join(path, "plugin_manifest.json")
     manifest_sig = manifest + ".sig"
-    for required in (pubkey, manifest, manifest_sig):
+    for required in (manifest, manifest_sig):
         if not os.path.exists(required):
             _log("ERROR", f"[{language}] missing {os.path.basename(required)}")
             errors += 1
     if errors:
         return errors, names
 
-    if _verify_manifest_signature(manifest, pubkey):
-        _log("INFO", f"[{language}] manifest signature: OK")
+    verified_key = next((key for key in trusted_keys if _verify_manifest_signature(manifest, key)), None)
+    if verified_key:
+        _log("INFO", f"[{language}] manifest signature: OK ({os.path.basename(verified_key)})")
     else:
-        _log("ERROR", f"[{language}] manifest signature: invalid")
+        _log("ERROR", f"[{language}] manifest is not signed by a trusted key")
         return errors + 1, names
 
     try:
@@ -139,6 +176,13 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
             data = json.load(f)
     except Exception as e:
         _log("ERROR", f"[{language}] cannot parse plugin_manifest.json: {e}")
+        return errors + 1, names
+
+    if data.get("schema") != 2:
+        _log("ERROR", f"[{language}] unsupported manifest schema")
+        return errors + 1, names
+    if data.get("package") != os.path.basename(os.path.abspath(path)):
+        _log("ERROR", f"[{language}] manifest package does not match directory name")
         return errors + 1, names
 
     listed = set()
@@ -156,17 +200,27 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
             continue
         rel = entry.get("path", "")
         name = entry.get("name", rel)
-        if name in names:
-            _log("ERROR", f"[{language}] duplicate module name in manifest: {name}")
+        identities = entry.get("classes", []) if language == "python" else [name]
+        if not isinstance(identities, list) or not all(isinstance(identity, str) and identity for identity in identities):
+            _log("ERROR", f"[{language}] {name}: module identities must be non-empty strings")
             errors += 1
-        names.append(name)
+            identities = []
+        for identity in identities:
+            if identity in names:
+                _log("ERROR", f"[{language}] duplicate module identity in manifest: {identity}")
+                errors += 1
+            names.append(identity)
         if not rel or os.path.isabs(rel):
             _log("ERROR", f"[{language}] {name}: invalid relative path {rel!r}")
             errors += 1
             continue
         listed.add(rel)
-        full = os.path.join(path, rel)
-        if not os.path.exists(full):
+        full = os.path.realpath(os.path.join(path, rel))
+        if os.path.commonpath([os.path.realpath(path), full]) != os.path.realpath(path):
+            _log("ERROR", f"[{language}] {name}: path escapes package directory")
+            errors += 1
+            continue
+        if not os.path.isfile(full):
             _log("ERROR", f"[{language}] {name}: listed file missing: {rel}")
             errors += 1
             continue
@@ -190,7 +244,7 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
             else:
                 _log("INFO", f"[{language}] {name}: hash OK")
         elif language == "python":
-            if not os.path.basename(full).endswith("module.py"):
+            if os.path.basename(full) != "__init__.py" and not os.path.basename(full).endswith("module.py"):
                 _log("WARN", f"[{language}] {name}: filename does not end with module.py")
                 warnings += 1
             declared = entry.get("classes", [])
@@ -205,7 +259,7 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
     expected_suffix = "Module.so" if language == "cpp" else "module.py"
     ignored = []
     for fname in sorted(os.listdir(path)):
-        if fname in {"plugin_pubkey.pem", "plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
+        if fname in {"plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
             continue
         if fname.endswith(expected_suffix) and fname not in listed:
             ignored.append(fname)
@@ -216,19 +270,409 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool) -> Tuple[int, 
     _log("INFO", f"[{language}] checked modules={len(listed)} errors={errors} warnings={warnings}")
     return errors, names
 
+
+def _doctor_plugin_dir(path: str, language: str, check_abi: bool, trusted_keys: List[str]) -> Tuple[int, List[str]]:
+    _log("INFO", f"[{language}] package root: {path}")
+    if not os.path.isdir(path):
+        _log("WARN", f"[{language}] package root not found")
+        return 0, []
+    errors = 0
+    names = []
+    package_dirs = [
+        os.path.join(path, entry)
+        for entry in sorted(os.listdir(path))
+        if os.path.isdir(os.path.join(path, entry))
+    ]
+    for package_dir in package_dirs:
+        package_errors, package_names = _doctor_plugin_package(package_dir, language, check_abi, trusted_keys)
+        errors += package_errors
+        names.extend(package_names)
+    return errors, names
+
 def cmd_doctor_plugins(args) -> None:
     cpp_default, py_default = _default_plugin_dirs()
     cpp_dir = args.cpp_dir or cpp_default
     py_dir = args.py_dir or py_default
+    trust_store = args.trust_store or os.environ.get(
+        "CASCADE_PLUGIN_TRUST_STORE", os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys")
+    )
+    trusted_keys = []
+    if os.path.isdir(trust_store):
+        trusted_keys = [
+            os.path.join(trust_store, entry)
+            for entry in sorted(os.listdir(trust_store))
+            if entry.endswith(".pem") and os.path.isfile(os.path.join(trust_store, entry))
+        ]
+    if not trusted_keys:
+        _log("ERROR", f"no trusted plugin keys found in {trust_store}")
+        raise SystemExit(1)
     errors = 0
-    cpp_errors, cpp_names = _doctor_plugin_dir(cpp_dir, "cpp", not args.no_abi)
-    py_errors, py_names = _doctor_plugin_dir(py_dir, "python", False)
+    cpp_errors, cpp_names = _doctor_plugin_dir(cpp_dir, "cpp", not args.no_abi, trusted_keys)
+    py_errors, py_names = _doctor_plugin_dir(py_dir, "python", False, trusted_keys)
     errors += cpp_errors + py_errors
     duplicates = sorted(set(cpp_names) & set(py_names))
     if duplicates:
         _log("ERROR", f"duplicate module names across C++ and Python plugins: {duplicates}")
         errors += 1
     if errors:
+        raise SystemExit(1)
+
+# ------------ framework commands ------------
+def _framework_info() -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "prefix": os.path.realpath(_CLI_PREFIX),
+        "python": sys.version.split()[0],
+    }
+    try:
+        import cascade
+
+        version = getattr(cascade, "__version__", None)
+        abi_version = getattr(cascade, "__abi_version__", None)
+        abi_tag = getattr(cascade, "__abi_tag__", None)
+        get_version = getattr(cascade, "get_version", lambda: "unavailable")
+        get_abi_version = getattr(cascade, "get_abi_version", lambda: -1)
+        get_abi_tag = getattr(cascade, "get_abi_tag", lambda: "unavailable")
+        info.update(
+            {
+                "version": str(version if version is not None else get_version()),
+                "abi_version": int(abi_version if abi_version is not None else get_abi_version()),
+                "abi_tag": str(abi_tag if abi_tag is not None else get_abi_tag()),
+                "module": os.path.realpath(cascade.__file__),
+            }
+        )
+    except Exception as error:
+        info["error"] = str(error)
+    cpp_dir, py_dir = _default_plugin_dirs()
+    info["cpp_plugin_dir"] = os.path.realpath(cpp_dir)
+    info["python_plugin_dir"] = os.path.realpath(py_dir)
+    info["trust_store"] = os.path.realpath(
+        os.environ.get(
+            "CASCADE_PLUGIN_TRUST_STORE",
+            os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys"),
+        )
+    )
+    return info
+
+
+def _emit(data: Any, as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    if isinstance(data, dict):
+        for key, value in data.items():
+            print(f"{key}: {value}")
+        return
+    print(data)
+
+
+def cmd_info(args) -> None:
+    info = _framework_info()
+    _emit(info, args.json)
+    if "error" in info:
+        raise SystemExit(1)
+
+
+def cmd_doctor_env(args) -> None:
+    checks = []
+
+    def check(name: str, status: str, detail: str) -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    info = _framework_info()
+    if "error" in info:
+        check("cascade", "ERROR", info["error"])
+    else:
+        check("cascade", "OK", f"version {info['version']}, ABI {info['abi_version']}")
+        module_path = info["module"]
+        prefix_path = info["prefix"]
+        if os.path.commonpath([module_path, prefix_path]) != prefix_path:
+            check("installation coherence", "WARN", f"CLI prefix {prefix_path} imports {module_path}")
+
+    root = shutil.which(args.root_exe)
+    check("ROOT", "OK" if root else "WARN", root or f"{args.root_exe!r} was not found on PATH")
+    openssl = shutil.which("openssl")
+    check("OpenSSL", "OK" if openssl else "ERROR", openssl or "openssl was not found on PATH")
+
+    for name, path in (
+        ("C++ plugin root", info["cpp_plugin_dir"]),
+        ("Python plugin root", info["python_plugin_dir"]),
+        ("Trust store", info["trust_store"]),
+    ):
+        check(name, "OK" if os.path.isdir(path) else "WARN", path)
+
+    if args.json:
+        _emit({"checks": checks}, True)
+    else:
+        for item in checks:
+            _log(item["status"], f"{item['name']}: {item['detail']}")
+    if any(item["status"] == "ERROR" for item in checks):
+        raise SystemExit(1)
+
+
+def _load_controller(quiet: bool = False):
+    import cascade
+
+    if quiet:
+        cascade.set_log_level(cascade.log_level.NONE)
+    from cascade import py_amcm
+    return py_amcm()
+
+
+@contextmanager
+def _redirect_stdout_to_stderr(enabled: bool):
+    if not enabled:
+        yield
+        return
+    sys.stdout.flush()
+    saved_stdout = os.dup(sys.stdout.fileno())
+    try:
+        os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+        yield
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved_stdout, sys.stdout.fileno())
+        os.close(saved_stdout)
+
+
+def _load_mapping(path: str) -> Dict[str, Any]:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"configuration file not found: {path}")
+    with open(path, "r", encoding="utf-8") as source:
+        if path.lower().endswith(".json"):
+            data = json.load(source)
+        else:
+            try:
+                import yaml
+            except ImportError as error:
+                raise RuntimeError("PyYAML is required to read YAML configuration") from error
+            data = yaml.safe_load(source)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise TypeError(f"configuration root must be a mapping: {path}")
+    return data
+
+
+def _parameter_values(data: Dict[str, Any]) -> Dict[str, Any]:
+    values = {}
+    for key, value in data.items():
+        if isinstance(value, dict) and "value" in value and ("type" in value or "description" in value):
+            values[key] = value["value"]
+        else:
+            values[key] = value
+    return values
+
+
+def _apply_parameters(handle, values: Dict[str, Any]) -> None:
+    for key, value in _parameter_values(values).items():
+        handle.set_param(key, value)
+
+
+def _result_payload(result, name: str) -> Dict[str, Any]:
+    status = getattr(result.status, "name", str(result.status).rsplit(".", 1)[-1])
+    phase = getattr(result.phase, "name", str(result.phase).rsplit(".", 1)[-1])
+    if status.isupper():
+        status = status.title()
+    if phase == "None_":
+        phase = "None"
+    elif phase.isupper():
+        phase = phase.title()
+    return {
+        "name": name,
+        "status": status,
+        "phase": phase,
+        "message": str(getattr(result, "message", "")),
+        "succeeded": bool(result.succeeded()),
+        "allows_dependents": bool(result.allows_dependents()),
+    }
+
+
+def cmd_module_list(args) -> None:
+    with _redirect_stdout_to_stderr(args.json):
+        controller = _load_controller(args.json)
+        modules = controller.get_list_available_module_metadata()
+    if args.language:
+        modules = [item for item in modules if item["language"] == args.language]
+    if args.tag:
+        modules = [item for item in modules if args.tag in item["tags"]]
+    modules.sort(key=lambda item: (item["name"], item["language"]))
+    if args.json:
+        _emit({"modules": modules}, True)
+        return
+    if not modules:
+        print("No modules found.")
+        return
+    for item in modules:
+        version = f" {item['version']}" if item["version"] else ""
+        summary = f" - {item['summary']}" if item["summary"] else ""
+        tags = f" [{', '.join(item['tags'])}]" if item["tags"] else ""
+        print(f"{item['name']} ({item['language']}){version}{tags}{summary}")
+
+
+def cmd_module_run(args) -> None:
+    with _redirect_stdout_to_stderr(args.json):
+        controller = _load_controller(args.json)
+        handle = controller.register_module(args.module, args.name)
+        if args.output_directory:
+            handle.set_output_directory(os.path.abspath(args.output_directory))
+        if args.cache_directory:
+            handle.set_cache_directory(os.path.abspath(args.cache_directory))
+        if args.params:
+            _apply_parameters(handle, _load_mapping(args.params))
+        _apply_parameters(handle, dict(_parse_kv(value) for value in args.set))
+        result = controller.run_module(handle.name(), isolated=args.isolated)
+    payload = _result_payload(result, handle.name())
+    if args.json:
+        _emit(payload, True)
+    else:
+        detail = f": {payload['message']}" if payload["message"] else ""
+        print(f"{payload['name']}: {payload['status']} ({payload['phase']}){detail}")
+    if not payload["allows_dependents"]:
+        raise SystemExit(1)
+
+
+def _resolve_config_path(base: str, value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise TypeError("workflow paths must be non-empty strings")
+    return os.path.realpath(value if os.path.isabs(value) else os.path.join(base, value))
+
+
+def _validate_keys(value: Dict[str, Any], allowed: set, context: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"{context} contains unknown fields: {', '.join(unknown)}")
+
+
+def _split_parameter_ref(value: str, context: str) -> Tuple[str, str]:
+    if not isinstance(value, str) or "." not in value:
+        raise ValueError(f"{context} must use 'node.parameter' syntax")
+    node, parameter = value.rsplit(".", 1)
+    if not node or not parameter:
+        raise ValueError(f"{context} must use 'node.parameter' syntax")
+    return node, parameter
+
+
+def cmd_dag_run(args) -> None:
+    workflow_path = os.path.realpath(args.workflow)
+    workflow = _load_mapping(workflow_path)
+    _validate_keys(
+        workflow,
+        {
+            "schema_version",
+            "output_directory",
+            "cache_directory",
+            "fail_fast",
+            "dot",
+            "modules",
+            "links",
+        },
+        "workflow",
+    )
+    if workflow.get("schema_version") != 1:
+        raise ValueError("DAG workflow requires schema_version: 1")
+    modules = workflow.get("modules")
+    if not isinstance(modules, list) or not modules:
+        raise ValueError("DAG workflow requires a non-empty modules list")
+    links = workflow.get("links", [])
+    if not isinstance(links, list):
+        raise TypeError("workflow.links must be a list")
+
+    base = os.path.dirname(workflow_path)
+    default_output = _resolve_config_path(base, workflow.get("output_directory"))
+    default_cache = _resolve_config_path(base, workflow.get("cache_directory"))
+    configured = []
+    names = set()
+    allowed_module_keys = {
+        "module",
+        "name",
+        "dependencies",
+        "isolated",
+        "params",
+        "param_file",
+        "output_directory",
+        "cache_directory",
+    }
+
+    workflow_fail_fast = workflow.get("fail_fast", True)
+    if not isinstance(workflow_fail_fast, bool):
+        raise TypeError("workflow.fail_fast must be a boolean")
+    fail_fast = workflow_fail_fast if args.fail_fast is None else args.fail_fast
+
+    with _redirect_stdout_to_stderr(args.json):
+        controller = _load_controller(args.json)
+        for index, item in enumerate(modules):
+            if not isinstance(item, dict):
+                raise TypeError(f"workflow.modules[{index}] must be a mapping")
+            _validate_keys(item, allowed_module_keys, f"workflow.modules[{index}]")
+            class_name = item.get("module")
+            name = item.get("name")
+            if not isinstance(class_name, str) or not class_name:
+                raise ValueError(f"workflow.modules[{index}].module must be a non-empty string")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"workflow.modules[{index}].name must be a non-empty string")
+            if name in names:
+                raise ValueError(f"duplicate DAG module name: {name}")
+            names.add(name)
+
+            dependencies = item.get("dependencies", [])
+            if not isinstance(dependencies, list) or not all(isinstance(value, str) and value for value in dependencies):
+                raise TypeError(f"workflow.modules[{index}].dependencies must be a list of names")
+            params = item.get("params", {})
+            if not isinstance(params, dict):
+                raise TypeError(f"workflow.modules[{index}].params must be a mapping")
+            isolated = item.get("isolated", False)
+            if not isinstance(isolated, bool):
+                raise TypeError(f"workflow.modules[{index}].isolated must be a boolean")
+
+            handle = controller.register_module(class_name, name)
+            output = _resolve_config_path(base, item.get("output_directory")) or default_output
+            cache = _resolve_config_path(base, item.get("cache_directory")) or default_cache
+            if output:
+                handle.set_output_directory(output)
+            if cache:
+                handle.set_cache_directory(cache)
+            param_file = _resolve_config_path(base, item.get("param_file"))
+            if param_file:
+                _apply_parameters(handle, _load_mapping(param_file))
+            _apply_parameters(handle, params)
+            configured.append((name, dependencies, isolated))
+
+        for name, dependencies, isolated in configured:
+            controller.add_module_to_dag(name, dependencies, isolated=isolated)
+
+        for index, link in enumerate(links):
+            if not isinstance(link, dict):
+                raise TypeError(f"workflow.links[{index}] must be a mapping")
+            _validate_keys(link, {"from", "to"}, f"workflow.links[{index}]")
+            source_node, source_param = _split_parameter_ref(link.get("from"), f"workflow.links[{index}].from")
+            target_node, target_param = _split_parameter_ref(link.get("to"), f"workflow.links[{index}].to")
+            controller.link_dag_parameter(source_node, source_param, target_node, target_param)
+
+        result = controller.run_dag(fail_fast=fail_fast)
+        dot_path = args.dot or workflow.get("dot")
+        if dot_path:
+            resolved_dot = _resolve_config_path(base, dot_path)
+            os.makedirs(os.path.dirname(resolved_dot), exist_ok=True)
+            controller.get_dag().dump_dot(resolved_dot)
+
+    nodes = [
+        {
+            "name": node.name,
+            "status": getattr(node.status, "name", str(node.status).rsplit(".", 1)[-1]).title(),
+            "message": node.message,
+        }
+        for node in result.nodes
+    ]
+    payload = {"succeeded": result.succeeded(), "failed": result.failed(), "nodes": nodes}
+    if args.json:
+        _emit(payload, True)
+    else:
+        for node in nodes:
+            detail = f": {node['message']}" if node["message"] else ""
+            print(f"{node['name']}: {node['status']}{detail}")
+    if result.failed():
         raise SystemExit(1)
 
 # ------------ ROOT mode ------------
@@ -244,7 +688,7 @@ def _root_invoke(macro: str,
     if json_params_path is not None:
         arglist.append(json_params_path)
     arglist.extend(extra_args or [])
-    quoted_with_dq = ",".join(f'"{str(a)}"' for a in arglist)
+    quoted_with_dq = ",".join(json.dumps(str(a), ensure_ascii=False) for a in arglist)
     cmd = [root_exe, "-l", "-q", f'{macro_spec}({quoted_with_dq})']
     _log("INFO", "[ROOT] " + " ".join(shlex.quote(c) for c in cmd))
     completed = subprocess.run(cmd)
@@ -255,6 +699,8 @@ def _root_invoke(macro: str,
 def cmd_macro_run(args) -> None:
     params: Dict[str, Any] = {}
     if args.yaml:
+        if not os.path.isfile(args.yaml):
+            raise FileNotFoundError(f"YAML configuration not found: {args.yaml}")
         params["_yaml_path"] = os.path.abspath(args.yaml)
     if args.set:
         params.update(dict(_parse_kv(s) for s in args.set))
@@ -281,22 +727,76 @@ def cmd_macro_run(args) -> None:
 # ------------ argparse ------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cascade", description="Cascade command line tools")
+    version_info = _framework_info()
+    version = version_info.get("version", "unavailable")
+    abi = version_info.get("abi_version", "unavailable")
+    p.add_argument("--version", action="version", version=f"Cascade {version} (plugin ABI {abi})")
     sub = p.add_subparsers(dest="command")
 
+    info = sub.add_parser("info", help="Show framework version, ABI, and installation paths")
+    info.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    info.set_defaults(func=cmd_info)
+
     doctor = sub.add_parser("doctor", help="Run Cascade diagnostics")
-    doctor_sub = doctor.add_subparsers(dest="doctor_command")
+    doctor_sub = doctor.add_subparsers(dest="doctor_command", required=True)
+    environment = doctor_sub.add_parser("env", help="Check the runtime environment and installation paths")
+    environment.add_argument("--root-exe", default="root", help="ROOT executable name/path")
+    environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    environment.set_defaults(func=cmd_doctor_env)
     plugins = doctor_sub.add_parser("plugins", help="Verify plugin manifests, hashes, signatures, and ABI")
     plugins.add_argument("--cpp-dir", help="C++ plugin directory")
     plugins.add_argument("--py-dir", help="Python plugin directory")
+    plugins.add_argument("--trust-store", help="Directory containing trusted plugin public keys")
     plugins.add_argument("--no-abi", action="store_true", help="Skip C++ plugin dlopen/ABI checks")
     plugins.set_defaults(func=cmd_doctor_plugins)
 
-    p.add_argument("--macro", help="Path to ROOT macro (e.g., macros/My.C)")
-    p.add_argument("--yaml", help="YAML config path (packed into JSON as _yaml_path)")
-    p.add_argument("--set", action="append", help="k=v (repeatable)")
-    p.add_argument("--extra", action="append", help="extra string args to macro", default=[])
-    p.add_argument("--root-exe", default="root", help="ROOT executable name/path")
-    p.add_argument("--no-plus", action="store_true", help="Do not append '+' to macro")
+    module = sub.add_parser("module", help="Discover or run signed analysis modules")
+    module_sub = module.add_subparsers(dest="module_command", required=True)
+    module_list = module_sub.add_parser("list", help="List available C++ and Python modules")
+    module_list.add_argument("--language", choices=("cpp", "python"), help="Filter by implementation language")
+    module_list.add_argument("--tag", help="Filter by metadata tag")
+    module_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    module_list.set_defaults(func=cmd_module_list)
+    module_run = module_sub.add_parser("run", help="Register and run one signed module")
+    module_run.add_argument("module", help="Registered module class name")
+    module_run.add_argument("--name", help="Instance name")
+    module_run.add_argument("--params", help="YAML or JSON parameter file")
+    module_run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Override a registered parameter")
+    module_run.add_argument("--output-directory", help="Module output root")
+    module_run.add_argument("--cache-directory", help="Module cache root")
+    module_run.add_argument("--isolated", action="store_true", help="Run the module in a subprocess")
+    module_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
+    module_run.set_defaults(func=cmd_module_run)
+
+    dag = sub.add_parser("dag", help="Run declarative mixed-language DAG workflows")
+    dag_sub = dag.add_subparsers(dest="dag_command", required=True)
+    dag_run = dag_sub.add_parser("run", help="Run a schema-versioned DAG workflow")
+    dag_run.add_argument("workflow", help="Workflow YAML or JSON file")
+    fail_fast = dag_run.add_mutually_exclusive_group()
+    fail_fast.add_argument("--fail-fast", dest="fail_fast", action="store_true", help="Stop after the first failed branch")
+    fail_fast.add_argument("--keep-going", dest="fail_fast", action="store_false", help="Finish independent branches")
+    dag_run.add_argument("--dot", help="Write final DAG state to this DOT file")
+    dag_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
+    dag_run.set_defaults(func=cmd_dag_run, fail_fast=None)
+
+    macro = sub.add_parser("macro", help="Run a legacy ROOT macro")
+    macro_sub = macro.add_subparsers(dest="macro_command", required=True)
+    macro_run = macro_sub.add_parser("run", help="Run a ROOT macro with parameter injection")
+    macro_run.add_argument("macro", help="Path to ROOT macro")
+    macro_run.add_argument("--yaml", help="YAML config path, passed as _yaml_path")
+    macro_run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Add a temporary JSON parameter")
+    macro_run.add_argument("--extra", action="append", default=[], help="Add a string macro argument")
+    macro_run.add_argument("--root-exe", default="root", help="ROOT executable name/path")
+    macro_run.add_argument("--no-plus", action="store_true", help="Do not append '+' to the macro path")
+    macro_run.set_defaults(func=cmd_macro_run)
+
+    legacy = p.add_argument_group("legacy ROOT macro compatibility")
+    legacy.add_argument("--macro", help="Path to ROOT macro (prefer: cascade macro run MACRO)")
+    legacy.add_argument("--yaml", help="YAML config path (packed into JSON as _yaml_path)")
+    legacy.add_argument("--set", action="append", metavar="KEY=VALUE")
+    legacy.add_argument("--extra", action="append", default=[], help="extra string args to macro")
+    legacy.add_argument("--root-exe", default="root", help="ROOT executable name/path")
+    legacy.add_argument("--no-plus", action="store_true", help="Do not append '+' to macro")
     p.set_defaults(func=cmd_macro_run)
     return p
 
@@ -305,8 +805,6 @@ def main(argv=None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "command", None) == "doctor" and getattr(args, "doctor_command", None) != "plugins":
-        parser.error("doctor requires a diagnostic command, such as: cascade doctor plugins")
     if getattr(args, "func", None) == cmd_macro_run and not args.macro:
         parser.error("--macro or a subcommand is required")
 

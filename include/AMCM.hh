@@ -3,16 +3,13 @@
 #include "AnalysisModuleRegistry.hh"
 #include "DAGManager.hh"
 #include "IAnalysisModule.hh"
+#include "ModuleRun.hh"
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <string>
 #include <vector>
-
-namespace py = pybind11;
 
 class AMCM
 {
@@ -30,25 +27,40 @@ class AMCM
     std::map<std::string, std::map<std::string, double>> GetAllProgress() const;
     void SaveRunLog() const;
 
-    void RunAModule(std::shared_ptr<IAnalysisModule> mod);
-    void RunAModule(const std::string &name);
-    void SequentialRun();
-    void RunModules(const std::vector<std::string> &group);
-    void RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group);
+    RunResult RunAModule(std::shared_ptr<IAnalysisModule> mod);
+    RunResult RunAModule(const std::string &name);
+    RunResult RunAModuleIsolated(std::shared_ptr<IAnalysisModule> mod);
+    RunResult RunAModuleIsolated(const std::string &name);
+    std::vector<RunResult> SequentialRun(bool failFast = true);
+    std::vector<RunResult> RunModules(const std::vector<std::string> &group, bool failFast = true);
+    std::vector<RunResult> RunModules(std::vector<std::shared_ptr<IAnalysisModule>> group, bool failFast = true);
     DAGManager &GetDAGManager() { return *m_Dag; }
-    void RunDAG();
+    void AddModuleToDAG(const std::string &name, const std::vector<std::string> &dependencies, bool isolated = false);
+    void LinkDAGModuleParameter(const std::string &fromNode, const std::string &fromKey, const std::string &toNode,
+                                const std::string &toKey);
+    DAGRunResult RunDAG(bool failFast = true);
     void LoadPlugins(const std::string &path);
 
   private:
     std::map<std::string, std::shared_ptr<IAnalysisModule>> m_Modules;
     std::unique_ptr<DAGManager> m_Dag;
 
-    std::vector<std::shared_ptr<IAnalysisModule>> m_ExecutedModules;
+    struct RunLogEntry
+    {
+        std::string Name;
+        std::string BaseName;
+        std::string CodeHash;
+        std::string ParamsYaml;
+        RunResult Result;
+    };
+    std::vector<RunLogEntry> m_ExecutedModules;
 
     std::map<std::string, int> m_ModuleNameCounter;
 
-    std::atomic<bool> m_ExecutionDone = false;
-    mutable std::mutex m_StatusMutex;
+    std::recursive_mutex m_RegistrationMutex;
+    mutable std::mutex m_ControlMutex;
 
-    std::string m_RunId;
+    void RecordRun_(const std::shared_ptr<IAnalysisModule> &module, const RunResult &result);
+    std::shared_ptr<IAnalysisModule> RegisteredModule_(const std::string &name) const;
+    std::shared_ptr<IAnalysisModule> ValidateModuleHandle_(const std::shared_ptr<IAnalysisModule> &module) const;
 };

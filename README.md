@@ -1,209 +1,339 @@
 <p align="center">
-  <img src="docs/framework.png" alt="Cascade Logo" width="300"/>
-  <img src="docs/framework_light.png" alt="Cascade Logo Light" width="300"/>
+  <img src="docs/framework.png" alt="Cascade" width="300"/>
+  <img src="docs/framework_light.png" alt="Cascade light" width="300"/>
 </p>
-
-<br>
 
 # Cascade
 
-Cascade is a modular analysis framework for HEP workflows. It combines ROOT-based I/O, a typed parameter system, a module registry, DAG orchestration, and both C++ and Python frontends to make analyses reproducible and portable. Cascade core provides runtime services; concrete analysis modules are loaded from plugins.
+Cascade is a C++17/Python analysis framework for ROOT-based workflows. Analysis
+code is packaged as signed plugins; the core supplies lifecycle management,
+typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
+outputs, and optional subprocess isolation.
 
-## Overview
+The current development release is **0.3.0** with the initial public
+**plugin ABI 1**. The full build fingerprint is checked in addition to the
+integer ABI.
 
-Cascade is built around a small set of managers and a module interface:
+## Why Cascade
 
-- **AnalysisManager** controls ROOT input/output, `TChain`/`TTree` access, cut evaluation, histogram booking/filling, and `RDataFrame` workflows.
-- **ParamManager** handles typed parameters from YAML/JSON and Python, with serialization and mixed-type vectors.
-- **PlotManager** provides ROOT plotting utilities (stack, overlays, ratio pad, legend automation).
-- **DAGManager** executes dependency graphs and supports parameter passing between nodes.
-- **AMCM** is the core C++ controller used by the Python wrapper; it is intentionally not re-exported at the top-level Python API.
-- **Logger** provides structured logging with colorized output and progress bars.
+A Cascade analysis module concentrates on analysis logic while the framework
+owns the operational boundary:
 
-Each analysis is a module that inherits `IAnalysisModule` and defines `Init`, `Execute`, and `Finalize`. The framework supplies shared services (config, parameters, logging, DAG, caching) so plugin modules can focus on physics logic.
+- `Init → Check → Execute → Finalize → Commit` lifecycle with phase-aware errors;
+- the same module controller for C++ and Python plugins;
+- typed parameters with YAML/JSON/Python round trips;
+- classic `TTree` and `RDataFrame` analysis paths;
+- schema-validated input, cut, and histogram configuration;
+- deterministic snapshot caching and explicit `force_run`/`dry_run`;
+- transactional output promotion and rollback;
+- DAG dependencies and parameter links;
+- signed plugin manifests and strict C++ build fingerprints;
+- subprocess isolation for native crashes and abnormal exits.
 
-## Key Features
+## Core model
 
-- ROOT I/O with both classic `TTree` loops and `RDataFrame` pipelines.
-- YAML/JSON driven configuration and parameter injection.
-- Module registry with auto-registration for plugins.
-- Python API via pybind11 for scripting and control.
-- DAG execution with automatic parameter propagation between nodes.
-- Snapshot hashing to detect duplicated runs.
+| Component | Responsibility |
+| --- | --- |
+| `IAnalysisModule` / `base_module` | C++/Python module lifecycle and framework contract |
+| `ExecutionContext` | Run ID, output/cache roots, cancellation, logging, output transaction |
+| `AnalysisManager` | ROOT inputs, branches, cuts, histograms, metadata, RDF |
+| `ParamManager` | Registered typed parameters and YAML/JSON serialization |
+| `DAGManager` | Stateful dependency execution, failure propagation, and generic data links |
+| `PlotManager` | ROOT stack, overlay, ratio, legend, and style helpers |
+| `AMCM` / `py_amcm` | Registration, execution, progress, run logs, isolation |
 
-## External Dependencies
+The supported Python control surface is `py_amcm`. `cascade._cascade` and the raw
+`AMCM` binding are internal integration surfaces.
 
-- [ROOT](https://root.cern/) — I/O, `TTree`, `RDataFrame`, plotting
-- [pybind11](https://github.com/pybind/pybind11) — C++/Python bindings
-- [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML config parsing
-- [nlohmann/json](https://github.com/nlohmann/json) — JSON serialization (header-only)
-- [openSSL](https://openssl-library.org) — SHA256 hashing
-- [SCons](https://scons.org/) — build system (`pip install scons`)
-- C++17 or higher
+## Build, test, and install
 
-## Build and Install
+### Requirements
 
-Default install prefix is `~/.local`.
+- Linux or another POSIX platform;
+- ROOT with `root-config` available;
+- C++17 compiler;
+- Python 3 with pybind11;
+- PyYAML;
+- SCons;
+- yaml-cpp;
+- OpenSSL;
+- nlohmann/json headers.
+
+Matplotlib is optional for `plt_plot_manager`; PyROOT is optional for Python code
+that reads ROOT objects directly.
+
+Make sure the dependency probes succeed:
 
 ```bash
-scons
+root-config --version
+pkg-config --modversion yaml-cpp
+python3 -m pybind11 --includes
+scons --version
+openssl version
+```
+
+Then build and run the complete test suite:
+
+```bash
+scons -j2
+scons test -j2
+scons install PREFIX=/your/cascade/prefix
+```
+
+The default prefix is `~/.local`. See [Build and installation](docs/build.md) for
+all install variables and runtime environment setup.
+
+## First complete run
+
+The repository includes a signed-package example with four modules:
+
+```text
+TextProducerModule (C++) ──> TextTransformModule (Python)
+RootEventModule (C++) ─────> RootSummaryModule (Python)
+```
+
+Create a development signing key:
+
+```bash
+cd examples/plugins/mixed_pipeline
+openssl genpkey -algorithm Ed25519 -out plugin_private.pem
+openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
+```
+
+Build and install the example against the Cascade prefix:
+
+```bash
+CASCADE_PREFIX=/your/cascade/prefix \
+CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
+CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
+CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
 scons install
 ```
 
-You can override install locations via SCons variables:
+Verify the installed package and run both execution modes:
 
 ```bash
-scons PREFIX=/opt/cascade \
-      LIBDIR=/opt/cascade/lib \
-      BINDIR=/opt/cascade/bin \
-      INCLUDEDIR=/opt/cascade/include/cascade \
-      PYTHONDIR=/opt/cascade/python \
-      PYMODULEDIR=/opt/cascade/python/pymodule
+cascade doctor plugins
+cascade module list
+cascade dag run workflow.yaml
+python3 run_pipeline.py --output example-output
+python3 run_pipeline.py --isolated --output isolated-output
 ```
 
-Notes:
-- `PREFIX` controls defaults for the other paths.
-- If `LIBDIR`, `BINDIR`, `INCLUDEDIR`, `PYTHONDIR`, or `PYMODULEDIR` are not set, they are derived from `PREFIX`.
+The output directories contain:
 
-## Core Flow
+```text
+events.root
+events_manifest.json
+events_summary.json
+message.json
+message_upper.json
+mixed_pipeline.dot
+```
 
-1. Register a module (C++ plugin or Python).
-2. Load parameters (YAML/JSON/Python dict).
-3. Initialize inputs (ROOT files, trees, aliases).
-4. Run (`Init` -> `Execute` -> `Finalize`).
-5. Save outputs (trees, histograms, metadata).
+See [Quickstart](docs/quickstart.md) for environment setup, expected status
+messages, and common first-run failures.
 
-## Module API (C++)
+## Writing a module
 
-Modules inherit from `IAnalysisModule` and override:
-
-- `Init()` — set up managers, inputs, cuts.
-- `Execute()` — perform event loop or RDF pipeline.
-- `Finalize()` — write outputs and metadata.
-
-Example:
+### C++
 
 ```cpp
-class MyModule : public IAnalysisModule {
-public:
-  void Init() override {
-    auto *mgr = GetAnalysisManager("main");
-    mgr->LoadInputConfig("config.yaml");
-    mgr->BuildChain();
-  }
+#include "IAnalysisModule.hh"
 
-  void Execute() override {
-    auto *mgr = GetAnalysisManager("main");
-    for (Long64_t i = 0; i < mgr->GetEntryCount(); ++i) {
-      mgr->LoadEvent(i);
-      if (!mgr->PassesAllCuts()) continue;
-      mgr->FillHistograms(1.0);
+#include <fstream>
+
+class EventCountModule final : public IAnalysisModule
+{
+  public:
+    EventCountModule()
+    {
+        m_Basename = "EventCountModule";
+        m_CodeVersionHash = "replace-at-build-time";
+        m_Param.Register<std::string>("output", "count.txt");
+        m_Param.Register<int>("count", 10);
     }
-  }
 
-  void Finalize() override {
-    auto *mgr = GetAnalysisManager("main");
-    mgr->WriteHistograms("hists.root");
-  }
+    void Description() const override {}
+
+  protected:
+    void Init() override
+    {
+        if (m_Param.Get<int>("count") < 0) throw std::invalid_argument("count must be non-negative");
+    }
+
+    void Execute() override
+    {
+        std::ofstream output(StageOutput(m_Param.Get<std::string>("output")));
+        output << m_Param.Get<int>("count") << '\n';
+        if (!output) throw std::runtime_error("cannot write output");
+    }
+
+    void Finalize() override {}
 };
 ```
 
-## Python API
+### Python
 
-Python modules inherit `cascade.pymodule.base_module`. Cascade core installs only the base class; analysis Python modules should live in signed plugin packages.
+```python
+from cascade.pymodule.base_module import base_module
 
-Core Python control entry points:
 
-- `py_amcm` — unified module controller for C++ and Python plugin modules (registration, execution, status, DAG).
-- `plt_plot_manager` — matplotlib-based plotting utility.
+class EventCountPythonModule(base_module):
+    SUMMARY = "Writes a configured event count."
+    TAGS = ["example"]
 
-Public API boundary:
+    def __init__(self):
+        super().__init__()
+        self.basename = "EventCountPythonModule"
+        self.code_version_hash = "replace-at-build-time"
+        self.register_param("output", "count.json")
+        self.register_param("count", 10)
 
-- `py_amcm` is the supported Python control surface.
-- `cascade._cascade` is internal; use it only if you need direct C++ bindings.
-- `AMCM` is intentionally not re-exported at top level to keep the public API small.
+    def print_description(self):
+        print(self.SUMMARY)
 
-The CLI `python/cascade` is a minimal ROOT macro wrapper that injects `--yaml` and `--set` into a temporary JSON file passed as the first macro argument.
-It also provides plugin diagnostics:
+    def init(self):
+        if self.get_param("count") < 0:
+            raise ValueError("count must be non-negative")
+
+    def execute(self):
+        self.stage_output(self.get_param("output")).write_text(
+            f'{{"count": {self.get_param("count")}}}\n',
+            encoding="utf-8",
+        )
+
+    def finalize(self):
+        pass
+```
+
+Important contracts:
+
+- register every externally configurable parameter before assignment;
+- validate cheap configuration in `Init`;
+- put analysis work in `Execute`;
+- write protected outputs only through `StageOutput`/`stage_output`;
+- periodically check cancellation in long loops;
+- do not depend on child-only object mutations after isolated execution.
+
+The complete authoring guide is [Writing analysis modules](docs/module-authoring.md).
+The manager-specific references are
+[Parameters](docs/parameters.md),
+[AnalysisManager](docs/analysis-manager.md),
+[DAG execution](docs/dag.md), and
+[Plotting](docs/plotting.md).
+
+## Configuration
+
+AnalysisManager configuration uses schema version 1:
+
+```yaml
+schema_version: 1
+input:
+  files: [events.root]
+  tree: events
+branches:
+  pt:
+    name: jet_pt
+    type: Float_t
+```
+
+`LoadInputConfig`, `LoadCutConfig`, and `LoadHistogramConfig` run preflight
+automatically. Their `Preflight*Config` counterparts collect errors without
+mutating manager state.
+
+See [Configuration schema](docs/configuration.md) for complete input, cut, and
+histogram examples and supported branch types.
+
+## Execution results
+
+Every run returns a `RunResult`:
+
+| Field | Meaning |
+| --- | --- |
+| `status` / `Status` | `Done`, `Skipped`, `Interrupted`, or `Failed` |
+| `phase` / `Phase` | Lifecycle phase responsible for the result |
+| `message` / `Message` | Human-readable diagnostic or skip reason |
+| `exception` / `Exception` | Python exception or C++ `std::exception_ptr` |
+
+`Skipped` is expected for `dry_run` or a cached snapshot. It is not a failure.
+`Interrupted` rolls back staged outputs. A `Failed` commit also restores previously
+existing output files.
+
+For native-risk modules:
+
+```python
+result = controller.run_module_isolated("module_instance")
+```
+
+Isolation preserves committed files and cache state, but not changes made only to
+the child module object's memory. It currently requires POSIX `fork()`.
+
+See [Execution contract](docs/execution.md).
+
+## Plugin security and compatibility
+
+Installed plugins are accepted only when:
+
+1. the package manifest uses schema 2;
+2. its Ed25519 signature matches a key in the external trust store;
+3. every listed file matches its SHA-256 digest;
+4. module names and paths satisfy package rules;
+5. C++ ABI version and full build fingerprint match the runtime.
+
+The ABI fingerprint includes compiler, standard library, C++ mode, ROOT version,
+pointer width, build mode, and libstdc++ ABI/debug settings.
 
 ```bash
 cascade doctor plugins
 ```
 
-An example ROOT macro is provided in `examples/RootMacroExample.C`.
-An example plugin package is provided in `/home/hlee/cascade_plugin`; install it to make `ExampleModule` available to the quickstart examples.
+See [Plugin development and distribution](docs/plugins.md) and
+[Migrating to 0.3](docs/migration-0.3.md).
 
-Run logs from `py_amcm.save_run_log_all()` are written under `~/.cache/cascade/run_logs/` by default. You can override the output directory with `CASCADE_RUN_LOG_DIR` or by passing `log_dir=...`.
+## Documentation
 
-Versioning:
+| Guide | Use it when |
+| --- | --- |
+| [Quickstart](docs/quickstart.md) | Building and running the included mixed plugin for the first time |
+| [Build and installation](docs/build.md) | Configuring prefixes, libraries, Python paths, and CI |
+| [Writing analysis modules](docs/module-authoring.md) | Implementing C++ or Python analysis logic |
+| [Parameters](docs/parameters.md) | Declaring typed contracts and loading YAML/JSON values |
+| [Configuration schema](docs/configuration.md) | Authoring input, cut, histogram, and parameter files |
+| [AnalysisManager](docs/analysis-manager.md) | Building classic TTree and RDataFrame analyses |
+| [Execution contract](docs/execution.md) | Understanding lifecycle, cache, transactions, cancellation, isolation |
+| [DAG execution](docs/dag.md) | Composing modules and propagating failures or parameters |
+| [Command-line interface](docs/cli.md) | Diagnosing installations and running modules, DAG workflows, or ROOT macros |
+| [Plotting](docs/plotting.md) | Producing ROOT or Matplotlib plots |
+| [Plugin guide](docs/plugins.md) | Packaging, signing, installing, and diagnosing plugins |
+| [Examples](docs/examples.md) | Finding runnable scripts and ROOT macros |
+| [Migration to 0.3](docs/migration-0.3.md) | Updating pre-0.3 source and older configuration |
+| [Troubleshooting](docs/troubleshooting.md) | Resolving build, plugin, cache, config, and runtime failures |
+| [Versioning](docs/versioning.md) | Semantic version and ABI policy |
+| [Architecture](docs/architecture.md) | Understanding component relationships and ownership |
+| [Coding conventions](docs/CONVENTIONS.md) | Contributing framework code |
 
-- `cascade.__version__` exposes the semantic version string.
-- `cascade.__abi_version__` exposes the plugin ABI version.
+## Operational boundaries
 
-Module metadata:
+- Files written directly to final paths are outside the output transaction.
+- Subprocess isolation contains plugin crashes; it is not a security sandbox.
+- Snapshot caching assumes a module's parameters, manager state, code hash, and
+  output root describe its deterministic inputs.
+- Python plugin discovery accepts only signed manifest entries ending in
+  `module.py`.
+- C++ plugins must be rebuilt and re-signed whenever the plugin ABI or fingerprint
+  changes.
 
-- `ctrl.get_list_available_module_metadata()` returns per-module metadata (name, version, summary, tags).
-- C++ modules can register metadata via `REGISTER_MODULE_WITH_METADATA`.
-- Python plugin modules can provide a `METADATA` dict or class attributes (`VERSION`, `SUMMARY`, `TAGS`) without instantiation.
+## Development checks
 
-## Build and Install Layout
-
-SCons installs to `${PREFIX}` with per-component overrides:
-
-- Libraries: `${LIBDIR}` (default: `${PREFIX}/lib`)
-- Headers: `${INCLUDEDIR}` (default: `${PREFIX}/include/cascade`)
-- CLI: `${BINDIR}` (default: `${PREFIX}/bin`)
-- Python package: `${PYTHONDIR}` (default: `${LIBDIR}/cascade`)
-- Python base module support: `${PYMODULEDIR}` (default: `${PYTHONDIR}/pymodule`)
-
-The pybind library `libCascade.so` is installed to `${LIBDIR}` and symlinked into `${PYTHONDIR}` as `_cascade.so`.
-See `docs/build.md` for a detailed build/install flow and output layout.
-
-## Plugin ABI
-
-External C++ plugins should export two C symbols so the loader can check ABI compatibility and register modules:
-
-```cpp
-#include "PluginABI.hh"
-#include "MyModule.hh"
-
-CASCADE_PLUGIN_EXPORT int CascadePluginAbiVersion() { return CASCADE_PLUGIN_ABI_VERSION; }
-CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() { CASCADE_REGISTER_MODULE(MyModule); }
+```bash
+scons test -j2
+scons compdb
+scons tidy
+git diff --check
 ```
 
-Plugins without these entry points are still loaded but will emit a warning and skip ABI checks.
+The `tidy` target requires `clang-tidy` to be installed and available on
+`PATH`.
 
-See `docs/plugins.md` for the ABI policy and plugin developer guide.
-See `docs/versioning.md` for versioning policy and API.
-See `docs/build.md` for a detailed build/install flow and output layout.
-See `docs/troubleshooting.md` for common issues and fixes.
-See `docs/faq.md` for short example answers.
-See `docs/examples.md` for runnable examples.
-See `docs/quickstart.md` for an end-to-end walkthrough.
-
-Plugin loading notes:
-
-- Only shared libraries ending with `Module.so` are loaded from the plugin directory.
-- Plugins require a `plugin_pubkey.pem` in the plugin directory; otherwise they are skipped.
-- Plugins must be listed in a signed `plugin_manifest.json`; files not listed in the manifest are ignored.
-- The signing helper installs to `${PREFIX}/share/cascade/scripts/sign_plugin.sh`.
-- Python plugins apply the same signed-manifest rule in `${CASCADE_PYPLUGIN_DIR}`.
-- Use `cascade doctor plugins` to verify public keys, manifest signatures, file hashes, Python classes, and C++ plugin ABI.
-
-## Configuration
-
-Inputs and cuts are YAML-driven:
-
-- Input config defines files, trees, and branch aliases.
-- Cut config defines named expressions.
-- Histogram config defines expressions and bins.
-
-These configs can be generated and written by `AnalysisManager` as part of your pipeline.
-
-## ROOT Usage (Direct)
-
-The core managers are available directly in ROOT (dictionary/rootmap), so you can use:
-
-- `AnalysisManager` — inputs, cuts, histograms, RDF workflows.
-- `PlotManager` — plotting helpers for histogram output.
-- `ParamManager` — parameter loading and serialization (YAML/JSON).
+CI configuration is available in `.github/workflows/ci.yml`.

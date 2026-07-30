@@ -1,45 +1,102 @@
 #pragma once
-#include "ParamManager.hh"
 #include <functional>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
+
+enum class DAGNodeStatus
+{
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Blocked
+};
+
+inline const char *ToString(DAGNodeStatus status)
+{
+    switch (status)
+    {
+    case DAGNodeStatus::Pending:
+        return "Pending";
+    case DAGNodeStatus::Running:
+        return "Running";
+    case DAGNodeStatus::Succeeded:
+        return "Succeeded";
+    case DAGNodeStatus::Failed:
+        return "Failed";
+    case DAGNodeStatus::Blocked:
+        return "Blocked";
+    }
+    return "Unknown";
+}
+
+struct DAGNodeResult
+{
+    std::string Name;
+    DAGNodeStatus Status = DAGNodeStatus::Pending;
+    std::string Message;
+
+    bool Succeeded() const { return Status == DAGNodeStatus::Succeeded; }
+    bool Failed() const { return Status == DAGNodeStatus::Failed; }
+    bool Blocked() const { return Status == DAGNodeStatus::Blocked; }
+    bool IsTerminal() const
+    {
+        return Status == DAGNodeStatus::Succeeded || Status == DAGNodeStatus::Failed || Status == DAGNodeStatus::Blocked;
+    }
+};
+
+struct DAGRunResult
+{
+    std::vector<DAGNodeResult> Nodes;
+
+    bool Succeeded() const;
+    bool Failed() const;
+};
 
 class DAGManager
 {
   public:
+    using Task = std::function<void()>;
+    using DataTransfer = std::function<void()>;
+
     struct Node
     {
         std::string Name;
         std::vector<std::string> Dependencies;
-        std::function<void()> Task;
-        bool Executed = false;
+        Task Action;
+        DAGNodeStatus Status = DAGNodeStatus::Pending;
+        std::string Message;
     };
 
-    void AddNode(const std::string &name, const std::vector<std::string> &deps, std::function<void()> task);
-    void LinkOutputToParam(const std::string &fromNode, const std::string &outKey, const std::string &toNode, const std::string &paramKey);
-    void SetParamManagerMap(const std::unordered_map<std::string, ParamManager *> &map);
-    void Execute();
+    void AddNode(const std::string &name, const std::vector<std::string> &dependencies, Task task);
+    void AddDataLink(const std::string &fromNode, const std::string &toNode, const std::string &label, DataTransfer transfer);
+    DAGRunResult Execute(bool failFast = true);
+    void Reset();
+    void ResetFailed();
     void DumpDOT(const std::string &filename) const;
     std::vector<std::string> GetNodeNames() const;
+    std::vector<DAGNodeResult> GetNodeResults() const;
+    bool IsExecuting() const;
 
   private:
-    std::unordered_map<std::string, Node> m_Nodes;
-    std::unordered_set<std::string> m_Visited;
-    std::unordered_set<std::string> m_RecursionStack;
+    mutable std::recursive_mutex m_Mutex;
+    bool m_Executing = false;
+    std::map<std::string, Node> m_Nodes;
 
-    struct ParamLink
+    struct DataLink
     {
         std::string FromNode;
-        std::string FromKey;
         std::string ToNode;
-        std::string ToKey;
+        std::string Label;
+        DataTransfer Transfer;
     };
-    std::vector<ParamLink> m_ParamLinks;
-    std::unordered_map<std::string, ParamManager *> m_ParamMap;
+    std::vector<DataLink> m_DataLinks;
 
-    void ExecuteNode_(const std::string &name);
-    void CheckForCycle_(const std::string &name);
+    void Validate_() const;
+    std::vector<std::string> TopologicalOrder_() const;
+    bool DependsOn_(const std::string &node, const std::string &dependency) const;
+    void MarkBlockedDescendants_(const std::string &failedNode);
 };

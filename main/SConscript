@@ -10,12 +10,13 @@ for obj in all_objs:
     if str(obj).endswith(".so"):
         libname = os.path.basename(obj.name)[3:-3]
         modenv.AppendUnique(LIBS=[libname])
-        modenv.AppendUnique(LIBPATH=[modenv["LIBDIR"]])
+        modenv.AppendUnique(LIBPATH=[os.path.dirname(str(obj))])
 
 
 srcs = ["Cascade.cc"]
 
 lib = modenv.SharedLibrary("Cascade", srcs)
+modenv.Depends(lib, all_objs)
 install_targets = modenv.Install(modenv["LIBDIR"], lib)
 
 Return("lib install_targets")

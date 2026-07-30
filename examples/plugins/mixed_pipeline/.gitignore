@@ -1,0 +1,7 @@
+build/
+.sconsign.dblite
+*.so
+plugin_private.pem
+plugin_public.pem
+example-output/
+isolated-output/

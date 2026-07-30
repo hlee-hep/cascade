@@ -1,11 +1,12 @@
 #pragma once
 #include "ModuleMetadata.hh"
+#include "Version.hh"
 #include <functional>
 #include <memory>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class IAnalysisModule;
@@ -15,16 +16,34 @@ class AnalysisModuleRegistry
   public:
     using ModuleFactory = std::function<std::unique_ptr<IAnalysisModule>()>;
     using MetadataProvider = std::function<ModuleMetadata()>;
-    using ModuleBinder = std::function<void(pybind11::module_ &)>;
     static AnalysisModuleRegistry &Get();
 
     void Register(const std::string &name, ModuleFactory factory);
     void Register(const std::string &name, ModuleFactory factory, MetadataProvider metadata);
+    void Unregister(const std::string &name);
     std::unique_ptr<IAnalysisModule> Create(const std::string &name) const;
     std::vector<std::string> ListModules() const;
     std::vector<ModuleMetadata> ListModuleMetadata() const;
 
   private:
+    mutable std::mutex m_Mutex;
     std::unordered_map<std::string, ModuleFactory> m_Factories;
     std::unordered_map<std::string, MetadataProvider> m_MetadataProviders;
 };
+
+template <typename Module>
+void RegisterAnalysisModuleType(const std::string &name, AnalysisModuleRegistry::MetadataProvider metadata = {})
+{
+    if (!metadata)
+    {
+        metadata = [name]()
+        {
+            ModuleMetadata info;
+            info.Name = name;
+            info.Version = CascadeVersionString();
+            return info;
+        };
+    }
+    AnalysisModuleRegistry::Get().Register(
+        name, []() -> std::unique_ptr<IAnalysisModule> { return std::make_unique<Module>(); }, std::move(metadata));
+}

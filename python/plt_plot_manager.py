@@ -103,7 +103,8 @@ class plt_plot_manager:
         if labels is None:
             labels = [f"h{i}" for i in range(len(hists))]
         if colors is None:
-            colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+            palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+            colors = [palette[index % len(palette)] for index in range(len(hists))]
         ax.hist(hists, bins=bins, range=hist_range, stacked=True,
                 label=labels, color=colors[:len(hists)], align="mid",
                 weights=weights)

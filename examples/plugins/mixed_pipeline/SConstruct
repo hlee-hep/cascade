@@ -1,0 +1,3 @@
+template = "../../../scripts/plugin_sconstruct"
+with open(template, "r", encoding="utf-8") as source:
+    exec(compile(source.read(), template, "exec"), globals())

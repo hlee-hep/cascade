@@ -1,8 +1,6 @@
 #pragma once
 
 #include <TROOT.h>
-#include "Logger.hh"
-#include <atomic>
 #include <csignal>
 
 class InterruptManager
@@ -13,18 +11,21 @@ class InterruptManager
         std::signal(SIGINT,
                     [](int)
                     {
-                        LOG_WARN("InterruptManager", "SIGINT (^C) received. Preparing to terminate...");
-                        m_Interrupted.store(true);
+                        m_Interrupted = 1;
                     });
     }
 
-    static bool IsInterrupted() { return m_Interrupted.load() || gROOT->IsInterrupted(); }
+    static bool IsInterrupted() { return m_Interrupted != 0 || gROOT->IsInterrupted(); }
 
-    static void SetInterrupted() { m_Interrupted.store(true); }
-    static void Reset() { m_Interrupted.store(false); }
+    static void SetInterrupted() { m_Interrupted = 1; }
+    static void Reset()
+    {
+        m_Interrupted = 0;
+        if (gROOT) gROOT->SetInterrupt(false);
+    }
 
   private:
-    static std::atomic<bool> m_Interrupted;
+    static volatile std::sig_atomic_t m_Interrupted;
 };
 
-inline std::atomic<bool> InterruptManager::m_Interrupted = false;
+inline volatile std::sig_atomic_t InterruptManager::m_Interrupted = 0;

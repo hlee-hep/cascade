@@ -1,0 +1,35 @@
+schema_version: 1
+
+output_directory: cli-output
+cache_directory: cli-output/.cache
+dot: cli-output/mixed_pipeline.dot
+fail_fast: false
+
+modules:
+  - module: TextProducerModule
+    name: text_cpp
+    params:
+      force_run: true
+      message: hello from the Cascade CLI
+      repeat: 3
+
+  - module: TextTransformModule
+    name: text_python
+    dependencies: [text_cpp]
+    params:
+      force_run: true
+
+  - module: RootEventModule
+    name: root_cpp
+    params:
+      force_run: true
+      events: 100
+      scale: 0.5
+
+  - module: RootSummaryModule
+    name: root_python
+    dependencies: [root_cpp]
+    params:
+      force_run: true
+
+links: []

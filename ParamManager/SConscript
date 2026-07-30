@@ -7,8 +7,6 @@ utilsdir = os.path.join(TOP, "build", "utils")
 headers = [os.path.join(srcdir, "ParamManager.hh")]
 linkdef = os.path.join(srcdir, "LinkDef.h")
 
-pybind_includes = os.popen("python3 -m pybind11 --includes").read().strip()
-
 dict_cxx = os.path.join(builddir, "ParamManagerDict.cxx")
 pcm = os.path.join(builddir, "ParamManagerDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libParamManager.rootmap")
@@ -19,7 +17,7 @@ modenv.Append(LIBPATH=[utilsdir])
 dict = modenv.Command(
     target=[dict_cxx, pcm, rootmap],
     source=["ParamManager.cc"],
-    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} -I{TOP}/utils {pybind_includes} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libParamManager.so"
+    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} -I{TOP}/utils {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libParamManager.so"
 )
 
 sources = [dict_cxx, os.path.join(builddir, "ParamManager.cc")]

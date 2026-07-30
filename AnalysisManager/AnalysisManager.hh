@@ -7,11 +7,13 @@
 #include <TH1D.h>
 #include <TTree.h>
 #include <TTreeFormula.h>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
@@ -27,18 +29,37 @@ enum Om
 
 }
 
+enum class ResourceOwnership
+{
+    Borrowed,
+    Owned
+};
+
+struct ConfigValidationResult
+{
+    std::vector<std::string> Errors;
+
+    bool Valid() const { return Errors.empty(); }
+    void ThrowIfInvalid(const std::string &configPath) const;
+};
+
 class AnalysisManager
 {
   public:
+    static constexpr int CONFIG_SCHEMA_VERSION = 1;
+
     AnalysisManager();
     ~AnalysisManager();
 
+    ConfigValidationResult PreflightInputConfig(const std::string &yamlPath) const;
+    ConfigValidationResult PreflightCutConfig(const std::string &yamlPath) const;
+    ConfigValidationResult PreflightHistogramConfig(const std::string &yamlPath) const;
     void LoadInputConfig(const std::string &yamlPath);
     TChain *BuildChain();
     static void WriteInputConfig(TTree *tree, const std::string &yamlOut, const std::vector<std::string> &filenames);
     void RegisterTree(const std::string &name);
-    void RegisterTree(TTree *tree);
-    double *RegisterVariable(const std::string &name, std::string alias);
+    void RegisterTree(TTree *tree, ResourceOwnership ownership = ResourceOwnership::Borrowed);
+    double *RegisterVariable(const std::string &name, std::string alias = "");
     bool AttachBranch(TTree *tree, const std::string &alias, TreeOpt::Om option);
     bool AttachBranch(const std::string &treeName, const std::string &alias, TreeOpt::Om option);
     double GetValue(const std::string &alias) const;
@@ -48,7 +69,7 @@ class AnalysisManager
 
     void LoadCutConfig(const std::string &yamlPath);
     void RegisterCut(const std::string &name, const std::string &expr);
-    void EnableCuts(const std::vector<std::string> &selected);
+    void EnableCuts(const std::vector<std::string> &selected = {});
     void EnableAllCuts();
     bool PassesCut(const std::string &name) const;
     bool PassesCuts(const std::vector<std::string> &names);
@@ -58,11 +79,13 @@ class AnalysisManager
     std::string GetCutExpression(const std::string &name) const;
     std::vector<std::string> ListInputFiles() const;
     std::map<std::string, std::string> ListCutExpressions() const;
+    std::string SnapshotState() const;
 
-    void LoadHistogramConfig(const std::string &yamlPath, const std::string &prefix);
+    void LoadHistogramConfig(const std::string &yamlPath, const std::string &prefix = "");
     void LoadHistogramTemplateFile(const std::string &histfile);
-    void BookHistogram(const std::string &alias, std::vector<double> binfo, const std::string &prefix);
-    void RegisterHistogram(const std::string &alias, TH1 *hist, const std::string &prefix);
+    void BookHistogram(const std::string &alias, std::vector<double> binfo, const std::string &prefix = "");
+    void RegisterHistogram(const std::string &alias, TH1 *hist, const std::string &prefix = "",
+                           ResourceOwnership ownership = ResourceOwnership::Borrowed);
     void FillHistograms(double weight);
     void WriteHistogramConfig(const std::string &yamlOut);
     void WriteHistograms(const std::string &outfile);
@@ -82,14 +105,13 @@ class AnalysisManager
         if (!m_UseRdf) throw std::runtime_error("RDF not initialized");
         auto it = m_RawCutExpr.find(name);
         if (it != m_RawCutExpr.end())
-        {
-            LOG_ERROR("AnalysisManager", "SAME name of cut exists. expr : " << it->second);
-        }
+            throw std::runtime_error("AnalysisManager: RDF cut already exists: " + name);
         else
         {
             m_RdfNode = m_RdfNode->Filter(std::forward<F>(func), vars, name);
             LOG_INFO("AnalysisManager", "Lambda filter is applied and registered. name : " << name << " and expr : --lambda:" << expr);
             m_RawCutExpr[name] = "--lambda:" + expr;
+            m_AppliedRdfCuts.insert(name);
         }
     }
     void ApplyRdfFilter(const std::string &name);
@@ -97,7 +119,8 @@ class AnalysisManager
     void ApplyRdfFilters(const std::vector<std::string> &names);
     void ApplyAllRdfFilters();
     void WriteRdfSnapshot(const std::string &treeName, const std::string &fileName, TreeOpt::Om option);
-    void BookRdfHistogram1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo);
+    void BookRdfHistogram1D(const std::string &alias, const std::string &prefix, std::vector<double> binfo,
+                            const std::string &expression = "");
     void WriteRdfHistograms(const std::string &outfile);
     void BookRdfHistogramsFromConfig(const std::string &yamlPath, const std::string &prefix = "");
     void BookRdfHistogramsFromFile(const std::string &histfile);
@@ -108,14 +131,22 @@ class AnalysisManager
     std::unique_ptr<AnalysisManager> Fork();
     ROOT::RDF::RNode GetIsolatedRdfNode();
 
-    inline std::vector<std::string> GetAllVarNames() { return m_RdfNode->GetColumnNames(); }
-    inline std::vector<std::string> GetDefinedVarNames() { return m_RdfNode->GetDefinedColumnNames(); }
+    inline std::vector<std::string> GetAllVarNames()
+    {
+        if (!m_RdfNode) throw std::runtime_error("AnalysisManager: RDF is not initialized.");
+        return m_RdfNode->GetColumnNames();
+    }
+    inline std::vector<std::string> GetDefinedVarNames()
+    {
+        if (!m_RdfNode) throw std::runtime_error("AnalysisManager: RDF is not initialized.");
+        return m_RdfNode->GetDefinedColumnNames();
+    }
 
     void PrintCutSummary();
     void PrintConfigSummary();
     void PrintHistogramSummary();
     inline bool IsRdfEnabled() const { return m_UseRdf; }
-    inline double GetProgress() const { return m_Progress; }
+    inline double GetProgress() const { return m_Progress.load(); }
 
     void WriteMetadata(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson);
 
@@ -127,6 +158,7 @@ class AnalysisManager
 
   private:
     std::map<std::string, TTree *> m_TreeMap;
+    std::map<std::string, ResourceOwnership> m_TreeOwnership;
 
     std::map<std::string, BranchInfo> m_BranchMap;
     std::map<std::string, void *> m_BranchData;
@@ -135,19 +167,25 @@ class AnalysisManager
 
     std::map<std::string, std::map<std::string, std::vector<double>>> m_HistMap;
     std::map<std::string, std::map<std::string, TH1 *>> m_HistData;
+    std::map<std::string, std::map<std::string, ResourceOwnership>> m_HistOwnership;
+    std::map<std::string, std::map<std::string, std::string>> m_HistExpressions;
+    std::map<std::string, std::map<std::string, TTreeFormula *>> m_HistFormulas;
     std::map<std::string, std::map<std::string, std::vector<double>>> m_LoadedHistMap;
     std::map<std::string, std::map<std::string, TH1 *>> m_LoadedHistData;
     std::map<std::string, std::map<std::string, ROOT::RDF::RResultPtr<TH1>>> m_HistRdf;
 
     std::map<std::string, std::string> m_RawCutExpr;
+    std::set<std::string> m_AppliedRdfCuts;
     std::map<std::string, TTreeFormula *> m_CutFormulas;
 
     std::vector<std::string> m_InputFiles;
     std::string m_InTreeName;
     TChain *m_CurrentTree = nullptr;
+    std::shared_ptr<TChain> m_CurrentTreeOwner;
     std::string ExpandAliases_(const std::string &expr) const;
     double GetNewVar_(const std::string &alias) const;
     void LoadHists_(const std::string &histfile);
+    void ReleaseCurrentTree_();
 
     std::unique_ptr<ROOT::RDataFrame> m_RdfRaw = nullptr;
     std::optional<ROOT::RDF::RNode> m_RdfNode;
@@ -161,7 +199,6 @@ class AnalysisManager
     std::string m_EndTime;
 
     std::chrono::steady_clock::time_point m_StartTime;
-    double m_Progress = 0.0;
+    std::atomic<double> m_Progress{0.0};
     void UpdateProgress_(double p);
-    std::mutex m_ProgressMutex;
 };
