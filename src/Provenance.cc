@@ -1,0 +1,562 @@
+#include "Provenance.hh"
+
+#include "PluginABI.hh"
+#include "Version.hh"
+#include "sha256.hh"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cctype>
+#include <ctime>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <map>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <openssl/evp.h>
+#include <sstream>
+#include <stdexcept>
+#include <system_error>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+namespace
+{
+struct ActiveRun
+{
+    std::string InstanceName;
+    std::string ModuleName;
+    std::string Language;
+    std::string StartedAt;
+    bool Isolated = false;
+    std::string CacheSourceManifest;
+    std::vector<fs::path> Inputs;
+};
+
+std::mutex g_ProvenanceMutex;
+std::map<std::string, ActiveRun> g_ActiveRuns;
+std::map<std::string, ModuleRunManifest> g_ModuleRuns;
+std::map<std::string, std::string> g_LastRunByInstance;
+std::atomic<unsigned long long> g_WorkflowCounter{0};
+
+bool SensitiveKey(std::string key)
+{
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    static const std::vector<std::string> patterns = {
+        "password", "passwd", "secret", "token", "credential", "private_key", "api_key"};
+    return std::any_of(patterns.begin(), patterns.end(),
+                       [&](const std::string &pattern) { return key.find(pattern) != std::string::npos; });
+}
+
+json SanitizedParameters(const std::string &parametersJson)
+{
+    json source;
+    try
+    {
+        source = json::parse(parametersJson);
+    }
+    catch (...)
+    {
+        return json{{"unparsed", parametersJson}};
+    }
+    if (!source.is_object()) return source;
+
+    json result = json::object();
+    for (auto iterator = source.begin(); iterator != source.end(); ++iterator)
+    {
+        json value = iterator.value();
+        if (value.is_object() && value.contains("value")) value = value["value"];
+        result[iterator.key()] = SensitiveKey(iterator.key()) ? json("***") : value;
+    }
+    return result;
+}
+
+std::string AbsoluteString(const fs::path &path)
+{
+    if (path.empty()) return {};
+    std::error_code error;
+    const auto absolute = fs::absolute(path, error);
+    return (error ? path.lexically_normal() : absolute.lexically_normal()).string();
+}
+
+std::string HashFile(const fs::path &path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot read artifact for hashing: " + path.string());
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    if (!context) throw std::runtime_error("Cannot allocate SHA-256 context.");
+    if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1)
+    {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("Cannot initialize SHA-256 context.");
+    }
+    std::array<char, 1024 * 1024> buffer{};
+    while (input)
+    {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto count = input.gcount();
+        if (count > 0 && EVP_DigestUpdate(context, buffer.data(), static_cast<std::size_t>(count)) != 1)
+        {
+            EVP_MD_CTX_free(context);
+            throw std::runtime_error("Cannot update SHA-256 digest.");
+        }
+    }
+    if (!input.eof())
+    {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("Failed while hashing artifact: " + path.string());
+    }
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digestLength = 0;
+    if (EVP_DigestFinal_ex(context, digest, &digestLength) != 1)
+    {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("Cannot finalize SHA-256 digest.");
+    }
+    EVP_MD_CTX_free(context);
+    std::ostringstream output;
+    for (unsigned int index = 0; index < digestLength; ++index)
+        output << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[index]);
+    return output.str();
+}
+
+ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &recordedPath)
+{
+    ArtifactProvenance artifact;
+    artifact.Path = recordedPath;
+    std::error_code error;
+    const auto status = fs::symlink_status(source, error);
+    if (error || !fs::exists(status))
+    {
+        artifact.Kind = source.string().find("://") != std::string::npos ? "uri" : "missing";
+        return artifact;
+    }
+    artifact.Exists = true;
+    if (fs::is_symlink(status))
+    {
+        artifact.Kind = "symlink";
+        const auto target = fs::read_symlink(source, error).string();
+        if (!error)
+        {
+            artifact.Size = target.size();
+            artifact.Sha256 = Sha256(target);
+        }
+        return artifact;
+    }
+    if (fs::is_regular_file(status))
+    {
+        artifact.Kind = "file";
+        artifact.Size = fs::file_size(source);
+        artifact.Sha256 = HashFile(source);
+        return artifact;
+    }
+    if (!fs::is_directory(status))
+    {
+        artifact.Kind = "other";
+        return artifact;
+    }
+
+    artifact.Kind = "directory";
+    std::vector<fs::path> entries;
+    for (fs::recursive_directory_iterator iterator(source), end; iterator != end; ++iterator)
+        entries.push_back(iterator->path());
+    std::sort(entries.begin(), entries.end());
+    std::ostringstream fingerprint;
+    for (const auto &entry : entries)
+    {
+        const auto relative = entry.lexically_relative(source).generic_string();
+        const auto entryStatus = fs::symlink_status(entry, error);
+        if (error) continue;
+        if (fs::is_directory(entryStatus))
+        {
+            fingerprint << "d\0" << relative << '\0';
+        }
+        else if (fs::is_symlink(entryStatus))
+        {
+            const auto target = fs::read_symlink(entry, error).string();
+            if (error) continue;
+            artifact.Size += target.size();
+            fingerprint << "l\0" << relative << '\0' << Sha256(target) << '\0' << target.size() << '\0';
+        }
+        else if (fs::is_regular_file(entryStatus))
+        {
+            const auto size = fs::file_size(entry);
+            artifact.Size += size;
+            fingerprint << "f\0" << relative << '\0' << HashFile(entry) << '\0' << size << '\0';
+        }
+    }
+    artifact.Sha256 = Sha256(fingerprint.str());
+    return artifact;
+}
+
+json ArtifactJson(const ArtifactProvenance &artifact)
+{
+    return {{"path", artifact.Path},
+            {"kind", artifact.Kind},
+            {"exists", artifact.Exists},
+            {"size", artifact.Size},
+            {"sha256", artifact.Sha256.empty() ? json(nullptr) : json(artifact.Sha256)}};
+}
+
+ArtifactProvenance ArtifactFromJson(const json &value)
+{
+    ArtifactProvenance artifact;
+    artifact.Path = value.value("path", "");
+    artifact.Kind = value.value("kind", "");
+    artifact.Exists = value.value("exists", false);
+    artifact.Size = value.value("size", static_cast<std::uintmax_t>(0));
+    if (value.contains("sha256") && value["sha256"].is_string()) artifact.Sha256 = value["sha256"].get<std::string>();
+    return artifact;
+}
+
+json RuntimeJson(const RuntimeProvenance &runtime)
+{
+    return {{"cascade_version", runtime.CascadeVersion},
+            {"plugin_abi_version", runtime.PluginAbiVersion},
+            {"plugin_abi_tag", runtime.PluginAbiTag},
+            {"root_version", runtime.RootVersion},
+            {"language", runtime.Language}};
+}
+
+RuntimeProvenance RuntimeFromJson(const json &value)
+{
+    RuntimeProvenance runtime;
+    runtime.CascadeVersion = value.value("cascade_version", "");
+    runtime.PluginAbiVersion = value.value("plugin_abi_version", 0);
+    runtime.PluginAbiTag = value.value("plugin_abi_tag", "");
+    runtime.RootVersion = value.value("root_version", "");
+    runtime.Language = value.value("language", "");
+    return runtime;
+}
+
+ModuleStatus StatusFromString(const std::string &value)
+{
+    for (const auto status : {ModuleStatus::Pending, ModuleStatus::Initializing, ModuleStatus::Running,
+                              ModuleStatus::Finalizing, ModuleStatus::Done, ModuleStatus::Skipped,
+                              ModuleStatus::Interrupted, ModuleStatus::Failed})
+        if (value == ToString(status)) return status;
+    return ModuleStatus::Pending;
+}
+
+ModulePhase PhaseFromString(const std::string &value)
+{
+    for (const auto phase : {ModulePhase::None, ModulePhase::Init, ModulePhase::Check, ModulePhase::Execute,
+                             ModulePhase::Finalize, ModulePhase::Commit})
+        if (value == ToString(phase)) return phase;
+    return ModulePhase::None;
+}
+
+void AtomicWrite(const fs::path &path, const std::string &content)
+{
+    if (path.empty()) throw std::invalid_argument("Provenance manifest path cannot be empty.");
+    if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
+    const fs::path temporary = path.string() + ".tmp." + std::to_string(getpid());
+    {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) throw std::runtime_error("Cannot write provenance manifest: " + temporary.string());
+        output << content;
+        output.flush();
+        if (!output) throw std::runtime_error("Failed while writing provenance manifest: " + temporary.string());
+    }
+    std::error_code error;
+    fs::rename(temporary, path, error);
+    if (!error) return;
+    fs::remove(path, error);
+    error.clear();
+    fs::rename(temporary, path, error);
+    if (error)
+    {
+        fs::remove(temporary);
+        throw std::system_error(error, "Cannot publish provenance manifest");
+    }
+}
+} // namespace
+
+std::string ModuleRunManifest::ToJSON(int indent) const
+{
+    json inputs = json::array();
+    for (const auto &artifact : Inputs)
+        inputs.push_back(ArtifactJson(artifact));
+    json outputs = json::array();
+    for (const auto &artifact : Outputs)
+        outputs.push_back(ArtifactJson(artifact));
+    const json metadata = {{"name", Metadata.Name},
+                           {"version", Metadata.Version},
+                           {"summary", Metadata.Summary},
+                           {"tags", Metadata.Tags}};
+    const json document = {
+        {"schema", "cascade.module-run"},
+        {"schema_version", SchemaVersion},
+        {"run_id", RunId},
+        {"module", {{"instance", InstanceName}, {"name", ModuleName}, {"metadata", metadata}}},
+        {"runtime", RuntimeJson(Runtime)},
+        {"identity", {{"code_hash", CodeHash}, {"snapshot_hash", SnapshotHash}}},
+        {"parameters", SanitizedParameters(ParametersJson)},
+        {"timing", {{"started_at", StartedAt}, {"finished_at", FinishedAt}}},
+        {"directories", {{"output", OutputDirectory}, {"cache", CacheDirectory}}},
+        {"execution",
+         {{"isolated", Isolated},
+          {"cache_hit", CacheHit},
+          {"dry_run", DryRun},
+          {"cache_source_manifest", CacheSourceManifest.empty() ? json(nullptr) : json(CacheSourceManifest)}}},
+        {"result", {{"status", ToString(Status)}, {"phase", ToString(Phase)}, {"message", Message}}},
+        {"artifacts", {{"inputs", inputs}, {"outputs", outputs}}},
+        {"manifest_path", ManifestPath}};
+    return document.dump(indent);
+}
+
+std::string WorkflowRunManifest::ToJSON(int indent) const
+{
+    json nodes = json::array();
+    for (const auto &node : Nodes)
+        nodes.push_back({{"name", node.Name},
+                         {"status", node.Status},
+                         {"message", node.Message},
+                         {"dependencies", node.Dependencies},
+                         {"module_run_id", node.ModuleRunId.empty() ? json(nullptr) : json(node.ModuleRunId)},
+                         {"module_manifest", node.ModuleManifestPath.empty() ? json(nullptr) : json(node.ModuleManifestPath)}});
+    json links = json::array();
+    for (const auto &link : DataLinks)
+        links.push_back({{"from", link.FromNode}, {"to", link.ToNode}, {"label", link.Label}});
+    const json document = {{"schema", "cascade.workflow-run"},
+                           {"schema_version", SchemaVersion},
+                           {"run_id", RunId},
+                           {"timing", {{"started_at", StartedAt}, {"finished_at", FinishedAt}}},
+                           {"runtime", RuntimeJson(Runtime)},
+                           {"execution", {{"fail_fast", FailFast}, {"succeeded", Succeeded}}},
+                           {"dag", {{"nodes", nodes}, {"data_links", links}}},
+                           {"module_manifests", ModuleManifestPaths},
+                           {"manifest_path", ManifestPath}};
+    return document.dump(indent);
+}
+
+void ProvenanceRecorder::BeginModuleRun(const std::string &runId, const std::string &instanceName,
+                                        const std::string &moduleName, const std::string &language, bool isolated)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    g_ActiveRuns[runId] = {instanceName, moduleName, language, NowUTC(), isolated, {}, {}};
+}
+
+void ProvenanceRecorder::TrackInput(const std::string &runId, const fs::path &path)
+{
+    if (runId.empty()) throw std::runtime_error("Cannot track an input outside an active module run.");
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    auto iterator = g_ActiveRuns.find(runId);
+    if (iterator == g_ActiveRuns.end()) throw std::runtime_error("Cannot track an input for an unknown run: " + runId);
+    if (std::find(iterator->second.Inputs.begin(), iterator->second.Inputs.end(), path) == iterator->second.Inputs.end())
+        iterator->second.Inputs.push_back(path);
+}
+
+void ProvenanceRecorder::SetCacheSource(const std::string &runId, const std::string &manifestPath)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    const auto iterator = g_ActiveRuns.find(runId);
+    if (iterator != g_ActiveRuns.end()) iterator->second.CacheSourceManifest = manifestPath;
+}
+
+ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
+    const std::string &runId, const ModuleMetadata &metadata, const std::string &codeHash,
+    const std::string &snapshotHash, const std::string &parametersJson, const fs::path &outputDirectory,
+    const fs::path &cacheDirectory, const RunResult &result,
+    const std::vector<std::pair<fs::path, fs::path>> &stagedOutputs, const std::string &manifestPath)
+{
+    ActiveRun active;
+    {
+        std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+        const auto iterator = g_ActiveRuns.find(runId);
+        if (iterator != g_ActiveRuns.end())
+            active = iterator->second;
+        else
+            active = {"", metadata.Name, "cpp", NowUTC(), false, {}, {}};
+    }
+
+    ModuleRunManifest manifest;
+    manifest.RunId = runId;
+    manifest.InstanceName = active.InstanceName;
+    manifest.ModuleName = active.ModuleName.empty() ? metadata.Name : active.ModuleName;
+    manifest.Metadata = metadata;
+    manifest.Runtime = Runtime(active.Language.empty() ? "cpp" : active.Language);
+    manifest.CodeHash = codeHash;
+    manifest.SnapshotHash = snapshotHash;
+    manifest.ParametersJson = parametersJson;
+    manifest.StartedAt = active.StartedAt;
+    manifest.FinishedAt = NowUTC();
+    manifest.OutputDirectory = AbsoluteString(outputDirectory);
+    manifest.CacheDirectory = AbsoluteString(cacheDirectory);
+    manifest.Isolated = active.Isolated;
+    manifest.CacheHit = result.Status == ModuleStatus::Skipped && result.Message == "snapshot already cached";
+    manifest.DryRun = result.Status == ModuleStatus::Skipped && result.Message == "dry_run enabled";
+    manifest.CacheSourceManifest = active.CacheSourceManifest;
+    manifest.Status = result.Status;
+    manifest.Phase = result.Phase;
+    manifest.Message = result.Message;
+    manifest.ManifestPath = AbsoluteString(manifestPath);
+
+    for (const auto &input : active.Inputs)
+        manifest.Inputs.push_back(CaptureArtifact(input, input.string()));
+    for (const auto &[finalPath, stagedPath] : stagedOutputs)
+    {
+        std::error_code error;
+        auto relative = fs::relative(finalPath, outputDirectory, error);
+        manifest.Outputs.push_back(CaptureArtifact(stagedPath, error ? finalPath.string() : relative.generic_string()));
+    }
+    return manifest;
+}
+
+void ProvenanceRecorder::WriteModuleRun(const ModuleRunManifest &manifest, const fs::path &path)
+{
+    AtomicWrite(path, manifest.ToJSON());
+}
+
+ModuleRunManifest ProvenanceRecorder::LoadModuleRun(const fs::path &path)
+{
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("Cannot read provenance manifest: " + path.string());
+    json value;
+    input >> value;
+    if (value.value("schema", "") != "cascade.module-run")
+        throw std::runtime_error("Not a Cascade module provenance manifest: " + path.string());
+    if (value.value("schema_version", 0) != 1)
+        throw std::runtime_error("Unsupported Cascade module provenance schema version: " + path.string());
+
+    ModuleRunManifest manifest;
+    manifest.SchemaVersion = value.value("schema_version", 0);
+    manifest.RunId = value.value("run_id", "");
+    const auto module = value.value("module", json::object());
+    manifest.InstanceName = module.value("instance", "");
+    manifest.ModuleName = module.value("name", "");
+    const auto metadata = module.value("metadata", json::object());
+    manifest.Metadata.Name = metadata.value("name", "");
+    manifest.Metadata.Version = metadata.value("version", "");
+    manifest.Metadata.Summary = metadata.value("summary", "");
+    manifest.Metadata.Tags = metadata.value("tags", std::vector<std::string>{});
+    manifest.Runtime = RuntimeFromJson(value.value("runtime", json::object()));
+    const auto identity = value.value("identity", json::object());
+    manifest.CodeHash = identity.value("code_hash", "");
+    manifest.SnapshotHash = identity.value("snapshot_hash", "");
+    manifest.ParametersJson = value.value("parameters", json::object()).dump();
+    const auto timing = value.value("timing", json::object());
+    manifest.StartedAt = timing.value("started_at", "");
+    manifest.FinishedAt = timing.value("finished_at", "");
+    const auto directories = value.value("directories", json::object());
+    manifest.OutputDirectory = directories.value("output", "");
+    manifest.CacheDirectory = directories.value("cache", "");
+    const auto execution = value.value("execution", json::object());
+    manifest.Isolated = execution.value("isolated", false);
+    manifest.CacheHit = execution.value("cache_hit", false);
+    manifest.DryRun = execution.value("dry_run", false);
+    if (execution.contains("cache_source_manifest") && execution["cache_source_manifest"].is_string())
+        manifest.CacheSourceManifest = execution["cache_source_manifest"].get<std::string>();
+    const auto result = value.value("result", json::object());
+    manifest.Status = StatusFromString(result.value("status", "Pending"));
+    manifest.Phase = PhaseFromString(result.value("phase", "None"));
+    manifest.Message = result.value("message", "");
+    const auto artifacts = value.value("artifacts", json::object());
+    for (const auto &artifact : artifacts.value("inputs", json::array()))
+        manifest.Inputs.push_back(ArtifactFromJson(artifact));
+    for (const auto &artifact : artifacts.value("outputs", json::array()))
+        manifest.Outputs.push_back(ArtifactFromJson(artifact));
+    manifest.ManifestPath = value.value("manifest_path", AbsoluteString(path));
+    return manifest;
+}
+
+void ProvenanceRecorder::StoreModuleRun(const ModuleRunManifest &manifest)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    const auto previous = g_LastRunByInstance.find(manifest.InstanceName);
+    if (!manifest.InstanceName.empty() && previous != g_LastRunByInstance.end() && previous->second != manifest.RunId)
+        g_ModuleRuns.erase(previous->second);
+    g_ModuleRuns[manifest.RunId] = manifest;
+    g_LastRunByInstance[manifest.InstanceName] = manifest.RunId;
+    g_ActiveRuns.erase(manifest.RunId);
+}
+
+void ProvenanceRecorder::DiscardModuleRun(const std::string &runId)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    g_ActiveRuns.erase(runId);
+}
+
+std::optional<ModuleRunManifest> ProvenanceRecorder::FindModuleRun(const std::string &runId)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    const auto iterator = g_ModuleRuns.find(runId);
+    return iterator == g_ModuleRuns.end() ? std::nullopt : std::optional<ModuleRunManifest>(iterator->second);
+}
+
+std::optional<ModuleRunManifest> ProvenanceRecorder::FindLastModuleRun(const std::string &instanceName)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    const auto last = g_LastRunByInstance.find(instanceName);
+    if (last == g_LastRunByInstance.end()) return std::nullopt;
+    const auto run = g_ModuleRuns.find(last->second);
+    return run == g_ModuleRuns.end() ? std::nullopt : std::optional<ModuleRunManifest>(run->second);
+}
+
+std::string ProvenanceRecorder::SuccessfulModuleManifestPath(const fs::path &outputDirectory, const std::string &runId)
+{
+    return AbsoluteString(outputDirectory / ".cascade" / "provenance" / "modules" / (runId + ".json"));
+}
+
+std::string ProvenanceRecorder::TerminalModuleManifestPath(const fs::path &cacheDirectory, const std::string &runId)
+{
+    return AbsoluteString(cacheDirectory / "provenance" / "modules" / (runId + ".json"));
+}
+
+std::string ProvenanceRecorder::DefaultWorkflowManifestPath(const std::string &runId)
+{
+    const char *configured = std::getenv("CASCADE_CACHE_DIR");
+    fs::path root;
+    if (configured && *configured)
+        root = configured;
+    else if (const char *home = std::getenv("HOME"); home && *home)
+        root = fs::path(home) / ".cache" / "cascade";
+    else
+        root = ".cascade-cache";
+    return AbsoluteString(root / "provenance" / "workflows" / (runId + ".json"));
+}
+
+std::string ProvenanceRecorder::MakeWorkflowRunId()
+{
+    const auto now = std::chrono::system_clock::now();
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    return "workflow-" + std::to_string(getpid()) + "-" + std::to_string(micros) + "-" +
+           std::to_string(g_WorkflowCounter.fetch_add(1));
+}
+
+std::string ProvenanceRecorder::NowUTC()
+{
+    const auto now = std::chrono::system_clock::now();
+    const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now - seconds).count();
+    const std::time_t value = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+    gmtime_r(&value, &utc);
+    std::ostringstream output;
+    output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(6) << std::setfill('0') << micros << 'Z';
+    return output.str();
+}
+
+RuntimeProvenance ProvenanceRecorder::Runtime(const std::string &language)
+{
+    RuntimeProvenance runtime;
+    runtime.CascadeVersion = CascadeVersionString();
+    runtime.PluginAbiVersion = CASCADE_PLUGIN_ABI_VERSION;
+    runtime.PluginAbiTag = CASCADE_ABI_TAG;
+    runtime.RootVersion = ROOT_RELEASE;
+    runtime.Language = language;
+    return runtime;
+}
+
+std::string ProvenanceRecorder::WriteWorkflowRun(WorkflowRunManifest manifest, const fs::path &path)
+{
+    const fs::path target = path.empty() ? fs::path(DefaultWorkflowManifestPath(manifest.RunId)) : path;
+    manifest.ManifestPath = AbsoluteString(target);
+    AtomicWrite(target, manifest.ToJSON());
+    return manifest.ManifestPath;
+}

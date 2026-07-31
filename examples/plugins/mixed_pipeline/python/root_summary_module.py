@@ -21,7 +21,8 @@ class RootSummaryModule(base_module):
         print(self.SUMMARY)
 
     def init(self):
-        pass
+        self.track_input(self.final_output(self.get_param("input")))
+        self.track_input(self.final_output(self.get_param("manifest")))
 
     def execute(self):
         root_path = self.final_output(self.get_param("input"))

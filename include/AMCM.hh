@@ -25,6 +25,7 @@ class AMCM
     std::shared_ptr<IAnalysisModule> GetModule(const std::string &name);
     std::string GetStatus(const std::string &name) const;
     std::map<std::string, std::map<std::string, double>> GetAllProgress() const;
+    std::string SaveProvenance(const std::string &path = "", bool failFast = true) const;
     void SaveRunLog() const;
 
     RunResult RunAModule(std::shared_ptr<IAnalysisModule> mod);
@@ -47,10 +48,10 @@ class AMCM
 
     struct RunLogEntry
     {
-        std::string Name;
-        std::string BaseName;
-        std::string CodeHash;
-        std::string ParamsYaml;
+        std::string RunId;
+        std::string ManifestPath;
+        std::string InstanceName;
+        std::string ModuleName;
         RunResult Result;
     };
     std::vector<RunLogEntry> m_ExecutedModules;

@@ -522,6 +522,8 @@ def cmd_module_run(args) -> None:
         _apply_parameters(handle, dict(_parse_kv(value) for value in args.set))
         result = controller.run_module(handle.name(), isolated=args.isolated)
     payload = _result_payload(result, handle.name())
+    payload["run_id"] = handle.get_run_id()
+    payload["provenance"] = handle.get_last_provenance_path()
     if args.json:
         _emit(payload, True)
     else:
@@ -565,6 +567,7 @@ def cmd_dag_run(args) -> None:
             "cache_directory",
             "fail_fast",
             "dot",
+            "provenance",
             "modules",
             "links",
         },
@@ -650,7 +653,18 @@ def cmd_dag_run(args) -> None:
             target_node, target_param = _split_parameter_ref(link.get("to"), f"workflow.links[{index}].to")
             controller.link_dag_parameter(source_node, source_param, target_node, target_param)
 
-        result = controller.run_dag(fail_fast=fail_fast)
+        provenance_path = getattr(args, "provenance", None) or workflow.get("provenance")
+        resolved_provenance = (
+            _resolve_config_path(base, provenance_path)
+            if provenance_path
+            else None
+        )
+        if resolved_provenance:
+            result = controller.run_dag(
+                fail_fast=fail_fast, provenance_path=resolved_provenance
+            )
+        else:
+            result = controller.run_dag(fail_fast=fail_fast)
         dot_path = args.dot or workflow.get("dot")
         if dot_path:
             resolved_dot = _resolve_config_path(base, dot_path)
@@ -665,13 +679,20 @@ def cmd_dag_run(args) -> None:
         }
         for node in result.nodes
     ]
-    payload = {"succeeded": result.succeeded(), "failed": result.failed(), "nodes": nodes}
+    payload = {
+        "succeeded": result.succeeded(),
+        "failed": result.failed(),
+        "nodes": nodes,
+        "provenance": getattr(controller, "last_workflow_provenance_path", ""),
+    }
     if args.json:
         _emit(payload, True)
     else:
         for node in nodes:
             detail = f": {node['message']}" if node["message"] else ""
             print(f"{node['name']}: {node['status']}{detail}")
+        if payload["provenance"]:
+            print(f"Provenance: {payload['provenance']}")
     if result.failed():
         raise SystemExit(1)
 
@@ -776,6 +797,7 @@ def build_parser() -> argparse.ArgumentParser:
     fail_fast.add_argument("--fail-fast", dest="fail_fast", action="store_true", help="Stop after the first failed branch")
     fail_fast.add_argument("--keep-going", dest="fail_fast", action="store_false", help="Finish independent branches")
     dag_run.add_argument("--dot", help="Write final DAG state to this DOT file")
+    dag_run.add_argument("--provenance", help="Write workflow provenance to this JSON file")
     dag_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
     dag_run.set_defaults(func=cmd_dag_run, fail_fast=None)
 

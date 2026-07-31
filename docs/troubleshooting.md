@@ -257,6 +257,11 @@ C++:    ~/.cache/cascade/snapshot_cache/<module>.yaml
 Python: ~/.cache/cascade/snapshot_cache/python_modules.json
 ```
 
+Each schema-versioned cache entry links its hash to the successful module
+provenance manifest. A cache-hit manifest records that source path, which makes it
+possible to distinguish a stale cache decision from the run that originally
+created the snapshot.
+
 ## Isolated execution failures
 
 ### `terminated by signal N`

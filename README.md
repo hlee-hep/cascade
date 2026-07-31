@@ -8,7 +8,7 @@
 Cascade is a C++17/Python analysis framework for ROOT-based workflows. Analysis
 code is packaged as signed plugins; the core supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
-outputs, and optional subprocess isolation.
+outputs, versioned provenance, and optional subprocess isolation.
 
 The current development release is **0.3.0** with the initial public
 **plugin ABI 1**. The full build fingerprint is checked in addition to the
@@ -24,7 +24,7 @@ owns the operational boundary:
 - typed parameters with YAML/JSON/Python round trips;
 - classic `TTree` and `RDataFrame` analysis paths;
 - schema-validated input, cut, and histogram configuration;
-- deterministic snapshot caching and explicit `force_run`/`dry_run`;
+- deterministic snapshot caching linked to versioned provenance manifests;
 - transactional output promotion and rollback;
 - DAG dependencies and parameter links;
 - signed plugin manifests and strict C++ build fingerprints;
@@ -40,7 +40,7 @@ owns the operational boundary:
 | `ParamManager` | Registered typed parameters and YAML/JSON serialization |
 | `DAGManager` | Stateful dependency execution, failure propagation, and generic data links |
 | `PlotManager` | ROOT stack, overlay, ratio, legend, and style helpers |
-| `AMCM` / `py_amcm` | Registration, execution, progress, run logs, isolation |
+| `AMCM` / `py_amcm` | Registration, execution, progress, provenance, isolation |
 
 The supported Python control surface is `py_amcm`. `cascade._cascade` and the raw
 `AMCM` binding are internal integration surfaces.

@@ -14,6 +14,8 @@ flowchart LR
     P --> X
     X --> O["Output transaction"]
     X --> K["Snapshot cache"]
+    O --> V["Module provenance"]
+    K --> V
     M --> A["AnalysisManager"]
     C --> D["DAGManager"]
     C --> I["Subprocess isolation"]
@@ -49,9 +51,10 @@ The same contract is implemented by C++ `IAnalysisModule` and Python
 
 ## Boundary 3: durable versus in-memory state
 
-Transactional files and snapshot cache records are durable. Manager instances and
-module fields are process memory. This distinction matters in isolated execution:
-durable results survive, child memory does not return to the parent.
+Transactional files, provenance manifests, and snapshot cache records are
+durable. Manager instances and module fields are process memory. This distinction
+matters in isolated execution: durable results survive, child memory does not
+return to the parent.
 
 ## Boundary 4: analysis config versus module parameters
 
@@ -80,8 +83,9 @@ registered parameters + manager config + code hash
   -> cache decision
   -> analysis phases
   -> staged output
+  -> module provenance + artifact hashes
   -> promotion journal
-  -> cache commit
+  -> cache-to-provenance linkage
   -> RunResult
 ```
 
@@ -94,6 +98,7 @@ validated nodes/dependencies
   -> node callback and recorded node state
   -> failed descendants blocked
   -> durable output consumed downstream
+  -> workflow provenance referencing module manifests
 ```
 
 ## Ownership

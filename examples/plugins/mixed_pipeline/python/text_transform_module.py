@@ -22,6 +22,7 @@ class TextTransformModule(base_module):
     def init(self):
         if self.final_output(self.get_param("input")) == self.final_output(self.get_param("output")):
             raise ValueError("input and output must differ")
+        self.track_input(self.final_output(self.get_param("input")))
 
     def execute(self):
         with self.final_output(self.get_param("input")).open("r", encoding="utf-8") as source:

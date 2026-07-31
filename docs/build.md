@@ -122,7 +122,6 @@ Other runtime directories:
 | --- | --- |
 | `CASCADE_OUTPUT_DIR` | Default module output root |
 | `CASCADE_CACHE_DIR` | Default snapshot-cache root |
-| `CASCADE_RUN_LOG_DIR` | Python controller run-log directory |
 
 Per-module setters take precedence for output/cache placement after construction.
 

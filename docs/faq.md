@@ -68,7 +68,7 @@ Analysis config currently requires version 1; parameter files do not.
 
 Any value that changes output identity: input/config names, thresholds,
 systematics, calibration versions, algorithm choices, and output names. Explicit
-parameters improve cache correctness and run logs.
+parameters improve cache correctness and provenance.
 
 ## Can two modules run concurrently?
 
@@ -81,11 +81,13 @@ Defaults:
 
 ```text
 Snapshot cache: ~/.cache/cascade/snapshot_cache
-Python run logs: ~/.cache/cascade/run_logs
+Module provenance: OUTPUT/.cascade/provenance/modules (successful runs)
+Terminal provenance: CACHE/provenance/modules (skipped/failed/interrupted runs)
+Workflow provenance: ~/.cache/cascade/provenance/workflows
 ```
 
-Override them with execution-context setters or `CASCADE_CACHE_DIR` and
-`CASCADE_RUN_LOG_DIR`.
+Override roots with execution-context setters or `CASCADE_CACHE_DIR`. The CLI
+workflow `provenance` field and `--provenance` select an exact workflow path.
 
 ## What should I run before publishing a plugin?
 

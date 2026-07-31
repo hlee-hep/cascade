@@ -69,6 +69,13 @@ Input, cut, and histogram YAML documents currently use `schema_version: 1`.
 Parameter files use their registered parameter contract rather than a document
 schema version.
 
+## Provenance schema version
+
+Module and workflow manifests use separate document identities,
+`cascade.module-run` and `cascade.workflow-run`, both at `schema_version: 1`.
+Snapshot cache schema 1 links hashes to module manifests. These document versions
+are independent of plugin ABI 1.
+
 ## Release policy
 
 | Change | Semantic bump | ABI bump |

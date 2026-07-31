@@ -334,6 +334,25 @@ std::vector<DAGNodeResult> DAGManager::GetNodeResults() const
     return results;
 }
 
+std::map<std::string, std::vector<std::string>> DAGManager::GetDependencies() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    std::map<std::string, std::vector<std::string>> dependencies;
+    for (const auto &[name, node] : m_Nodes)
+        dependencies[name] = node.Dependencies;
+    return dependencies;
+}
+
+std::vector<DAGDataLinkInfo> DAGManager::GetDataLinks() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    std::vector<DAGDataLinkInfo> links;
+    links.reserve(m_DataLinks.size());
+    for (const auto &link : m_DataLinks)
+        links.push_back({link.FromNode, link.ToNode, link.Label});
+    return links;
+}
+
 bool DAGManager::IsExecuting() const
 {
     std::lock_guard<std::recursive_mutex> lock(m_Mutex);

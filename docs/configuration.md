@@ -210,7 +210,8 @@ with open("resolved-params.json", "w", encoding="utf-8") as output:
 - Module outputs should be relative to the configured output directory.
 - Keep calibration versions, external dataset identifiers, and selection choices
   in registered parameters so they contribute to the snapshot.
-- Do not place secrets in parameter files or run logs.
+- Do not place secrets in parameter files. Provenance applies key-based redaction,
+  but an external credential provider is safer.
 
 ## Preflight boundary
 

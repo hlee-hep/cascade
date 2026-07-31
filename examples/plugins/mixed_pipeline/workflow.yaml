@@ -3,6 +3,7 @@ schema_version: 1
 output_directory: cli-output
 cache_directory: cli-output/.cache
 dot: cli-output/mixed_pipeline.dot
+provenance: cli-output/mixed_pipeline-provenance.json
 fail_fast: false
 
 modules:

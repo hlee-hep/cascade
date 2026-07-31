@@ -144,6 +144,7 @@ class SummaryModule(base_module):
         input_path = self.final_output(self.get_param("input"))
         if not input_path.is_file():
             raise FileNotFoundError(input_path)
+        self.track_input(input_path)
 
     def execute(self):
         with self.final_output(self.get_param("input")).open("r", encoding="utf-8") as source:
@@ -283,6 +284,10 @@ files in one transaction.
 Use `FinalOutput`/`final_output` to resolve an already committed input produced by
 an upstream module. Both staging and final-path helpers reject paths outside the
 configured output root.
+
+Call `TrackInput(path)` / `track_input(path)` for every material file input.
+Cascade hashes declared local inputs in the module provenance manifest. Output
+artifacts registered with the staging helper are captured automatically.
 
 Direct writes, network calls, database updates, and messages sent to external
 services are not transactional.

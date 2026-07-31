@@ -9,9 +9,10 @@
 5. [AnalysisManager](analysis-manager.md)
 6. [Execution contract](execution.md)
 7. [DAG execution](dag.md)
-8. [Command-line interface](cli.md)
-9. [Plotting](plotting.md)
-10. [Plugin development and distribution](plugins.md)
+8. [Provenance manifests](provenance.md)
+9. [Command-line interface](cli.md)
+10. [Plotting](plotting.md)
+11. [Plugin development and distribution](plugins.md)
 
 ## Reference and operations
 

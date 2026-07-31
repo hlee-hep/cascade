@@ -251,6 +251,12 @@ fs::path OutputTransaction::StagingRoot() const
     return m_StagingRoot;
 }
 
+std::vector<std::pair<fs::path, fs::path>> OutputTransaction::StagedOutputs() const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    return {m_StagedOutputs.begin(), m_StagedOutputs.end()};
+}
+
 ExecutionContext::ExecutionContext()
     : m_CacheDirectory(DefaultCacheDirectory_()), m_OutputDirectory(DefaultOutputDirectory_())
 {

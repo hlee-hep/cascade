@@ -59,6 +59,7 @@ output_directory: output
 cache_directory: output/.cache
 fail_fast: true
 dot: output/workflow.dot
+provenance: output/workflow-provenance.json
 
 modules:
   - module: ProducerModule
@@ -83,8 +84,9 @@ unique. Dependencies and parameter links use instance names, while `module`
 selects the signed C++ or Python class.
 
 Workflow-relative paths include `output_directory`, `cache_directory`,
-`param_file`, and `dot`. Parameter values themselves are not rewritten.
+`param_file`, `dot`, and `provenance`. Parameter values themselves are not rewritten.
 `--fail-fast` and `--keep-going` override the file's failure policy.
+`--provenance PATH` overrides the workflow field.
 
 The mixed plugin contains a runnable
 [`workflow.yaml`](../examples/plugins/mixed_pipeline/workflow.yaml).
@@ -94,6 +96,9 @@ The mixed plugin contains a runnable
 `info`, `doctor env`, `module list`, `module run`, and `dag run` support
 `--json`. Framework and module stdout is redirected to stderr during execution
 so stdout remains a single JSON document.
+
+Single-module JSON includes the module `run_id` and `provenance` path. DAG JSON
+includes the workflow `provenance` path.
 
 ## ROOT macro compatibility
 

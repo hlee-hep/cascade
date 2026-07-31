@@ -91,10 +91,13 @@ events_summary.json
 message.json
 message_upper.json
 mixed_pipeline.dot
+.cascade/provenance/modules/*.json
+.cache/provenance/workflows/*.json
 ```
 
 Every data product is registered with `StageOutput`/`stage_output`. The final paths
-become visible only after lifecycle and cache commit.
+become visible only after lifecycle and cache commit. The module manifests record
+artifact hashes, and the workflow manifest connects all four runs to the DAG.
 
 ## PyROOT behavior
 
@@ -120,4 +123,5 @@ See:
 
 - [Module authoring](../../../docs/module-authoring.md)
 - [Execution contract](../../../docs/execution.md)
+- [Provenance manifests](../../../docs/provenance.md)
 - [Plugin guide](../../../docs/plugins.md)

@@ -78,6 +78,13 @@ PYBIND11_MODULE(_cascade, m)
                  py::gil_scoped_release release;
                  self.SaveRunLog();
              })
+        .def("save_provenance",
+             [](const AMCM &self, const std::string &path, bool failFast)
+             {
+                 py::gil_scoped_release release;
+                 return self.SaveProvenance(path, failFast);
+             },
+             py::arg("path") = "", py::arg("fail_fast") = true)
         .def("run_module",
              [](AMCM &self, const std::string &name)
              {
@@ -205,6 +212,10 @@ PYBIND11_MODULE(_cascade, m)
         .def_readonly("nodes", &DAGRunResult::Nodes)
         .def("succeeded", &DAGRunResult::Succeeded)
         .def("failed", &DAGRunResult::Failed);
+    py::class_<DAGDataLinkInfo>(m, "DAGDataLinkInfo")
+        .def_readonly("from_node", &DAGDataLinkInfo::FromNode)
+        .def_readonly("to_node", &DAGDataLinkInfo::ToNode)
+        .def_readonly("label", &DAGDataLinkInfo::Label);
     py::class_<DAGManager>(m, "DAGManager")
         .def("add_node",
              [](DAGManager &dag, const std::string &name, const std::vector<std::string> &dependencies, std::function<void()> task)
@@ -256,6 +267,8 @@ PYBIND11_MODULE(_cascade, m)
                  py::gil_scoped_release release;
                  return dag.GetNodeResults();
              })
+        .def("get_dependencies", &DAGManager::GetDependencies)
+        .def("get_data_links", &DAGManager::GetDataLinks)
         .def("is_executing", &DAGManager::IsExecuting);
     py::class_<IAnalysisModule, std::shared_ptr<IAnalysisModule>>(m, "IAnalysisModule")
         .def("set_param",
@@ -326,6 +339,8 @@ PYBIND11_MODULE(_cascade, m)
         .def("get_cache_directory", &IAnalysisModule::GetCacheDirectory)
         .def("get_output_directory", &IAnalysisModule::GetOutputDirectory)
         .def("get_run_id", &IAnalysisModule::GetRunId)
+        .def("get_last_provenance_path", &IAnalysisModule::GetLastProvenancePath)
+        .def("get_last_provenance_json", &IAnalysisModule::GetLastProvenanceJSON, py::arg("indent") = 2)
         .def("request_cancellation", &IAnalysisModule::RequestCancellation)
         .def("is_cancellation_requested", &IAnalysisModule::IsCancellationRequested)
         .def("get_metadata", &IAnalysisModule::GetMetadata);

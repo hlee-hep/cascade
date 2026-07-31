@@ -45,6 +45,7 @@ class OutputTransaction
     bool IsActive() const;
     std::filesystem::path OutputRoot() const;
     std::filesystem::path StagingRoot() const;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> StagedOutputs() const;
 
   private:
     struct Promotion

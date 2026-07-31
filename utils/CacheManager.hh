@@ -58,6 +58,43 @@ class CacheManager
         return cacheDirectory + "/" + SafeName(moduleName) + ".yaml";
     }
 
+    static inline YAML::Node ReadDocument(std::istream &input, const std::string &path)
+    {
+        YAML::Node existing = YAML::Load(input);
+        YAML::Node document(YAML::NodeType::Map);
+        document["schema_version"] = 1;
+        document["snapshots"] = YAML::Node(YAML::NodeType::Sequence);
+        if (!existing) return document;
+        if (existing.IsSequence())
+        {
+            for (const auto &hash : existing)
+            {
+                YAML::Node entry(YAML::NodeType::Map);
+                entry["hash"] = hash.as<std::string>();
+                entry["provenance"] = "";
+                document["snapshots"].push_back(entry);
+            }
+            return document;
+        }
+        if (!existing.IsMap() || !existing["snapshots"] || !existing["snapshots"].IsSequence())
+            throw std::runtime_error("Cascade cache has an invalid schema: " + path);
+        if (!existing["schema_version"] || existing["schema_version"].as<int>() != 1)
+            throw std::runtime_error("Cascade cache has an unsupported schema version: " + path);
+        return existing;
+    }
+
+    static inline void WriteDocument(const std::string &path, const YAML::Node &document)
+    {
+        const std::string temporary = path + ".tmp." + std::to_string(getpid());
+        {
+            std::ofstream output(temporary, std::ios::trunc);
+            if (!output) throw std::runtime_error("Cannot write cache file: " + temporary);
+            output << document;
+            if (!output) throw std::runtime_error("Failed while writing cache file: " + temporary);
+        }
+        std::filesystem::rename(temporary, path);
+    }
+
   public:
     static inline std::string CacheDir()
     {
@@ -80,43 +117,59 @@ class CacheManager
         std::ifstream input(path);
         if (!input) return false;
 
-        YAML::Node hashes = YAML::Load(input);
-        if (hashes && !hashes.IsSequence()) throw std::runtime_error("Cascade cache is not a YAML sequence: " + path);
-        for (const auto &entry : hashes)
-            if (entry.as<std::string>() == hash) return true;
+        const YAML::Node document = ReadDocument(input, path);
+        for (const auto &entry : document["snapshots"])
+            if (entry["hash"].as<std::string>() == hash) return true;
         return false;
+    }
+
+    static inline std::string FindProvenance(const std::string &moduleName, const std::string &hash,
+                                             const std::string &cacheDirectory)
+    {
+        const std::string path = CachePath(moduleName, cacheDirectory);
+        std::filesystem::create_directories(cacheDirectory);
+        FileLock lock(path + ".lock", LOCK_SH);
+        std::ifstream input(path);
+        if (!input) return {};
+        const YAML::Node document = ReadDocument(input, path);
+        for (const auto &entry : document["snapshots"])
+            if (entry["hash"].as<std::string>() == hash)
+                return entry["provenance"] ? entry["provenance"].as<std::string>() : std::string();
+        return {};
     }
 
     static inline void AddHash(const std::string &moduleName, const std::string &hash)
     {
-        AddHash(moduleName, hash, CacheDir());
+        AddHash(moduleName, hash, CacheDir(), "");
     }
 
-    static inline void AddHash(const std::string &moduleName, const std::string &hash, const std::string &cacheDirectory)
+    static inline void AddHash(const std::string &moduleName, const std::string &hash, const std::string &cacheDirectory,
+                               const std::string &provenancePath = "")
     {
         const std::string path = CachePath(moduleName, cacheDirectory);
         std::filesystem::create_directories(cacheDirectory);
         FileLock lock(path + ".lock", LOCK_EX);
 
-        YAML::Node hashes(YAML::NodeType::Sequence);
+        YAML::Node document(YAML::NodeType::Map);
+        document["schema_version"] = 1;
+        document["snapshots"] = YAML::Node(YAML::NodeType::Sequence);
         std::ifstream input(path);
-        if (input)
+        if (input) document = ReadDocument(input, path);
+        for (auto entry : document["snapshots"])
         {
-            hashes = YAML::Load(input);
-            if (hashes && !hashes.IsSequence()) throw std::runtime_error("Cascade cache is not a YAML sequence: " + path);
+            if (entry["hash"].as<std::string>() != hash) continue;
+            if (!provenancePath.empty())
+            {
+                entry["provenance"] = provenancePath;
+                WriteDocument(path, document);
+            }
+            return;
         }
-        for (const auto &entry : hashes)
-            if (entry.as<std::string>() == hash) return;
-        hashes.push_back(hash);
-
-        const std::string temporary = path + ".tmp." + std::to_string(getpid());
-        {
-            std::ofstream output(temporary, std::ios::trunc);
-            if (!output) throw std::runtime_error("Cannot write cache file: " + temporary);
-            output << hashes;
-            if (!output) throw std::runtime_error("Failed while writing cache file: " + temporary);
-        }
-        std::filesystem::rename(temporary, path);
+        YAML::Node entry(YAML::NodeType::Map);
+        entry["hash"] = hash;
+        entry["provenance"] = provenancePath;
+        document["snapshots"].push_back(entry);
+        WriteDocument(path, document);
     }
 
     static inline void RemoveHash(const std::string &moduleName, const std::string &hash, const std::string &cacheDirectory)
@@ -125,21 +178,16 @@ class CacheManager
         std::filesystem::create_directories(cacheDirectory);
         FileLock lock(path + ".lock", LOCK_EX);
 
-        YAML::Node hashes(YAML::NodeType::Sequence);
         std::ifstream input(path);
         if (!input) return;
-        YAML::Node existing = YAML::Load(input);
-        if (existing && !existing.IsSequence()) throw std::runtime_error("Cascade cache is not a YAML sequence: " + path);
-        for (const auto &entry : existing)
-            if (entry.as<std::string>() != hash) hashes.push_back(entry.as<std::string>());
-
-        const std::string temporary = path + ".tmp." + std::to_string(getpid());
+        YAML::Node existing = ReadDocument(input, path);
+        YAML::Node document(YAML::NodeType::Map);
+        document["schema_version"] = 1;
+        document["snapshots"] = YAML::Node(YAML::NodeType::Sequence);
+        for (const auto &entry : existing["snapshots"])
         {
-            std::ofstream output(temporary, std::ios::trunc);
-            if (!output) throw std::runtime_error("Cannot write cache file: " + temporary);
-            output << hashes;
-            if (!output) throw std::runtime_error("Failed while writing cache file: " + temporary);
+            if (entry["hash"].as<std::string>() != hash) document["snapshots"].push_back(entry);
         }
-        std::filesystem::rename(temporary, path);
+        WriteDocument(path, document);
     }
 };

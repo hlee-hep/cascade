@@ -7,6 +7,7 @@
 #include "ModuleMetadata.hh"
 #include "ModuleRun.hh"
 #include "ParamManager.hh"
+#include "Provenance.hh"
 #include "SnapshotHasher.hh"
 #include "sha256.hh"
 #include "Version.hh"
@@ -33,6 +34,7 @@ class IAnalysisModule
         std::lock_guard<std::recursive_mutex> runLock(m_RunMutex);
         if (m_ExternalRunReserved || m_Context.IsActive()) throw std::runtime_error("Module run is already active: " + Name());
         m_Context.BeginRun(Name(), BaseName());
+        ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), "cpp", true);
         m_ExternalRunReserved = true;
         SetStatus(ModuleStatus::Initializing);
     }
@@ -69,7 +71,11 @@ class IAnalysisModule
         SetStatus(ModuleStatus::Initializing);
         try
         {
-            if (!m_Context.IsActive()) m_Context.BeginRun(Name(), BaseName());
+            if (!m_Context.IsActive())
+            {
+                m_Context.BeginRun(Name(), BaseName());
+                ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), "cpp", false);
+            }
             Init();
         }
         catch (const std::exception &e)
@@ -142,8 +148,17 @@ class IAnalysisModule
 
         try
         {
+            const std::string provenancePath =
+                ProvenanceRecorder::SuccessfulModuleManifestPath(m_Context.OutputDirectory(), m_Context.RunId());
+            const auto outputs = m_Context.Outputs().StagedOutputs();
+            const RunResult successful{ModuleStatus::Done, ModulePhase::None, "", nullptr};
+            auto manifest = ProvenanceRecorder::BuildModuleRun(
+                m_Context.RunId(), GetMetadata(), m_CodeVersionHash, m_Hash, m_Param.DumpJSON(),
+                m_Context.OutputDirectory(), m_Context.CacheDirectory(), successful, outputs, provenancePath);
+            const auto stagedManifest = m_Context.StageOutput(provenancePath);
+            ProvenanceRecorder::WriteModuleRun(manifest, stagedManifest);
             m_Context.Outputs().Commit();
-            CacheManager::AddHash(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+            CacheManager::AddHash(m_Basename, m_Hash, m_Context.CacheDirectory().string(), provenancePath);
             try
             {
                 m_Context.CompleteRun();
@@ -153,6 +168,7 @@ class IAnalysisModule
                 CacheManager::RemoveHash(m_Basename, m_Hash, m_Context.CacheDirectory().string());
                 throw;
             }
+            ProvenanceRecorder::StoreModuleRun(manifest);
         }
         catch (const std::exception &e)
         {
@@ -200,6 +216,18 @@ class IAnalysisModule
     std::string GetCacheDirectory() const { return m_Context.CacheDirectory().string(); }
     std::string GetOutputDirectory() const { return m_Context.OutputDirectory().string(); }
     std::string GetRunId() const { return m_Context.RunId(); }
+    std::string GetLastProvenancePath() const
+    {
+        auto manifest = ProvenanceRecorder::FindModuleRun(m_Context.RunId());
+        if (!manifest) manifest = ProvenanceRecorder::FindLastModuleRun(Name());
+        return manifest ? manifest->ManifestPath : std::string();
+    }
+    std::string GetLastProvenanceJSON(int indent = 2) const
+    {
+        auto manifest = ProvenanceRecorder::FindModuleRun(m_Context.RunId());
+        if (!manifest) manifest = ProvenanceRecorder::FindLastModuleRun(Name());
+        return manifest ? manifest->ToJSON(indent) : std::string();
+    }
 
     void SetParamValue(const std::string &key, const ParamValue &value)
     {
@@ -295,6 +323,7 @@ class IAnalysisModule
     AnalysisManager *Am(const std::string &name = "main") const { return GetAnalysisManager(name); }
     std::filesystem::path StageOutput(const std::filesystem::path &path) { return m_Context.StageOutput(path); }
     std::filesystem::path FinalOutput(const std::filesystem::path &path) const { return m_Context.FinalOutput(path); }
+    void TrackInput(const std::filesystem::path &path) { ProvenanceRecorder::TrackInput(m_Context.RunId(), path); }
     ExecutionContext &Context() { return m_Context; }
     const ExecutionContext &Context() const { return m_Context; }
 
@@ -326,9 +355,48 @@ class IAnalysisModule
         if (status != ModuleStatus::Done && m_Context.IsActive()) m_Context.RollbackRun();
         SetStatus(status);
         RunResult result{status, phase, std::move(message), std::move(exception)};
-        std::lock_guard<std::mutex> lock(m_ResultMutex);
-        m_LastResult = result;
+        {
+            std::lock_guard<std::mutex> lock(m_ResultMutex);
+            m_LastResult = result;
+        }
+        FinalizeProvenance_(result);
         return result;
+    }
+
+    void FinalizeProvenance_(const RunResult &result) noexcept
+    {
+        try
+        {
+            if (ProvenanceRecorder::FindModuleRun(m_Context.RunId())) return;
+            const std::string expectedPath =
+                result.Status == ModuleStatus::Done
+                    ? ProvenanceRecorder::SuccessfulModuleManifestPath(m_Context.OutputDirectory(), m_Context.RunId())
+                    : ProvenanceRecorder::TerminalModuleManifestPath(m_Context.CacheDirectory(), m_Context.RunId());
+            if (std::filesystem::is_regular_file(expectedPath))
+            {
+                auto existing = ProvenanceRecorder::LoadModuleRun(expectedPath);
+                if (existing.Status == result.Status && existing.Phase == result.Phase)
+                {
+                    ProvenanceRecorder::StoreModuleRun(existing);
+                    return;
+                }
+            }
+            auto manifest = ProvenanceRecorder::BuildModuleRun(
+                m_Context.RunId(), GetMetadata(), m_CodeVersionHash, m_Hash, m_Param.DumpJSON(),
+                m_Context.OutputDirectory(), m_Context.CacheDirectory(), result, {}, expectedPath);
+            ProvenanceRecorder::WriteModuleRun(manifest, expectedPath);
+            ProvenanceRecorder::StoreModuleRun(manifest);
+        }
+        catch (const std::exception &error)
+        {
+            ProvenanceRecorder::DiscardModuleRun(m_Context.RunId());
+            LOG_ERROR(Name(), "Failed to record provenance: " << error.what());
+        }
+        catch (...)
+        {
+            ProvenanceRecorder::DiscardModuleRun(m_Context.RunId());
+            LOG_ERROR(Name(), "Failed to record provenance with an unknown exception");
+        }
     }
 
     RunResult Fail_(ModulePhase phase, const std::string &message, std::exception_ptr exception)
@@ -382,7 +450,12 @@ class IAnalysisModule
         }
 
         bool dupl = CacheManager::IsHashCached(m_Basename, m_Hash, m_Context.CacheDirectory().string());
-        if (dupl) LOG_INFO(Name(), "Matching snapshot is already cached.");
+        if (dupl)
+        {
+            ProvenanceRecorder::SetCacheSource(
+                m_Context.RunId(), CacheManager::FindProvenance(m_Basename, m_Hash, m_Context.CacheDirectory().string()));
+            LOG_INFO(Name(), "Matching snapshot is already cached.");
+        }
         return {!dupl, dupl ? "snapshot already cached" : ""};
     }
 };

@@ -22,7 +22,7 @@ framework phases.
 | `Check` | Handles `dry_run`, computes snapshot hash, checks cache, applies `force_run` |
 | `Execute` | Runs analysis logic |
 | `Finalize` | Runs user serialization/finalization logic |
-| `Commit` | Promotes staged output, records snapshot, removes transaction backups |
+| `Commit` | Stages provenance, promotes output, records snapshot linkage, removes transaction backups |
 
 An exception is caught at its phase boundary. The framework calls the optional
 failure hook, rolls back active output state, and returns `Failed`.
@@ -117,8 +117,9 @@ Multiple staged files form one transaction. Commit order:
 2. write the promotion journal;
 3. move existing final files to transaction backups;
 4. promote staged files;
-5. atomically record the snapshot hash;
-6. remove the staging directory, backups, and journal.
+5. commit the module provenance manifest with the output set;
+6. atomically record the snapshot hash and manifest linkage;
+7. remove the staging directory, backups, and journal.
 
 If promotion or cache update fails, promoted files are removed and originals are
 restored. During isolated execution, the parent can replay the on-disk journal
@@ -251,10 +252,11 @@ restrict filesystem, network, or process privileges and is not a security sandbo
 Give concurrently executable modules distinct output paths and avoid shared mutable
 globals.
 
-## Run logs
+## Provenance and run-log compatibility
 
-The controller records module name, basename, code hash, resolved parameters,
-status, failed phase, and message.
+The canonical execution record is a versioned JSON provenance manifest. It
+combines module metadata, code/snapshot identity, resolved parameters, lifecycle
+result, artifact hashes, cache lineage, and DAG relationships.
 
 C++:
 
@@ -268,8 +270,7 @@ Python:
 controller.save_run_log_all()
 ```
 
-Python logs default to `~/.cache/cascade/run_logs`. Override with
-`CASCADE_RUN_LOG_DIR` or the `log_dir` argument.
-
-Do not store secrets in module parameters because resolved parameters appear in run
-logs.
+These names remain compatibility aliases and now write `cascade.workflow-run`
+JSON. Prefer `SaveProvenance()` / `save_provenance()`. See
+[Provenance manifests](provenance.md) for locations, input tracking, redaction,
+and cache linkage.

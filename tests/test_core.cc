@@ -16,8 +16,10 @@
 #include <atomic>
 #include <csignal>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -163,6 +165,19 @@ void TestOutputTransactions()
     TransactionModule success;
     success.SetOutputDirectory(outputDirectory.string());
     assert(success.Run().Succeeded());
+    const auto successProvenance = success.GetLastProvenancePath();
+    assert(std::filesystem::is_regular_file(successProvenance));
+    {
+        std::ifstream input(successProvenance);
+        nlohmann::json manifest;
+        input >> manifest;
+        assert(manifest.at("schema") == "cascade.module-run");
+        assert(manifest.at("result").at("status") == "Done");
+        assert(manifest.at("identity").at("snapshot_hash").get<std::string>().size() == 64);
+        assert(manifest.at("artifacts").at("outputs").size() == 1);
+        assert(manifest.at("artifacts").at("outputs").at(0).at("path") == "result.txt");
+        assert(manifest.at("artifacts").at("outputs").at(0).at("sha256").get<std::string>().size() == 64);
+    }
     {
         std::ifstream output(outputDirectory / "result.txt");
         std::string contents;
@@ -179,6 +194,7 @@ void TestOutputTransactions()
     const auto executeResult = executeFailure.Run();
     assert(executeResult.Status == ModuleStatus::Failed);
     assert(executeResult.Phase == ModulePhase::Execute);
+    assert(std::filesystem::is_regular_file(executeFailure.GetLastProvenancePath()));
     {
         std::ifstream output(outputDirectory / "result.txt");
         std::string contents;
@@ -241,6 +257,38 @@ void TestOutputTransactions()
     std::filesystem::remove_all(outsideDirectory);
 }
 
+void TestProvenanceCacheLink()
+{
+    const auto root = std::filesystem::temp_directory_path() / "cascade-provenance-cache-link";
+    const auto output = root / "output";
+    const auto cache = root / "cache";
+    std::filesystem::remove_all(root);
+
+    LifecycleModule first(ModulePhase::None, "ProvenanceCacheModule");
+    first.SetName("first");
+    first.SetOutputDirectory(output.string());
+    first.SetCacheDirectory(cache.string());
+    first.GetParamManager().Set("force_run", false);
+    first.GetParamManager().Register<std::string>("api_token", "do-not-record");
+    assert(first.Run().Succeeded());
+    const std::string sourceManifest = first.GetLastProvenancePath();
+
+    LifecycleModule second(ModulePhase::None, "ProvenanceCacheModule");
+    second.SetName("second");
+    second.SetOutputDirectory(output.string());
+    second.SetCacheDirectory(cache.string());
+    second.GetParamManager().Set("force_run", false);
+    second.GetParamManager().Register<std::string>("api_token", "do-not-record");
+    const auto skipped = second.Run();
+    assert(skipped.Status == ModuleStatus::Skipped);
+    std::ifstream input(second.GetLastProvenancePath());
+    nlohmann::json manifest;
+    input >> manifest;
+    assert(manifest.at("execution").at("cache_hit") == true);
+    assert(manifest.at("execution").at("cache_source_manifest") == sourceManifest);
+    assert(manifest.at("parameters").at("api_token") == "***");
+}
+
 void TestControllerContracts()
 {
     const std::string className = "CascadeControllerTestModule";
@@ -262,6 +310,17 @@ void TestControllerContracts()
     assert(duplicateRejected);
     assert(controller.RunAModule("instance").Status == ModuleStatus::Done);
     assert(controller.RunAModuleIsolated("instance").Status == ModuleStatus::Done);
+    const auto workflowPath =
+        std::filesystem::temp_directory_path() / "cascade-controller-workflow-provenance.json";
+    controller.SaveProvenance(workflowPath.string());
+    assert(std::filesystem::is_regular_file(workflowPath));
+    {
+        std::ifstream input(workflowPath);
+        nlohmann::json manifest;
+        input >> manifest;
+        assert(manifest.at("schema") == "cascade.workflow-run");
+        assert(!manifest.at("module_manifests").empty());
+    }
 
     const std::string crashClassName = "CascadeControllerCrashModule";
     const auto currentClasses = AnalysisModuleRegistry::Get().ListModules();
@@ -794,8 +853,15 @@ void TestDagValidationAndReset()
 
 int main()
 {
+    const auto runtimeRoot = std::filesystem::temp_directory_path() / "cascade-core-test-runtime";
+    std::filesystem::remove_all(runtimeRoot);
+    const std::string outputRoot = (runtimeRoot / "output").string();
+    const std::string cacheRoot = (runtimeRoot / "cache").string();
+    setenv("CASCADE_OUTPUT_DIR", outputRoot.c_str(), 1);
+    setenv("CASCADE_CACHE_DIR", cacheRoot.c_str(), 1);
     TestLifecycle();
     TestOutputTransactions();
+    TestProvenanceCacheLink();
     TestControllerContracts();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();
@@ -803,5 +869,6 @@ int main()
     TestPlotDoesNotMutateInputs();
     TestRdfSnapshotRunsOneEventLoop();
     TestDagValidationAndReset();
+    std::filesystem::remove_all(runtimeRoot);
     return 0;
 }

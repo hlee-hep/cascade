@@ -1,4 +1,5 @@
 #include "AMCM.hh"
+#include "Provenance.hh"
 #include "AnalysisModuleRegistry.hh"
 #include "InterruptManager.hh"
 #include "Logger.hh"
@@ -385,7 +386,8 @@ RunResult AMCM::RunAModule(std::shared_ptr<IAnalysisModule> mod)
 void AMCM::RecordRun_(const std::shared_ptr<IAnalysisModule> &module, const RunResult &result)
 {
     std::lock_guard<std::mutex> lock(m_ControlMutex);
-    m_ExecutedModules.push_back({module->Name(), module->BaseName(), module->GetCodeHash(), module->DumpParamsToYAML(), result});
+    m_ExecutedModules.push_back(
+        {module->GetRunId(), module->GetLastProvenancePath(), module->Name(), module->BaseName(), result});
 }
 
 RunResult AMCM::RunAModuleIsolated(const std::string &name)
@@ -590,6 +592,10 @@ void AMCM::LinkDAGModuleParameter(const std::string &fromNode, const std::string
 DAGRunResult AMCM::RunDAG(bool failFast)
 {
     std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
+    {
+        std::lock_guard<std::mutex> controlLock(m_ControlMutex);
+        m_ExecutedModules.clear();
+    }
     LOG_INFO("CONTROL", "Executing DAG workflow");
     auto result = m_Dag->Execute(failFast);
     LOG_INFO("CONTROL", "DAG workflow execution completed");
@@ -612,46 +618,81 @@ std::shared_ptr<IAnalysisModule> AMCM::ValidateModuleHandle_(const std::shared_p
     return registered;
 }
 
-void AMCM::SaveRunLog() const
+std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
 {
     std::lock_guard<std::mutex> lock(m_ControlMutex);
-    std::time_t t = std::time(nullptr);
-    std::tm localTime{};
-    localtime_r(&t, &localTime);
-    char buf[20];
-    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &localTime);
-    std::string filename = "control_log_" + std::string(buf);
-    int counter = 0;
+    WorkflowRunManifest workflow;
+    workflow.RunId = ProvenanceRecorder::MakeWorkflowRunId();
+    workflow.Runtime = ProvenanceRecorder::Runtime("cpp");
+    workflow.FailFast = failFast;
+    workflow.Succeeded = true;
 
-    YAML::Emitter out;
-    out << YAML::BeginMap;
-    out << YAML::Key << "modules" << YAML::Value << YAML::BeginSeq;
-
+    std::map<std::string, ModuleRunManifest> manifestsByInstance;
     for (const auto &entry : m_ExecutedModules)
     {
-        out << YAML::BeginMap;
-        out << YAML::Key << "name" << YAML::Value << entry.Name;
-        out << YAML::Key << "module" << YAML::Value << entry.BaseName;
-        out << YAML::Key << "codehash" << YAML::Value << entry.CodeHash;
-        out << YAML::Key << "status" << YAML::Value << ToString(entry.Result.Status);
-        out << YAML::Key << "phase" << YAML::Value << ToString(entry.Result.Phase);
-        out << YAML::Key << "message" << YAML::Value << entry.Result.Message;
-        out << YAML::Key << "params" << YAML::Value << YAML::Load(entry.ParamsYaml);
-        out << YAML::EndMap;
-
-        if (counter++ < 5) filename += ("_" + SafeFilenamePart(entry.Name));
+        std::optional<ModuleRunManifest> manifest = ProvenanceRecorder::FindModuleRun(entry.RunId);
+        if (!manifest && !entry.ManifestPath.empty() && std::filesystem::is_regular_file(entry.ManifestPath))
+            manifest = ProvenanceRecorder::LoadModuleRun(entry.ManifestPath);
+        if (manifest)
+        {
+            manifestsByInstance[entry.InstanceName] = *manifest;
+            workflow.ModuleManifestPaths.push_back(manifest->ManifestPath);
+            if (workflow.StartedAt.empty() || manifest->StartedAt < workflow.StartedAt) workflow.StartedAt = manifest->StartedAt;
+            if (workflow.FinishedAt.empty() || manifest->FinishedAt > workflow.FinishedAt) workflow.FinishedAt = manifest->FinishedAt;
+        }
+        workflow.Succeeded = workflow.Succeeded && entry.Result.AllowsDependents();
     }
 
-    out << YAML::EndSeq;
-    out << YAML::EndMap;
+    const auto dependencies = m_Dag->GetDependencies();
+    const auto dagResults = m_Dag->GetNodeResults();
+    if (!dagResults.empty())
+    {
+        for (const auto &result : dagResults)
+        {
+            WorkflowNodeProvenance node;
+            node.Name = result.Name;
+            node.Status = ToString(result.Status);
+            node.Message = result.Message;
+            const auto dependency = dependencies.find(result.Name);
+            if (dependency != dependencies.end()) node.Dependencies = dependency->second;
+            const auto module = manifestsByInstance.find(result.Name);
+            if (module != manifestsByInstance.end())
+            {
+                node.ModuleRunId = module->second.RunId;
+                node.ModuleManifestPath = module->second.ManifestPath;
+            }
+            workflow.Nodes.push_back(std::move(node));
+        }
+        for (const auto &link : m_Dag->GetDataLinks())
+            workflow.DataLinks.push_back({link.FromNode, link.ToNode, link.Label});
+        workflow.Succeeded = workflow.Succeeded &&
+                             std::all_of(dagResults.begin(), dagResults.end(),
+                                         [](const DAGNodeResult &node) { return node.Status == DAGNodeStatus::Succeeded; });
+    }
+    else
+    {
+        for (const auto &entry : m_ExecutedModules)
+        {
+            WorkflowNodeProvenance node;
+            node.Name = entry.InstanceName;
+            node.Status = ToString(entry.Result.Status);
+            node.Message = entry.Result.Message;
+            node.ModuleRunId = entry.RunId;
+            node.ModuleManifestPath = entry.ManifestPath;
+            workflow.Nodes.push_back(std::move(node));
+        }
+    }
 
-    filename += ".yaml";
-    std::filesystem::create_directories("run_logs");
-    std::ofstream fout("run_logs/" + filename);
-    if (!fout) throw std::runtime_error("Cannot open run log for writing: " + filename);
-    fout << out.c_str();
-    if (!fout) throw std::runtime_error("Failed while writing run log: " + filename);
-    LOG_INFO("CONTROL", "Run log '" << filename << "' is saved.");
+    if (workflow.StartedAt.empty()) workflow.StartedAt = ProvenanceRecorder::NowUTC();
+    if (workflow.FinishedAt.empty()) workflow.FinishedAt = ProvenanceRecorder::NowUTC();
+    const std::string saved = ProvenanceRecorder::WriteWorkflowRun(workflow, path);
+    LOG_INFO("CONTROL", "Workflow provenance '" << saved << "' is saved.");
+    return saved;
+}
+
+void AMCM::SaveRunLog() const
+{
+    SaveProvenance();
 }
 
 void AMCM::LoadPlugins(const std::string &path)

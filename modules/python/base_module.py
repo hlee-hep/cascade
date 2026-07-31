@@ -10,6 +10,7 @@ import time
 import uuid
 import fcntl
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -57,6 +58,155 @@ class RunResult:
 
     def allows_dependents(self):
         return self.status in {ModuleStatus.DONE, ModuleStatus.SKIPPED}
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _sensitive_key(key):
+    key = str(key).lower()
+    return any(
+        pattern in key
+        for pattern in (
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "credential",
+            "private_key",
+            "api_key",
+        )
+    )
+
+
+def _sanitized_parameters(parameters):
+    return {
+        key: "***" if _sensitive_key(key) else value
+        for key, value in parameters.items()
+    }
+
+
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _capture_artifact(source, recorded_path):
+    source_text = str(source)
+    if "://" in source_text:
+        return {
+            "path": recorded_path,
+            "kind": "uri",
+            "exists": False,
+            "size": 0,
+            "sha256": None,
+        }
+    path = Path(source).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path = Path(os.path.abspath(path))
+    if not path.exists() and not path.is_symlink():
+        return {
+            "path": recorded_path,
+            "kind": "missing",
+            "exists": False,
+            "size": 0,
+            "sha256": None,
+        }
+    if path.is_symlink():
+        target = os.readlink(path)
+        return {
+            "path": recorded_path,
+            "kind": "symlink",
+            "exists": True,
+            "size": len(target),
+            "sha256": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+        }
+    if path.is_file():
+        return {
+            "path": recorded_path,
+            "kind": "file",
+            "exists": True,
+            "size": path.stat().st_size,
+            "sha256": _sha256_path(path),
+        }
+    if not path.is_dir():
+        return {
+            "path": recorded_path,
+            "kind": "other",
+            "exists": True,
+            "size": 0,
+            "sha256": None,
+        }
+
+    digest = hashlib.sha256()
+    total_size = 0
+    for entry in sorted(path.rglob("*"), key=lambda item: item.as_posix()):
+        relative = entry.relative_to(path).as_posix()
+        if entry.is_symlink():
+            target = os.readlink(entry)
+            size = len(target)
+            fingerprint = hashlib.sha256(target.encode("utf-8")).hexdigest()
+            marker = "l"
+        elif entry.is_dir():
+            size = 0
+            fingerprint = ""
+            marker = "d"
+        elif entry.is_file():
+            size = entry.stat().st_size
+            fingerprint = _sha256_path(entry)
+            marker = "f"
+        else:
+            continue
+        total_size += size
+        digest.update(
+            f"{marker}\0{relative}\0{fingerprint}\0{size}\0".encode("utf-8")
+        )
+    return {
+        "path": recorded_path,
+        "kind": "directory",
+        "exists": True,
+        "size": total_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _atomic_write_json(path, document):
+    path = Path(path).expanduser().resolve(strict=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(document, output, indent=2, sort_keys=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _runtime_provenance(language):
+    abi_tag = getattr(cascade, "get_abi_tag", lambda: "")()
+    root_version = ""
+    for field in abi_tag.split(";"):
+        if field.startswith("root="):
+            root_version = field.partition("=")[2]
+            break
+    return {
+        "cascade_version": getattr(cascade, "__version__", ""),
+        "plugin_abi_version": int(getattr(cascade, "__abi_version__", 1)),
+        "plugin_abi_tag": abi_tag,
+        "root_version": root_version,
+        "language": language,
+    }
 
 
 class CancellationToken:
@@ -253,6 +403,10 @@ class OutputTransaction:
         with self._lock:
             return self._state in {"staging", "promoted"}
 
+    def staged_outputs(self):
+        with self._lock:
+            return list(self._staged.items())
+
 
 class ExecutionContext:
     def __init__(self):
@@ -419,6 +573,13 @@ class base_module:
         self.tags = []
         self.context = ExecutionContext()
         self._external_run_reserved = False
+        self._provenance_started_at = ""
+        self._provenance_isolated = False
+        self._provenance_inputs = []
+        self._provenance_cache_source = ""
+        self._snapshot_hash = ""
+        self._last_provenance = None
+        self._pending_cache_provenance = ""
 
     def check_interrupt(self):
         if self.context.cancellation.is_cancellation_requested():
@@ -445,6 +606,13 @@ class base_module:
 
     def final_output(self, path):
         return self.context.final_output(path)
+
+    def track_input(self, path):
+        if not self.context.active:
+            raise RuntimeError("Cannot track an input outside an active module run")
+        value = str(path)
+        if value not in self._provenance_inputs:
+            self._provenance_inputs.append(value)
 
     def set_param(self, key, val):
         with self._run_lock:
@@ -493,6 +661,15 @@ class base_module:
     def get_code_hash(self):
         return self.code_version_hash
 
+    def get_run_id(self):
+        return self.context.run_id
+
+    def get_last_provenance_path(self):
+        return self._last_provenance.get("manifest_path", "") if self._last_provenance else ""
+
+    def get_last_provenance_json(self, indent=2):
+        return json.dumps(self._last_provenance, indent=indent) if self._last_provenance else ""
+
     def get_progress(self):
         return {}
 
@@ -523,6 +700,7 @@ class base_module:
             if self._external_run_reserved or self.context.active:
                 raise RuntimeError(f"Module run is already active: {self.name()}")
             self.context.begin_run(self.name(), self.get_basename())
+            self._begin_provenance(True)
             self._external_run_reserved = True
             self.set_status(ModuleStatus.INITIALIZING)
 
@@ -551,6 +729,7 @@ class base_module:
             try:
                 if not self.context.active:
                     self.context.begin_run(self.name(), self.get_basename())
+                    self._begin_provenance(False)
                 self.init()
             except Exception as exc:
                 return self._fail(ModulePhase.INIT, exc)
@@ -562,8 +741,9 @@ class base_module:
                 if self.params.get("dry_run", False):
                     return self._finish(ModuleStatus.SKIPPED, ModulePhase.CHECK, "dry_run enabled")
 
-                snapshot_hash = self._compute_snapshot_hash()
-                if not self.params.get("force_run", False) and self._is_hash_cached(snapshot_hash):
+                self._snapshot_hash = self._compute_snapshot_hash()
+                if not self.params.get("force_run", False) and self._is_hash_cached(self._snapshot_hash):
+                    self._provenance_cache_source = self._find_cached_provenance(self._snapshot_hash)
                     log(log_level.INFO, self.m_name, "Matching snapshot is already cached.")
                     return self._finish(ModuleStatus.SKIPPED, ModulePhase.CHECK, "snapshot already cached")
             except Exception as exc:
@@ -590,13 +770,23 @@ class base_module:
                 return self._finish(ModuleStatus.INTERRUPTED, ModulePhase.FINALIZE, "Interrupted during finalization")
 
             try:
+                provenance_path = self._successful_provenance_path()
+                manifest = self._build_provenance(
+                    RunResult(ModuleStatus.DONE, ModulePhase.NONE, ""),
+                    self.context.outputs.staged_outputs(),
+                    provenance_path,
+                )
+                staged_manifest = self.stage_output(provenance_path)
+                _atomic_write_json(staged_manifest, manifest)
                 self.context.outputs.commit()
-                self._save_hash_cache(snapshot_hash)
+                self._pending_cache_provenance = provenance_path
+                self._save_hash_cache(self._snapshot_hash)
                 try:
                     self.context.complete_run()
                 except Exception:
-                    self._remove_hash_cache(snapshot_hash)
+                    self._remove_hash_cache(self._snapshot_hash)
                     raise
+                self._last_provenance = manifest
             except Exception as exc:
                 return self._fail(ModulePhase.COMMIT, exc)
             return self._finish(ModuleStatus.DONE, ModulePhase.NONE, "")
@@ -606,7 +796,120 @@ class base_module:
             self.context.rollback_run()
         self.set_status(status)
         self.last_run_result = RunResult(status, phase, message, exception)
+        self._finalize_provenance(self.last_run_result)
         return self.last_run_result
+
+    def _begin_provenance(self, isolated):
+        self._provenance_started_at = _utc_now()
+        self._provenance_isolated = bool(isolated)
+        self._provenance_inputs = []
+        self._provenance_cache_source = ""
+        self._snapshot_hash = ""
+        self._last_provenance = None
+        self._pending_cache_provenance = ""
+
+    def _successful_provenance_path(self):
+        return str(
+            self.context.output_directory
+            / ".cascade"
+            / "provenance"
+            / "modules"
+            / f"{self.context.run_id}.json"
+        )
+
+    def _terminal_provenance_path(self):
+        return str(
+            self.context.cache_directory
+            / "provenance"
+            / "modules"
+            / f"{self.context.run_id}.json"
+        )
+
+    def _build_provenance(self, result, staged_outputs, manifest_path):
+        outputs = []
+        for final, staged in staged_outputs:
+            try:
+                recorded_path = final.relative_to(self.context.output_directory).as_posix()
+            except ValueError:
+                recorded_path = str(final)
+            outputs.append(_capture_artifact(staged, recorded_path))
+        return {
+            "schema": "cascade.module-run",
+            "schema_version": 1,
+            "run_id": self.context.run_id,
+            "module": {
+                "instance": self.name(),
+                "name": self.get_basename(),
+                "metadata": self.get_metadata(),
+            },
+            "runtime": _runtime_provenance("python"),
+            "identity": {
+                "code_hash": self.code_version_hash,
+                "snapshot_hash": self._snapshot_hash,
+            },
+            "parameters": _sanitized_parameters(dict(self.params)),
+            "timing": {
+                "started_at": self._provenance_started_at or _utc_now(),
+                "finished_at": _utc_now(),
+            },
+            "directories": {
+                "output": str(self.context.output_directory),
+                "cache": str(self.context.cache_directory),
+            },
+            "execution": {
+                "isolated": self._provenance_isolated,
+                "cache_hit": (
+                    result.status is ModuleStatus.SKIPPED
+                    and result.message == "snapshot already cached"
+                ),
+                "dry_run": (
+                    result.status is ModuleStatus.SKIPPED
+                    and result.message == "dry_run enabled"
+                ),
+                "cache_source_manifest": self._provenance_cache_source or None,
+            },
+            "result": {
+                "status": result.status.value,
+                "phase": result.phase.value,
+                "message": result.message,
+            },
+            "artifacts": {
+                "inputs": [
+                    _capture_artifact(path, path)
+                    for path in self._provenance_inputs
+                ],
+                "outputs": outputs,
+            },
+            "manifest_path": str(Path(manifest_path).expanduser().resolve(strict=False)),
+        }
+
+    def _finalize_provenance(self, result):
+        try:
+            if (
+                self._last_provenance
+                and self._last_provenance.get("run_id") == self.context.run_id
+            ):
+                return
+            expected = (
+                self._successful_provenance_path()
+                if result.status is ModuleStatus.DONE
+                else self._terminal_provenance_path()
+            )
+            if os.path.isfile(expected):
+                with open(expected, "r", encoding="utf-8") as source:
+                    existing = json.load(source)
+                existing_result = existing.get("result", {})
+                if (
+                    existing_result.get("status") == result.status.value
+                    and existing_result.get("phase") == result.phase.value
+                ):
+                    self._last_provenance = existing
+                    return
+            manifest = self._build_provenance(result, [], expected)
+            _atomic_write_json(expected, manifest)
+            self._last_provenance = manifest
+        except Exception as error:
+            log(log_level.ERROR, self.m_name, f"Failed to record provenance: {error}")
 
     def _fail(self, phase, error):
         message = str(error) or error.__class__.__name__
@@ -651,12 +954,33 @@ class base_module:
     @staticmethod
     def _read_hashes(path):
         if not os.path.exists(path):
-            return set()
+            return {}
         with open(path, "r", encoding="utf-8") as cache:
             data = json.load(cache)
-        if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
-            raise RuntimeError(f"Python snapshot cache must contain a JSON string list: {path}")
-        return set(data)
+        if isinstance(data, list) and all(isinstance(item, str) for item in data):
+            return {item: "" for item in data}
+        if not isinstance(data, dict) or not isinstance(data.get("snapshots"), list):
+            raise RuntimeError(f"Python snapshot cache has an invalid schema: {path}")
+        if data.get("schema_version") != 1:
+            raise RuntimeError(
+                f"Python snapshot cache has an unsupported schema version: {path}"
+            )
+        result = {}
+        for entry in data["snapshots"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hash"), str):
+                raise RuntimeError(f"Python snapshot cache has an invalid entry: {path}")
+            result[entry["hash"]] = str(entry.get("provenance") or "")
+        return result
+
+    @staticmethod
+    def _write_hashes(hashes):
+        return {
+            "schema_version": 1,
+            "snapshots": [
+                {"hash": key, "provenance": hashes[key]}
+                for key in sorted(hashes)
+            ],
+        }
 
     def _is_hash_cached(self, snapshot_hash):
         with base_module._cache_lock:
@@ -669,6 +993,17 @@ class base_module:
                 finally:
                     fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
+    def _find_cached_provenance(self, snapshot_hash):
+        with base_module._cache_lock:
+            path = self._hash_cache_path()
+            lock_path = path + ".lock"
+            with open(lock_path, "a+", encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+                try:
+                    return self._read_hashes(path).get(snapshot_hash, "")
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
     def _save_hash_cache(self, snapshot_hash):
         with base_module._cache_lock:
             path = self._hash_cache_path()
@@ -676,14 +1011,11 @@ class base_module:
             with open(lock_path, "a+", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 existing = self._read_hashes(path)
-                if snapshot_hash in existing:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-                    return
-                existing.add(snapshot_hash)
+                existing[snapshot_hash] = self._pending_cache_provenance
                 descriptor, temporary = tempfile.mkstemp(prefix=".cascade-cache-", dir=os.path.dirname(path), text=True)
                 try:
                     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                        json.dump(sorted(existing), output, indent=2)
+                        json.dump(self._write_hashes(existing), output, indent=2)
                         output.flush()
                         os.fsync(output.fileno())
                     os.replace(temporary, path)
@@ -699,13 +1031,13 @@ class base_module:
             with open(lock_path, "a+", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 existing = self._read_hashes(path)
-                existing.discard(snapshot_hash)
+                existing.pop(snapshot_hash, None)
                 descriptor, temporary = tempfile.mkstemp(
                     prefix=".cascade-cache-", dir=os.path.dirname(path), text=True
                 )
                 try:
                     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                        json.dump(sorted(existing), output, indent=2)
+                        json.dump(self._write_hashes(existing), output, indent=2)
                         output.flush()
                         os.fsync(output.fileno())
                     os.replace(temporary, path)

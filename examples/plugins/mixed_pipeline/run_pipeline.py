@@ -42,6 +42,7 @@ def main():
         raise RuntimeError("DAG failed: " + "; ".join(failures))
 
     print(f"Outputs committed under {output_dir}")
+    print(f"Workflow provenance: {controller.last_workflow_provenance_path}")
 
 
 if __name__ == "__main__":

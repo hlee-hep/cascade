@@ -170,6 +170,16 @@ variables when isolation is required.
 objects by default. Pass `ResourceOwnership::Owned` only when the manager should
 delete them. Manager-created trees and histograms remain owned by the manager.
 
+## 9. Replace run-log consumers with provenance
+
+`save_run_log` and `save_run_log_all` now write workflow provenance JSON rather
+than a duplicate YAML summary. Prefer `SaveProvenance` / `save_provenance`, and
+read module details from the referenced `cascade.module-run` documents.
+
+Declare material inputs with `TrackInput` / `track_input`. Transactional outputs
+are discovered automatically. Legacy hash-only snapshot cache files are accepted
+and upgraded to schema 1 when written.
+
 ## Migration verification
 
 - [ ] Framework reports version 0.3.0 and ABI 1.
@@ -177,6 +187,7 @@ delete them. Manager-created trees and histograms remain owned by the manager.
 - [ ] Every analysis config has `schema_version: 1`.
 - [ ] Every protected output uses a staging helper.
 - [ ] Every external parameter is registered.
+- [ ] Material file inputs are explicitly tracked for provenance.
 - [ ] Callers inspect `RunResult`.
 - [ ] Signed manifests were regenerated after the rebuild.
 - [ ] `cascade doctor plugins` reports zero errors.

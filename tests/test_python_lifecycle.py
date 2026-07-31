@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import pathlib
 import signal
@@ -80,8 +81,24 @@ class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.old_home = pathlib.Path.home
+        self.old_output = os.environ.get("CASCADE_OUTPUT_DIR")
+        self.old_cache = os.environ.get("CASCADE_CACHE_DIR")
+        os.environ["CASCADE_OUTPUT_DIR"] = str(
+            pathlib.Path(self.tempdir.name) / "default-output"
+        )
+        os.environ["CASCADE_CACHE_DIR"] = str(
+            pathlib.Path(self.tempdir.name) / "default-cache"
+        )
 
     def tearDown(self):
+        if self.old_output is None:
+            os.environ.pop("CASCADE_OUTPUT_DIR", None)
+        else:
+            os.environ["CASCADE_OUTPUT_DIR"] = self.old_output
+        if self.old_cache is None:
+            os.environ.pop("CASCADE_CACHE_DIR", None)
+        else:
+            os.environ["CASCADE_CACHE_DIR"] = self.old_cache
         self.tempdir.cleanup()
 
     def test_success(self):
@@ -90,6 +107,13 @@ class LifecycleTests(unittest.TestCase):
         result = module.run()
         self.assertEqual(result.status, base.ModuleStatus.DONE)
         self.assertTrue(result.succeeded())
+        manifest_path = pathlib.Path(module.get_last_provenance_path())
+        self.assertTrue(manifest_path.is_file())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema"], "cascade.module-run")
+        self.assertEqual(manifest["runtime"]["language"], "python")
+        self.assertEqual(manifest["result"]["status"], "Done")
+        self.assertEqual(len(manifest["identity"]["snapshot_hash"]), 64)
 
     def test_each_failure_phase(self):
         for phase in (
@@ -132,6 +156,11 @@ class LifecycleTests(unittest.TestCase):
         success.set_cache_directory(cache_dir)
         self.assertTrue(success.run().succeeded())
         self.assertEqual((output_dir / "result.txt").read_text(encoding="utf-8"), "new")
+        manifest = json.loads(
+            pathlib.Path(success.get_last_provenance_path()).read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["artifacts"]["outputs"][0]["path"], "result.txt")
+        self.assertEqual(len(manifest["artifacts"]["outputs"][0]["sha256"]), 64)
 
         (output_dir / "result.txt").write_text("old", encoding="utf-8")
         failure = OutputModule(base.ModulePhase.EXECUTE)
@@ -179,9 +208,33 @@ class LifecycleTests(unittest.TestCase):
             module.set_cache_directory(cache_dir)
             return module
 
-        self.assertEqual(configured(cache_a).run().status, base.ModuleStatus.DONE)
+        first_a = configured(cache_a)
+        self.assertEqual(first_a.run().status, base.ModuleStatus.DONE)
+        source_manifest = first_a.get_last_provenance_path()
         self.assertEqual(configured(cache_b).run().status, base.ModuleStatus.DONE)
-        self.assertEqual(configured(cache_a).run().status, base.ModuleStatus.SKIPPED)
+        cached_a = configured(cache_a)
+        self.assertEqual(cached_a.run().status, base.ModuleStatus.SKIPPED)
+        cached_manifest = json.loads(
+            pathlib.Path(cached_a.get_last_provenance_path()).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            cached_manifest["execution"]["cache_source_manifest"], source_manifest
+        )
+
+    def test_sensitive_parameters_are_redacted(self):
+        module = Module()
+        module.register_param("api_token", "do-not-record")
+        module.set_output_directory(pathlib.Path(self.tempdir.name) / "output")
+        module.set_cache_directory(pathlib.Path(self.tempdir.name) / "cache")
+        self.assertTrue(module.run().succeeded())
+        manifest = json.loads(
+            pathlib.Path(module.get_last_provenance_path()).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(manifest["parameters"]["api_token"], "***")
 
     def test_prepared_external_result_is_adopted(self):
         module = Module()

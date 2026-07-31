@@ -16,7 +16,7 @@ flowchart TD
     B2 --> C1["AnalysisModuleRegistry<br/>include/AnalysisModuleRegistry.hh"]
     B2 --> C2["DAGManager<br/>include/DAGManager.hh"]
     B2 --> C3["Plugin Loader<br/>AMCM::LoadPlugins"]
-    B2 --> C4["Run logs (Python)<br/>py_amcm.save_run_log_all"]
+    B2 --> C4["Workflow provenance<br/>AMCM / py_amcm"]
     C2 --> C5["Node states<br/>Pending / Running / Succeeded / Failed / Blocked"]
     C2 --> C6["Generic data links<br/>mixed-language parameter transfer"]
 
@@ -33,6 +33,7 @@ flowchart TD
     F1 --> F4["Status updates + Logger"]
     F1 --> F5["ExecutionContext<br/>run ID + cancellation + roots"]
     F5 --> F6["OutputTransaction<br/>staging + journal + rollback"]
+    F6 --> F8["Module provenance<br/>artifact hashes + result"]
     B2 --> F7["Subprocess runner<br/>signal containment + result IPC"]
     F7 --> F1
 
@@ -91,5 +92,8 @@ flowchart TD
     %% C++ cache
     F3 --> M1["C++ cache dir<br/>~/.cache/cascade/snapshot_cache"]
 
-    %% Run logs
-    C4 --> N1["Run logs YAML<br/>~/.cache/cascade/run_logs"]
+    %% Provenance
+    F3 --> F8
+    C2 --> C4
+    F8 --> C4
+    C4 --> N1["Workflow manifests<br/>cache/provenance/workflows"]

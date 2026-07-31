@@ -56,6 +56,13 @@ struct DAGRunResult
     bool Failed() const;
 };
 
+struct DAGDataLinkInfo
+{
+    std::string FromNode;
+    std::string ToNode;
+    std::string Label;
+};
+
 class DAGManager
 {
   public:
@@ -79,6 +86,8 @@ class DAGManager
     void DumpDOT(const std::string &filename) const;
     std::vector<std::string> GetNodeNames() const;
     std::vector<DAGNodeResult> GetNodeResults() const;
+    std::map<std::string, std::vector<std::string>> GetDependencies() const;
+    std::vector<DAGDataLinkInfo> GetDataLinks() const;
     bool IsExecuting() const;
 
   private:

@@ -66,6 +66,8 @@ class _FakeController:
         self.nodes = []
         self.links = []
         self.fail_fast = None
+        self.provenance = None
+        self.last_workflow_provenance_path = ""
         self.dag = _FakeDag()
 
     def register_module(self, module, name):
@@ -79,8 +81,10 @@ class _FakeController:
     def link_dag_parameter(self, source, source_param, target, target_param):
         self.links.append((source, source_param, target, target_param))
 
-    def run_dag(self, fail_fast=True):
+    def run_dag(self, fail_fast=True, provenance_path=None):
         self.fail_fast = fail_fast
+        self.provenance = provenance_path
+        self.last_workflow_provenance_path = provenance_path or ""
         nodes = [
             types.SimpleNamespace(
                 name=name,
@@ -144,6 +148,7 @@ class CliTests(unittest.TestCase):
             "cache_directory": "cache",
             "fail_fast": False,
             "dot": "output/workflow.dot",
+            "provenance": "output/workflow-provenance.json",
             "modules": [
                 {
                     "module": "ProducerModule",
@@ -186,6 +191,10 @@ class CliTests(unittest.TestCase):
                 [("producer", "value", "consumer", "input_value")],
             )
             self.assertFalse(controller.fail_fast)
+            self.assertEqual(
+                controller.provenance,
+                str(pathlib.Path(directory) / "output" / "workflow-provenance.json"),
+            )
             self.assertEqual(
                 controller.handles["producer"][1].params,
                 {"force_run": True, "value": 7},

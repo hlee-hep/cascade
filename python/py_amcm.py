@@ -1,6 +1,7 @@
 from cascade.pymodule import base_module
 from cascade._cascade import AMCM, IAnalysisModule
 from cascade import init_interrupt, is_interrupted, log, log_level
+import cascade
 import ast
 import hashlib
 import importlib
@@ -15,11 +16,42 @@ import types
 import re
 import signal
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 _PYPLUGIN_CACHE = None
 _PYPLUGIN_CACHE_KEY = None
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _atomic_write_json(path, document):
+    path = os.path.abspath(os.path.expanduser(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(temporary, "w", encoding="utf-8") as output:
+            json.dump(document, output, indent=2, sort_keys=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return path
+
+
+def _status_text(value):
+    text = getattr(value, "value", None)
+    if text is not None:
+        return str(text)
+    text = getattr(value, "name", str(value).rsplit(".", 1)[-1])
+    if text == "None_":
+        return "None"
+    return text.title() if text.isupper() else text
 
 
 def _sha256_file(path):
@@ -454,6 +486,7 @@ class py_amcm:
         self.modules = {}
         self.executed_modules = []
         self._module_name_counters = {}
+        self.last_workflow_provenance_path = ""
         init_interrupt()
 
     def _register_python_plugin(self, class_name, instance_name):
@@ -524,22 +557,18 @@ class py_amcm:
         else:
             raise TypeError(f"Unsupported argument type: {type(name_or_mod)}")
         result = handle.run_isolated() if isolated else handle.run()
-        phase = getattr(result.phase, "name", str(result.phase).rsplit(".", 1)[-1])
-        status = getattr(result.status, "name", str(result.status).rsplit(".", 1)[-1])
-        if status.isupper():
-            status = status.title()
-        if phase == "None_":
-            phase = "None"
-        elif phase.isupper():
-            phase = phase.title()
+        phase = _status_text(result.phase)
+        status = _status_text(result.status)
+        manifest_path = handle.get_last_provenance_path()
         self.executed_modules.append({
+            "run_id": handle.get_run_id(),
+            "manifest_path": manifest_path,
             "name": handle.name(),
             "module": handle.get_basename(),
-            "codehash": handle.get_code_hash(),
+            "language": handle.language,
             "status": status,
             "phase": phase,
             "message": result.message,
-            "params": copy.deepcopy(handle.get_parameters()),
         })
         return result
 
@@ -687,11 +716,16 @@ class py_amcm:
         label = f"{from_key} -> {to_key}"
         self.ctrl.get_dag().add_data_link(from_node, to_node, label, transfer)
 
-    def run_dag(self, fail_fast=True):
-        return self.ctrl.run_dag(fail_fast)
+    def run_dag(self, fail_fast=True, provenance_path=None):
+        self.executed_modules.clear()
+        result = self.ctrl.run_dag(fail_fast)
+        self.last_workflow_provenance_path = self.save_provenance(
+            provenance_path, fail_fast=fail_fast, dag_result=result
+        )
+        return result
 
     def save_run_log(self):
-        self.ctrl.save_run_log()
+        return self.save_provenance()
 
     def run_group(self, group, fail_fast=True):
         if isinstance(group, (list, tuple)):
@@ -705,24 +739,139 @@ class py_amcm:
         else:
             raise TypeError(f"Unsupported argument type: {type(group)}")
 
+    def save_provenance(self, path=None, fail_fast=True, dag_result=None):
+        workflow_id = (
+            f"workflow-{os.getpid()}-{time.time_ns()}-"
+            f"{hashlib.sha256(os.urandom(16)).hexdigest()[:8]}"
+        )
+        manifests = []
+        latest_by_instance = {}
+        for entry in self.executed_modules:
+            manifest_path = entry.get("manifest_path", "")
+            if not manifest_path or not os.path.isfile(manifest_path):
+                continue
+            with open(manifest_path, "r", encoding="utf-8") as source:
+                manifest = json.load(source)
+            if (
+                manifest.get("schema") != "cascade.module-run"
+                or manifest.get("schema_version") != 1
+            ):
+                raise RuntimeError(
+                    f"Unsupported module provenance manifest: {manifest_path}"
+                )
+            manifests.append(manifest)
+            latest_by_instance[entry["name"]] = manifest
+
+        dag = self.ctrl.get_dag()
+        dag_nodes = list(dag_result.nodes) if dag_result is not None else list(dag.get_node_results())
+        dependencies = dag.get_dependencies()
+        nodes = []
+        if dag_nodes:
+            for result in dag_nodes:
+                module_manifest = latest_by_instance.get(result.name)
+                nodes.append({
+                    "name": result.name,
+                    "status": _status_text(result.status),
+                    "message": result.message,
+                    "dependencies": list(dependencies.get(result.name, [])),
+                    "module_run_id": (
+                        module_manifest.get("run_id") if module_manifest else None
+                    ),
+                    "module_manifest": (
+                        module_manifest.get("manifest_path") if module_manifest else None
+                    ),
+                })
+        else:
+            for entry in self.executed_modules:
+                nodes.append({
+                    "name": entry["name"],
+                    "status": entry["status"],
+                    "message": entry["message"],
+                    "dependencies": [],
+                    "module_run_id": entry["run_id"],
+                    "module_manifest": entry["manifest_path"] or None,
+                })
+
+        data_links = [
+            {
+                "from": link.from_node,
+                "to": link.to_node,
+                "label": link.label,
+            }
+            for link in dag.get_data_links()
+        ]
+        starts = [
+            manifest.get("timing", {}).get("started_at", "")
+            for manifest in manifests
+            if manifest.get("timing", {}).get("started_at")
+        ]
+        finishes = [
+            manifest.get("timing", {}).get("finished_at", "")
+            for manifest in manifests
+            if manifest.get("timing", {}).get("finished_at")
+        ]
+        languages = {
+            manifest.get("runtime", {}).get("language", "")
+            for manifest in manifests
+            if manifest.get("runtime", {}).get("language")
+        }
+        language = "mixed" if len(languages) > 1 else next(iter(languages), "python")
+        abi_tag = getattr(cascade, "get_abi_tag", lambda: "")()
+        root_version = ""
+        for field in abi_tag.split(";"):
+            if field.startswith("root="):
+                root_version = field.partition("=")[2]
+                break
+        succeeded = all(node["status"] in {"Done", "Skipped", "Succeeded"} for node in nodes)
+        target = path
+        if not target:
+            cache_root = os.getenv(
+                "CASCADE_CACHE_DIR",
+                os.path.join(os.path.expanduser("~"), ".cache", "cascade"),
+            )
+            target = os.path.join(
+                cache_root, "provenance", "workflows", f"{workflow_id}.json"
+            )
+        target = os.path.abspath(os.path.expanduser(target))
+        document = {
+            "schema": "cascade.workflow-run",
+            "schema_version": 1,
+            "run_id": workflow_id,
+            "timing": {
+                "started_at": min(starts) if starts else _utc_now(),
+                "finished_at": max(finishes) if finishes else _utc_now(),
+            },
+            "runtime": {
+                "cascade_version": getattr(cascade, "__version__", ""),
+                "plugin_abi_version": int(getattr(cascade, "__abi_version__", 1)),
+                "plugin_abi_tag": abi_tag,
+                "root_version": root_version,
+                "language": language,
+            },
+            "execution": {
+                "fail_fast": bool(fail_fast),
+                "succeeded": succeeded,
+            },
+            "dag": {
+                "nodes": nodes,
+                "data_links": data_links,
+            },
+            "module_manifests": [
+                manifest.get("manifest_path", "")
+                for manifest in manifests
+                if manifest.get("manifest_path")
+            ],
+            "manifest_path": target,
+        }
+        saved = _atomic_write_json(target, document)
+        self.last_workflow_provenance_path = saved
+        log(log_level.INFO, "CONTROL", f"Workflow provenance '{saved}' is saved.")
+        return saved
+
     def save_run_log_all(self, log_dir=None):
-        now = datetime.now()
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
-        log_data = {"modules": []}
-
-        filename_suffix = []
-        for i, entry in enumerate(self.executed_modules):
-            log_data["modules"].append(copy.deepcopy(entry))
-            if i < 5:
-                filename_suffix.append(entry["name"])
-
-        suffix = "_".join(re.sub(r"[^A-Za-z0-9_-]", "_", name) or "unnamed" for name in filename_suffix)
-        filename = f"control_log_{timestamp}_{suffix}.yaml"
-        default_log_dir = os.path.join(os.path.expanduser("~"), ".cache", "cascade", "run_logs")
-        log_dir = log_dir or os.getenv("CASCADE_RUN_LOG_DIR", default_log_dir)
-        os.makedirs(log_dir, exist_ok=True)
-
-        with open(os.path.join(log_dir, filename), "w") as f:
-            yaml.safe_dump(log_data, f, sort_keys=False)
-
-        log(log_level.INFO, "CONTROL", f"Run log '{filename}' is saved in {log_dir}.")
+        if log_dir:
+            workflow_id = f"workflow-{os.getpid()}-{time.time_ns()}"
+            return self.save_provenance(
+                os.path.join(log_dir, f"{workflow_id}.json")
+            )
+        return self.save_provenance()
