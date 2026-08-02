@@ -15,7 +15,7 @@ This is the primary end-to-end example. It contains:
 
 It demonstrates:
 
-- C++ and Python modules in one signed distribution;
+- C++ and Python modules in one verified package;
 - generated code-version hashes;
 - transactional multi-file output;
 - a two-branch DAG;
@@ -27,13 +27,7 @@ Build/install:
 
 ```bash
 cd examples/plugins/mixed_pipeline
-openssl genpkey -algorithm Ed25519 -out plugin_private.pem
-openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
-
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
-CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
-scons install
+CASCADE_PLUGIN_PACKAGE=mixed_pipeline scons install
 ```
 
 Run:

@@ -1,8 +1,8 @@
 # Writing analysis modules
 
 This guide describes the contract shared by C++ `IAnalysisModule` and Python
-`base_module`. Packaging and signing are covered separately in
-[Plugin development and distribution](plugins.md).
+`base_module`. Packaging, verification, and optional signing are covered
+separately in [Plugin development and distribution](plugins.md).
 
 ## Lifecycle responsibilities
 

@@ -2,6 +2,7 @@
 
 #include "ModuleMetadata.hh"
 #include "ModuleRun.hh"
+#include "PluginTrust.hh"
 
 #include <cstdint>
 #include <filesystem>
@@ -36,6 +37,7 @@ struct ModuleRunManifest
     std::string ModuleName;
     ModuleMetadata Metadata;
     RuntimeProvenance Runtime;
+    std::optional<PluginOrigin> Plugin;
     std::string CodeHash;
     std::string SnapshotHash;
     std::string ParametersJson;

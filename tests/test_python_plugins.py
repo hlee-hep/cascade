@@ -28,8 +28,9 @@ def _load_controller():
     sys.modules["cascade.pymodule"] = pymodule
 
     extension = types.ModuleType("cascade._cascade")
-    extension.AMCM = type("AMCM", (), {})
+    extension.AMCM = type("AMCM", (), {"__init__": lambda self, *args, **kwargs: None})
     extension.IAnalysisModule = type("IAnalysisModule", (), {})
+    extension.PluginTrustPolicy = types.SimpleNamespace(Verified="verified", RequireSigned="require-signed")
     sys.modules["cascade._cascade"] = extension
 
     path = pathlib.Path(__file__).parents[1] / "python" / "py_amcm.py"
@@ -117,6 +118,7 @@ class PluginPackageTests(unittest.TestCase):
                 controller._PYPLUGIN_CACHE_KEY = None
                 index = controller._load_python_plugin_index()
                 self.assertEqual(set(index), {"FirstModule", "SecondModule"})
+                self.assertTrue(all(info["origin"]["trust"] == "Signed" for info in index.values()))
                 first = controller._import_python_plugin(index["FirstModule"])
                 second = controller._import_python_plugin(index["SecondModule"])
                 self.assertTrue(hasattr(first, "FirstModule"))
@@ -129,6 +131,59 @@ class PluginPackageTests(unittest.TestCase):
                     set(refreshed),
                     {"FirstModule", "SecondModule", "ThirdModule"},
                 )
+            finally:
+                if previous_root is None:
+                    os.environ.pop("CASCADE_PYPLUGIN_DIR", None)
+                else:
+                    os.environ["CASCADE_PYPLUGIN_DIR"] = previous_root
+                if previous_trust is None:
+                    os.environ.pop("CASCADE_PLUGIN_TRUST_STORE", None)
+                else:
+                    os.environ["CASCADE_PLUGIN_TRUST_STORE"] = previous_trust
+
+    def test_unsigned_package_is_verified_but_rejected_by_signed_policy(self):
+        controller = _load_controller()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            plugin_root = root / "pyplugin"
+            package = plugin_root / "local-package"
+            package.mkdir(parents=True)
+            source = package / "local_module.py"
+            source.write_text(
+                "from cascade.pymodule import base_module\n"
+                "class LocalModule(base_module):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            manifest = package / "plugin_manifest.json"
+            manifest.write_text(
+                json.dumps({
+                    "schema": 2,
+                    "package": "local-package",
+                    "modules": [{
+                        "name": "local_module",
+                        "language": "python",
+                        "path": source.name,
+                        "sha256": _sha256(source),
+                        "classes": ["LocalModule"],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            previous_root = os.environ.get("CASCADE_PYPLUGIN_DIR")
+            previous_trust = os.environ.get("CASCADE_PLUGIN_TRUST_STORE")
+            try:
+                os.environ["CASCADE_PYPLUGIN_DIR"] = str(plugin_root)
+                os.environ["CASCADE_PLUGIN_TRUST_STORE"] = str(root / "missing-trust-store")
+                controller._PYPLUGIN_CACHE = None
+                controller._PYPLUGIN_CACHE_KEY = None
+                verified = controller._load_python_plugin_index()
+                self.assertEqual(set(verified), {"LocalModule"})
+                self.assertEqual(verified["LocalModule"]["origin"]["trust"], "Verified")
+
+                strict = controller._load_python_plugin_index(require_signed=True)
+                self.assertEqual(strict, {})
             finally:
                 if previous_root is None:
                     os.environ.pop("CASCADE_PYPLUGIN_DIR", None)

@@ -89,7 +89,7 @@ are independent of plugin ABI 1.
 
 ## Plugin rebuild rule
 
-Rebuild and re-sign when:
+Rebuild and regenerate the manifest when:
 
 - `cascade.__abi_version__` changes;
 - `cascade.__abi_tag__` changes;
@@ -97,4 +97,6 @@ Rebuild and re-sign when:
 - linked ROOT/toolchain changes;
 - any installed plugin file changes.
 
-Use `cascade doctor plugins` as the deployment gate.
+Re-sign when the package is distributed under the signed policy. Use
+`cascade doctor plugins` as the normal gate and
+`cascade --require-signed doctor plugins` as the signed-distribution gate.

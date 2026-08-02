@@ -1,4 +1,5 @@
 #include "Provenance.hh"
+#include "AnalysisModuleRegistry.hh"
 
 #include "PluginABI.hh"
 #include "Version.hh"
@@ -223,6 +224,31 @@ json RuntimeJson(const RuntimeProvenance &runtime)
             {"language", runtime.Language}};
 }
 
+json PluginOriginJson(const std::optional<PluginOrigin> &origin)
+{
+    if (!origin) return nullptr;
+    return {{"package", origin->Package},
+            {"trust", ToString(origin->Trust)},
+            {"manifest_path", origin->ManifestPath},
+            {"manifest_sha256", origin->ManifestSha256},
+            {"artifact_sha256", origin->ArtifactSha256},
+            {"signer_fingerprint", origin->SignerFingerprint.empty() ? json(nullptr) : json(origin->SignerFingerprint)}};
+}
+
+std::optional<PluginOrigin> PluginOriginFromJson(const json &value)
+{
+    if (!value.is_object()) return std::nullopt;
+    PluginOrigin origin;
+    origin.Package = value.value("package", "");
+    origin.ManifestPath = value.value("manifest_path", "");
+    origin.ManifestSha256 = value.value("manifest_sha256", "");
+    origin.ArtifactSha256 = value.value("artifact_sha256", "");
+    if (value.contains("signer_fingerprint") && value["signer_fingerprint"].is_string())
+        origin.SignerFingerprint = value["signer_fingerprint"].get<std::string>();
+    origin.Trust = value.value("trust", "Verified") == "Signed" ? PluginTrustStatus::Signed : PluginTrustStatus::Verified;
+    return origin;
+}
+
 RuntimeProvenance RuntimeFromJson(const json &value)
 {
     RuntimeProvenance runtime;
@@ -295,6 +321,7 @@ std::string ModuleRunManifest::ToJSON(int indent) const
         {"run_id", RunId},
         {"module", {{"instance", InstanceName}, {"name", ModuleName}, {"metadata", metadata}}},
         {"runtime", RuntimeJson(Runtime)},
+        {"plugin", PluginOriginJson(Plugin)},
         {"identity", {{"code_hash", CodeHash}, {"snapshot_hash", SnapshotHash}}},
         {"parameters", SanitizedParameters(ParametersJson)},
         {"timing", {{"started_at", StartedAt}, {"finished_at", FinishedAt}}},
@@ -381,6 +408,7 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     manifest.ModuleName = active.ModuleName.empty() ? metadata.Name : active.ModuleName;
     manifest.Metadata = metadata;
     manifest.Runtime = Runtime(active.Language.empty() ? "cpp" : active.Language);
+    manifest.Plugin = AnalysisModuleRegistry::Get().GetPluginOrigin(manifest.ModuleName);
     manifest.CodeHash = codeHash;
     manifest.SnapshotHash = snapshotHash;
     manifest.ParametersJson = parametersJson;
@@ -436,6 +464,7 @@ ModuleRunManifest ProvenanceRecorder::LoadModuleRun(const fs::path &path)
     manifest.Metadata.Summary = metadata.value("summary", "");
     manifest.Metadata.Tags = metadata.value("tags", std::vector<std::string>{});
     manifest.Runtime = RuntimeFromJson(value.value("runtime", json::object()));
+    manifest.Plugin = PluginOriginFromJson(value.value("plugin", json(nullptr)));
     const auto identity = value.value("identity", json::object());
     manifest.CodeHash = identity.value("code_hash", "");
     manifest.SnapshotHash = identity.value("snapshot_hash", "");

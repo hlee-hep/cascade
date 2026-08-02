@@ -1,5 +1,5 @@
 from cascade.pymodule import base_module
-from cascade._cascade import AMCM, IAnalysisModule
+from cascade._cascade import AMCM, IAnalysisModule, PluginTrustPolicy
 from cascade import init_interrupt, is_interrupted, log, log_level
 import cascade
 import ast
@@ -94,10 +94,11 @@ def _default_trust_store(plugin_root):
     return os.path.join(prefix, "share", "cascade", "trusted_keys")
 
 
-def _trusted_key_paths(plugin_root):
+def _trusted_key_paths(plugin_root, warn_if_missing=False):
     trust_store = _default_trust_store(plugin_root)
     if not os.path.isdir(trust_store):
-        log(log_level.WARN, "PLUGIN", f"Plugin trust store not found: {trust_store}")
+        if warn_if_missing:
+            log(log_level.WARN, "PLUGIN", f"Plugin trust store not found: {trust_store}")
         return []
     return [
         os.path.join(trust_store, name)
@@ -186,7 +187,7 @@ def _classes_from_file(path):
     return classes
 
 
-def _plugin_cache_key(plugin_root):
+def _plugin_cache_key(plugin_root, require_signed=False):
     trust_store = _default_trust_store(plugin_root)
     tracked = []
     for root, _, files in os.walk(plugin_root) if os.path.isdir(plugin_root) else []:
@@ -208,13 +209,13 @@ def _plugin_cache_key(plugin_root):
                     except FileNotFoundError:
                         continue
                     tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
-    return os.path.realpath(plugin_root), os.path.realpath(trust_store), tuple(sorted(tracked))
+    return os.path.realpath(plugin_root), os.path.realpath(trust_store), bool(require_signed), tuple(sorted(tracked))
 
 
-def _load_python_plugin_index():
+def _load_python_plugin_index(require_signed=False):
     global _PYPLUGIN_CACHE, _PYPLUGIN_CACHE_KEY
     plugin_root = _default_python_plugin_root()
-    cache_key = _plugin_cache_key(plugin_root)
+    cache_key = _plugin_cache_key(plugin_root, require_signed)
     if _PYPLUGIN_CACHE is not None and _PYPLUGIN_CACHE_KEY == cache_key:
         return _PYPLUGIN_CACHE
 
@@ -223,11 +224,7 @@ def _load_python_plugin_index():
         _PYPLUGIN_CACHE = index
         _PYPLUGIN_CACHE_KEY = cache_key
         return index
-    trusted_keys = _trusted_key_paths(plugin_root)
-    if not trusted_keys:
-        _PYPLUGIN_CACHE = index
-        _PYPLUGIN_CACHE_KEY = cache_key
-        return index
+    trusted_keys = _trusted_key_paths(plugin_root, warn_if_missing=require_signed)
 
     package_dirs = [
         os.path.join(plugin_root, name)
@@ -238,8 +235,11 @@ def _load_python_plugin_index():
         manifest_path = os.path.join(root, "plugin_manifest.json")
         try:
             trusted_key = _verify_with_trusted_key(manifest_path, trusted_keys)
-            if trusted_key is None:
-                raise RuntimeError(f"Plugin manifest is not signed by a trusted key: {manifest_path}")
+            signature_exists = os.path.isfile(manifest_path + ".sig")
+            if require_signed and trusted_key is None:
+                raise RuntimeError(f"Plugin package requires a trusted signature: {manifest_path}")
+            if signature_exists and trusted_key is None:
+                log(log_level.WARN, "PLUGIN", f"Plugin signature is not trusted; loading as verified: {manifest_path}")
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
             if manifest.get("schema") != 2:
@@ -286,6 +286,14 @@ def _load_python_plugin_index():
                     "manifest": manifest_path,
                     "trusted_key": trusted_key,
                     "sha256": entry.get("sha256", ""),
+                    "origin": {
+                        "package": os.path.basename(root),
+                        "trust": "Signed" if trusted_key else "Verified",
+                        "manifest_path": os.path.realpath(manifest_path),
+                        "manifest_sha256": _sha256_file(manifest_path),
+                        "artifact_sha256": entry.get("sha256", ""),
+                        "signer_fingerprint": _sha256_file(trusted_key) if trusted_key else None,
+                    },
                 }
 
     _PYPLUGIN_CACHE = index
@@ -481,8 +489,10 @@ class _PythonModuleHandle:
 
 
 class py_amcm:
-    def __init__(self):
-        self.ctrl = AMCM()
+    def __init__(self, require_signed=False):
+        self.require_signed = bool(require_signed)
+        policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
+        self.ctrl = AMCM(policy)
         self.modules = {}
         self.executed_modules = []
         self._module_name_counters = {}
@@ -490,7 +500,7 @@ class py_amcm:
         init_interrupt()
 
     def _register_python_plugin(self, class_name, instance_name):
-        index = _load_python_plugin_index()
+        index = _load_python_plugin_index(self.require_signed)
         info = index.get(class_name)
         if not info:
             raise RuntimeError(f"Module not found: {class_name}")
@@ -500,6 +510,7 @@ class py_amcm:
         if not isinstance(module_obj, base_module):
             raise TypeError("Module must inherit from cascade.pymodule.base_module")
         module_obj.set_name(instance_name)
+        module_obj.set_plugin_origin(info["origin"])
         handle = _PythonModuleHandle(module_obj)
         self.modules[instance_name] = handle
         log(log_level.INFO, "CONTROL", f"Module {module_obj.get_basename()} is registered as {instance_name}")
@@ -519,7 +530,7 @@ class py_amcm:
         if instance_name in self.modules:
             raise RuntimeError(f"Module instance already registered: {instance_name}")
         cpp_modules = set(self.ctrl.get_list_available_modules())
-        py_modules = set(_load_python_plugin_index().keys())
+        py_modules = set(_load_python_plugin_index(self.require_signed).keys())
         if class_name in cpp_modules and class_name in py_modules:
             raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
         if class_name in cpp_modules:
@@ -536,11 +547,12 @@ class py_amcm:
             raise TypeError("Module must inherit from cascade.pymodule.base_module")
         modname = module_obj.__class__.__module__
         if not modname.startswith("cascade.pyplugin."):
-            raise RuntimeError(f"Python module {modname} is not a signed cascade.pyplugin module; refusing to register it.")
-        info = _load_python_plugin_index().get(module_obj.__class__.__name__)
+            raise RuntimeError(f"Python module {modname} is not a verified cascade.pyplugin module; refusing to register it.")
+        info = _load_python_plugin_index(self.require_signed).get(module_obj.__class__.__name__)
         if not info or os.path.realpath(info["path"]) != os.path.realpath(sys.modules[modname].__file__):
             raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
         module_obj.set_name(name)
+        module_obj.set_plugin_origin(info["origin"])
         handle = _PythonModuleHandle(module_obj)
         self.modules[name] = handle
         return handle
@@ -553,7 +565,7 @@ class py_amcm:
         elif isinstance(name_or_mod, (_CppModuleHandle, _PythonModuleHandle)):
             handle = name_or_mod
         elif isinstance(name_or_mod, base_module):
-            raise RuntimeError("Direct Python module execution is disabled; register a signed cascade.pyplugin module by name.")
+            raise RuntimeError("Direct Python module execution is disabled; register a verified cascade.pyplugin module by name.")
         else:
             raise TypeError(f"Unsupported argument type: {type(name_or_mod)}")
         result = handle.run_isolated() if isolated else handle.run()
@@ -577,7 +589,7 @@ class py_amcm:
 
     def get_list_available_modules(self):
         cpp_modules = set(self.ctrl.get_list_available_modules())
-        py_modules = set(_load_python_plugin_index().keys())
+        py_modules = set(_load_python_plugin_index(self.require_signed).keys())
         duplicates = sorted(cpp_modules & py_modules)
         if duplicates:
             raise RuntimeError(f"Duplicate module names across C++ and Python plugins: {duplicates}")
@@ -597,7 +609,7 @@ class py_amcm:
             return metadata
 
         cpp_names = {entry["name"] for entry in metadata}
-        for class_name, info in _load_python_plugin_index().items():
+        for class_name, info in _load_python_plugin_index(self.require_signed).items():
             if class_name in cpp_names:
                 raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
             try:

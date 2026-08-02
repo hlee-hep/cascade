@@ -97,7 +97,8 @@ cascade doctor plugins
 
 ### Trust store missing or empty
 
-Install the publisher public key in:
+This affects only commands using `--require-signed`. Install the publisher public
+key in:
 
 ```text
 ${CASCADE_PLUGIN_TRUST_STORE}
@@ -105,13 +106,15 @@ ${CASCADE_PLUGIN_TRUST_STORE}
 
 Keys inside a plugin package do not grant trust.
 
-### Signed manifest missing
+### Plugin manifest missing
 
-`scons` only builds. A verified installation requires:
+`scons` only builds. Install the package to generate its verified manifest:
 
 ```bash
-CASCADE_PLUGIN_PRIVATE_KEY=/secure/path/private.pem scons install
+scons install
 ```
+
+Add `CASCADE_PLUGIN_PRIVATE_KEY` only for a signed distribution.
 
 ### Signature invalid
 
@@ -145,7 +148,7 @@ Check:
 
 - file name ends in `module.py`;
 - class directly inherits `base_module`;
-- class is listed in the signed manifest;
+- class is listed in the verified manifest;
 - file hash matches;
 - class name does not collide with a C++ or Python module.
 

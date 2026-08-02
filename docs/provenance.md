@@ -10,6 +10,8 @@ Every terminal module run produces a `cascade.module-run` document containing:
 
 - run ID, module instance, module metadata, and implementation language;
 - Cascade version, plugin ABI version/tag, and ROOT version when available;
+- plugin package, verification status, manifest/artifact hashes, and signer
+  fingerprint when available;
 - code hash, snapshot hash, and resolved parameters;
 - start/finish timestamps and configured output/cache roots;
 - status, failed phase, message, isolation, dry-run, and cache-hit state;
@@ -101,6 +103,26 @@ cascade dag run workflow.yaml --provenance output/workflow-provenance.json
 
 `cascade module run --json` includes `run_id` and `provenance`; `cascade dag run
 --json` includes the workflow `provenance` path.
+
+## Time-machine commands
+
+Provenance manifests are also the storage layer for the CLI run-history tools:
+
+```bash
+cascade history --root output
+cascade inspect RUN_ID --root output
+cascade diff EARLIER_RUN LATER_RUN --root output
+cascade replay MODULE_RUN --root output
+```
+
+History and inspection support module and workflow manifests. Diff ignores
+volatile run identity and timing fields so its output focuses on meaningful
+configuration, runtime, result, DAG, and artifact changes. Replay restores one
+module run through the normal verified-plugin controller; it does not bypass
+plugin verification or the standard execution lifecycle.
+
+See [Command-line interface](cli.md#inspect-and-replay-past-runs) for discovery
+roots, overrides, JSON output, and redacted-parameter behavior.
 
 ## Cache linkage
 

@@ -32,28 +32,30 @@ export PYTHONPATH="${CASCADE_PREFIX}/lib:${PYTHONPATH}"
 export LD_LIBRARY_PATH="${CASCADE_PREFIX}/lib:${LD_LIBRARY_PATH}"
 ```
 
-## Development key
+## Build and install
+
+```bash
+CASCADE_PLUGIN_PACKAGE=mixed_pipeline scons install
+```
+
+The source-tree `SConstruct` delegates to Cascade's plugin template. It replaces
+`@BASENAME@` and `@VERSION_HASH@`, compiles C++ modules, installs Python sources,
+and generates separate verified manifests.
+
+To test a signed distribution instead:
 
 ```bash
 openssl genpkey -algorithm Ed25519 -out plugin_private.pem
 openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
-```
 
-The local `.gitignore` excludes these development keys. Use an external protected
-key for real distribution.
-
-## Build and install
-
-```bash
 CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
 CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
 CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
 scons install
 ```
 
-The source-tree `SConstruct` delegates to Cascade's plugin template. It replaces
-`@BASENAME@` and `@VERSION_HASH@`, compiles C++ modules, installs Python sources,
-generates separate manifests, and signs both.
+The local `.gitignore` excludes these development keys. Use an external protected
+key for real distribution.
 
 Verify:
 
@@ -61,6 +63,8 @@ Verify:
 cascade doctor plugins
 cascade module list
 ```
+
+Use `cascade --require-signed doctor plugins` for the signed installation.
 
 ## Run
 

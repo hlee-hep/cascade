@@ -1,7 +1,8 @@
 # Quickstart
 
 This walkthrough builds Cascade, installs the included mixed C++/Python plugin,
-verifies its signature and ABI, and runs a two-branch DAG.
+verifies its manifest, hashes, and ABI, and runs a two-branch DAG. No signing key
+is required for local development.
 
 ## 1. Check dependencies
 
@@ -57,37 +58,26 @@ Expected version/ABI for this tree:
 0.3.0 1
 ```
 
-## 4. Create a development signing key
+## 4. Install the example plugin
 
 ```bash
 cd examples/plugins/mixed_pipeline
-openssl genpkey -algorithm Ed25519 -out plugin_private.pem
-openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
-```
-
-These files are for local development. Do not commit a production private key.
-
-## 5. Install the example plugin
-
-```bash
 CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
-CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
 scons install
 ```
 
 This installs two C++ libraries and two Python modules into separate package
-roots, then signs a manifest in each root.
+roots, then generates a verified manifest in each root.
 
-## 6. Verify plugin installation
+## 5. Verify plugin installation
 
 ```bash
 cascade doctor plugins
 ```
 
-A healthy result reports:
+A healthy local result reports:
 
-- valid manifest signatures;
+- `VERIFIED` package status;
 - matching SHA-256 hashes;
 - `RootEventModule` and `TextProducerModule` at ABI 1;
 - `RootSummaryModule` and `TextTransformModule` in the Python package;
@@ -96,7 +86,7 @@ A healthy result reports:
 If the command reports an ABI tag mismatch, rebuild both Cascade and the plugin
 with the same compiler, ROOT installation, standard library, and build mode.
 
-## 7. Run the mixed DAG
+## 6. Run the mixed DAG
 
 ```bash
 cascade module list
@@ -131,7 +121,7 @@ python3 run_pipeline.py --output example-output
 `RootSummaryModule` uses PyROOT when it is installed. Otherwise it consumes the
 portable manifest committed alongside the ROOT file.
 
-## 8. Run with crash isolation
+## 7. Run with crash isolation
 
 ```bash
 python3 run_pipeline.py --isolated --output isolated-output
@@ -141,7 +131,7 @@ Every module now runs in a subprocess. The output should be equivalent. The pare
 controller survives fatal child signals and restores pre-existing files if a child
 dies after beginning output promotion.
 
-## 9. Inspect the API
+## 8. Inspect the API
 
 ```python
 from cascade import py_amcm
@@ -160,6 +150,26 @@ print(result.status, result.phase, result.message)
 ```
 
 Remove `force_run=True` to exercise normal snapshot-cache skipping.
+
+## 9. Optional signed distribution
+
+Create a publisher key only when testing the signed-distribution policy:
+
+```bash
+openssl genpkey -algorithm Ed25519 -out plugin_private.pem
+openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
+
+CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
+CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
+CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
+scons install
+
+cascade --require-signed doctor plugins
+cascade --require-signed dag run workflow.yaml
+```
+
+Do not commit a production private key. The normal local-development path above
+does not require either key.
 
 ## Next steps
 

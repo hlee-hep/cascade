@@ -73,7 +73,7 @@ Behavior changes should cover the relevant boundary:
 - cache skip and force-run behavior;
 - ownership/lifetime where ROOT pointers are involved;
 - isolated abnormal termination for native execution changes;
-- signed package discovery for plugin changes.
+- verified package discovery and strict signed-policy behavior for plugin changes.
 
 Run:
 

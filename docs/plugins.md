@@ -1,7 +1,8 @@
 # Plugin development and distribution
 
 Cascade core contains no analysis modules. C++ and Python modules are discovered
-from signed plugin packages.
+from verified plugin packages. Publisher signatures are optional and can be
+required for distributed or managed installations.
 
 ## Source layout
 
@@ -98,7 +99,7 @@ needed. All three entry points are required:
 name and Cascade version. Use `CASCADE_REGISTER_MODULE_WITH_METADATA` in a custom
 entry point to add a module version, summary, and tags. Do not use static
 registration in a plugin: registration must happen only after the loader verifies
-the signature, ABI, and ABI tag.
+the package manifest, artifact hash, ABI, and ABI tag.
 
 If the file stem and class differ:
 
@@ -127,7 +128,8 @@ Static class attributes allow metadata listing without constructing the module.
 The package loader imports verified files into a private `cascade.pyplugin`
 namespace.
 
-Direct unsigned Python module registration is rejected.
+Direct unindexed Python module registration is rejected. Both verified and signed
+Python packages are imported through the private namespace.
 
 ## Build and install
 
@@ -138,8 +140,15 @@ export CASCADE_PREFIX=/your/cascade/prefix
 scons -j2
 ```
 
-The regular build target compiles C++ modules but does not produce a trusted
-installation. Installation requires a signing key:
+The regular build target compiles C++ modules. A local verified installation does
+not require a signing key:
+
+```bash
+CASCADE_PLUGIN_PACKAGE=my_package scons install
+```
+
+To create a signed distribution, provide a private key and optionally install its
+public key into the selected prefix:
 
 ```bash
 CASCADE_PLUGIN_PACKAGE=my_package \
@@ -152,7 +161,8 @@ scons install
 with a letter or digit.
 
 The public key argument is optional when an operator provisions trusted keys
-separately. The private key is mandatory for installation.
+separately. Supplying a public key without a private key is rejected. Reinstalling
+without a private key removes a stale package signature.
 
 ## Installed layout
 
@@ -162,13 +172,13 @@ C++ and Python artifacts have separate manifests:
 ${CASCADE_PLUGIN_DIR}/my_package/
   libEventModule.so
   plugin_manifest.json
-  plugin_manifest.json.sig
+  plugin_manifest.json.sig  # signed distributions only
 
 ${CASCADE_PYPLUGIN_DIR}/my_package/
   __init__.py
   summary_module.py
   plugin_manifest.json
-  plugin_manifest.json.sig
+  plugin_manifest.json.sig  # signed distributions only
 
 ${CASCADE_PLUGIN_TRUST_STORE}/my_package.pem
 ```
@@ -181,8 +191,8 @@ CASCADE_PYPLUGIN_DIR=${CASCADE_PREFIX}/lib/cascade/pyplugin
 CASCADE_PLUGIN_TRUST_STORE=${CASCADE_PREFIX}/share/cascade/trusted_keys
 ```
 
-Keys located inside plugin package directories are ignored. Trust is granted only
-through the external trust store.
+Keys located inside plugin package directories are ignored. Signed trust is
+granted only through the external trust store.
 
 ## Manifest schema 2
 
@@ -210,11 +220,46 @@ Validation requires:
 - package name equals the containing directory;
 - paths are relative and remain inside the package;
 - files exist and match SHA-256;
-- the signature matches a trusted Ed25519 public key;
 - language-specific filename and class rules hold.
 
-Changing any installed file invalidates the manifest signature chain. Reinstall
-and re-sign after every rebuild.
+With `RequireSigned`, the manifest must additionally have a valid Ed25519
+signature from the external trust store. Changing any installed file invalidates
+the manifest hash and, for signed packages, requires regeneration and re-signing.
+
+## Trust policy
+
+The default policy is `Verified`. It enforces manifest, boundary, hash, module,
+and C++ compatibility checks but does not require publisher authentication:
+
+```cpp
+AMCM controller;
+```
+
+```python
+controller = py_amcm()
+```
+
+Distributed or managed workflows can require signed packages:
+
+```cpp
+AMCM controller(PluginTrustPolicy::RequireSigned);
+```
+
+```python
+controller = py_amcm(require_signed=True)
+```
+
+The CLI exposes only the strengthening form:
+
+```bash
+cascade --require-signed module run EventModule
+cascade --require-signed dag run workflow.yaml
+```
+
+Under the default policy, an untrusted signature is reported and the package may
+still load as `VERIFIED`; it is not claimed as publisher-authenticated. Under
+`RequireSigned`, missing, invalid, and untrusted signatures are rejected without
+fallback.
 
 ## ABI 1
 
@@ -244,6 +289,8 @@ ABI mismatch is resolved by rebuilding, not by editing the manifest.
 
 ```bash
 cascade doctor plugins
+cascade doctor plugins --json
+cascade --require-signed doctor plugins
 ```
 
 Alternate roots:
@@ -255,8 +302,9 @@ cascade doctor plugins \
   --trust-store /path/to/trusted_keys
 ```
 
-The command verifies signatures before loading C++ libraries. It then checks
-hashes, paths, module names, Python classes, ABI version, and ABI tag.
+The command reports each package as `VERIFIED` or `SIGNED`, then checks hashes,
+paths, module names, Python classes, ABI version, and ABI tag. `--require-signed`
+turns every unsigned or untrusted package into an error.
 
 Useful runtime inspection:
 
@@ -268,7 +316,7 @@ print(controller.get_list_available_modules())
 print(controller.get_list_available_module_metadata())
 ```
 
-## Signing-key practice
+## Optional signing-key practice
 
 - Never commit private keys.
 - Keep production signing separate from developer workstations.
@@ -287,9 +335,13 @@ isolation contains crashes but is not a security sandbox.
 - [ ] Parameters and metadata describe the public module contract.
 - [ ] C++ plugins were built against the target Cascade prefix.
 - [ ] Manifests were generated after the final build.
-- [ ] Manifests were signed with the intended publisher key.
-- [ ] Only public keys were installed in the trust store.
 - [ ] `cascade doctor plugins` reports zero errors.
 - [ ] In-process smoke test passes.
 - [ ] Isolated smoke test passes where supported.
 - [ ] Package behavior is documented for users.
+
+For a signed distribution, additionally check:
+
+- [ ] Manifests were signed with the intended publisher key.
+- [ ] Only public keys were installed in the trust store.
+- [ ] `cascade --require-signed doctor plugins` reports zero errors.

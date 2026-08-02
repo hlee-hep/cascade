@@ -1,6 +1,6 @@
 # Command-line interface
 
-The `cascade` command exposes installation diagnostics, signed module discovery,
+The `cascade` command exposes installation diagnostics, verified module discovery,
 single-module execution, mixed-language DAG workflows, and a compatibility
 adapter for ROOT macros.
 
@@ -15,9 +15,18 @@ cascade doctor plugins
 ```
 
 `doctor env` checks the imported Cascade runtime, ROOT executable, OpenSSL,
-plugin roots, and trust store. `doctor plugins` verifies signed manifests,
-hashes, package boundaries, Python class declarations, and the complete C++ ABI
-tag.
+plugin roots, and trust store. `doctor plugins` reports `VERIFIED` or `SIGNED`
+packages and checks manifests, hashes, package boundaries, Python class
+declarations, and the complete C++ ABI tag.
+
+Require trusted publisher signatures for controller-backed commands by placing
+the global option before the command:
+
+```bash
+cascade --require-signed doctor plugins
+cascade --require-signed module list
+cascade --require-signed dag run workflow.yaml
+```
 
 ## List and run modules
 
@@ -81,7 +90,7 @@ links:
 
 All fields are validated and unknown fields are rejected. Module names must be
 unique. Dependencies and parameter links use instance names, while `module`
-selects the signed C++ or Python class.
+selects the verified C++ or Python class.
 
 Workflow-relative paths include `output_directory`, `cache_directory`,
 `param_file`, `dot`, and `provenance`. Parameter values themselves are not rewritten.
@@ -93,12 +102,55 @@ The mixed plugin contains a runnable
 
 ## JSON output
 
-`info`, `doctor env`, `module list`, `module run`, and `dag run` support
-`--json`. Framework and module stdout is redirected to stderr during execution
-so stdout remains a single JSON document.
+`info`, `doctor env`, `doctor plugins`, `module list`, `module run`, and `dag run`
+support `--json`. Framework and module stdout is redirected to stderr during
+execution so stdout remains a single JSON document.
 
 Single-module JSON includes the module `run_id` and `provenance` path. DAG JSON
 includes the workflow `provenance` path.
+
+## Inspect and replay past runs
+
+The provenance time-machine commands list, inspect, compare, and replay recorded
+runs:
+
+```bash
+cascade history
+cascade inspect module-1234
+cascade diff module-1234 module-5678
+cascade replay module-1234
+```
+
+Run arguments accept either an exact run ID or a provenance manifest path.
+Without `--root`, run IDs are discovered below the current directory and the
+default Cascade cache. Add one or more explicit search roots when outputs live
+elsewhere:
+
+```bash
+cascade history --root results --kind module --limit 10
+cascade inspect workflow-1234 --root results --json
+cascade diff module-1234 module-5678 --root results --json
+```
+
+`diff` omits per-run timestamps, run IDs, and manifest linkage paths. It reports
+changes in reproducibility-relevant state such as module identity, parameters,
+runtime, results, and artifacts.
+
+`replay` currently supports module-run manifests. It restores the recorded
+module class, instance name, parameters, output/cache roots, and isolation mode.
+All of these except the module class can be overridden:
+
+```bash
+cascade replay module-1234 \
+  --root results \
+  --set threshold=25 \
+  --output-directory replay-output \
+  --no-isolated
+```
+
+Secret parameter values are redacted in provenance and cannot be recovered.
+Replay stops and names every redacted value that must be supplied again with
+`--set`.
 
 ## ROOT macro compatibility
 

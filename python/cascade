@@ -3,7 +3,7 @@
 """
 Cascade CLI:
 - framework and environment diagnostics
-- signed plugin discovery and module execution
+- verified plugin discovery and module execution
 - declarative DAG workflows
 - ROOT macro compatibility wrapper
 """
@@ -62,6 +62,13 @@ def _parse_kv(s: str) -> Tuple[str, Any]:
     except Exception:
         pass
     return k, v
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
 
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -146,135 +153,186 @@ def _check_cpp_abi(path: str) -> Tuple[str, Optional[str]]:
         return "ERROR", f"ABI tag mismatch: plugin={actual_tag!r} cascade={expected_tag!r}"
     return "OK", f"ABI {actual}, tag {actual_tag}"
 
-def _doctor_plugin_package(path: str, language: str, check_abi: bool, trusted_keys: List[str]) -> Tuple[int, List[str]]:
+def _doctor_plugin_package(
+    path: str,
+    language: str,
+    check_abi: bool,
+    trusted_keys: List[str],
+    require_signed: bool = False,
+    reports: Optional[List[Dict[str, Any]]] = None,
+    quiet: bool = False,
+) -> Tuple[int, List[str]]:
     errors = 0
     warnings = 0
     names = []
-    _log("INFO", f"[{language}] directory: {path}")
+    trust = "VERIFIED"
+
+    def emit(level: str, message: str) -> None:
+        if not quiet:
+            _log(level, message)
+
+    def finish() -> Tuple[int, List[str]]:
+        if reports is not None:
+            reports.append({
+                "package": os.path.basename(os.path.abspath(path)),
+                "language": language,
+                "trust": trust,
+                "modules": list(names),
+                "errors": errors,
+                "warnings": warnings,
+                "path": os.path.realpath(path),
+            })
+        return errors, names
+
+    emit("INFO", f"[{language}] directory: {path}")
     if not os.path.isdir(path):
-        _log("WARN", f"[{language}] directory not found")
-        return 0, names
+        emit("WARN", f"[{language}] directory not found")
+        warnings += 1
+        return finish()
 
     manifest = os.path.join(path, "plugin_manifest.json")
     manifest_sig = manifest + ".sig"
-    for required in (manifest, manifest_sig):
-        if not os.path.exists(required):
-            _log("ERROR", f"[{language}] missing {os.path.basename(required)}")
-            errors += 1
-    if errors:
-        return errors, names
+    if not os.path.isfile(manifest):
+        emit("ERROR", f"[{language}] missing plugin_manifest.json")
+        errors += 1
+        return finish()
 
-    verified_key = next((key for key in trusted_keys if _verify_manifest_signature(manifest, key)), None)
+    has_signature = os.path.isfile(manifest_sig)
+    verified_key = next(
+        (key for key in trusted_keys if has_signature and _verify_manifest_signature(manifest, key)),
+        None,
+    )
     if verified_key:
-        _log("INFO", f"[{language}] manifest signature: OK ({os.path.basename(verified_key)})")
+        trust = "SIGNED"
+        emit("INFO", f"[{language}] manifest signature: OK ({os.path.basename(verified_key)})")
+    elif require_signed:
+        emit("ERROR", f"[{language}] package requires a trusted manifest signature")
+        errors += 1
+        return finish()
+    elif has_signature:
+        emit("WARN", f"[{language}] manifest signature is not trusted; package is only verified")
+        warnings += 1
     else:
-        _log("ERROR", f"[{language}] manifest is not signed by a trusted key")
-        return errors + 1, names
+        emit("INFO", f"[{language}] unsigned manifest: verified policy")
 
     try:
-        with open(manifest, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        _log("ERROR", f"[{language}] cannot parse plugin_manifest.json: {e}")
-        return errors + 1, names
+        with open(manifest, "r", encoding="utf-8") as source:
+            data = json.load(source)
+    except Exception as error:
+        emit("ERROR", f"[{language}] cannot parse plugin_manifest.json: {error}")
+        errors += 1
+        return finish()
 
     if data.get("schema") != 2:
-        _log("ERROR", f"[{language}] unsupported manifest schema")
-        return errors + 1, names
+        emit("ERROR", f"[{language}] unsupported manifest schema")
+        errors += 1
+        return finish()
     if data.get("package") != os.path.basename(os.path.abspath(path)):
-        _log("ERROR", f"[{language}] manifest package does not match directory name")
-        return errors + 1, names
+        emit("ERROR", f"[{language}] manifest package does not match directory name")
+        errors += 1
+        return finish()
 
     listed = set()
     modules = data.get("modules", [])
     if not isinstance(modules, list):
-        _log("ERROR", f"[{language}] manifest field 'modules' must be a list")
-        return errors + 1, names
+        emit("ERROR", f"[{language}] manifest field 'modules' must be a list")
+        errors += 1
+        return finish()
 
     for entry in modules:
         if not isinstance(entry, dict):
-            _log("ERROR", f"[{language}] invalid manifest module entry: {entry!r}")
+            emit("ERROR", f"[{language}] invalid manifest module entry: {entry!r}")
             errors += 1
             continue
         if entry.get("language") != language:
             continue
-        rel = entry.get("path", "")
-        name = entry.get("name", rel)
+        relative = entry.get("path", "")
+        name = entry.get("name", relative)
         identities = entry.get("classes", []) if language == "python" else [name]
         if not isinstance(identities, list) or not all(isinstance(identity, str) and identity for identity in identities):
-            _log("ERROR", f"[{language}] {name}: module identities must be non-empty strings")
+            emit("ERROR", f"[{language}] {name}: module identities must be non-empty strings")
             errors += 1
             identities = []
         for identity in identities:
             if identity in names:
-                _log("ERROR", f"[{language}] duplicate module identity in manifest: {identity}")
+                emit("ERROR", f"[{language}] duplicate module identity in manifest: {identity}")
                 errors += 1
             names.append(identity)
-        if not rel or os.path.isabs(rel):
-            _log("ERROR", f"[{language}] {name}: invalid relative path {rel!r}")
+        if not relative or os.path.isabs(relative):
+            emit("ERROR", f"[{language}] {name}: invalid relative path {relative!r}")
             errors += 1
             continue
-        listed.add(rel)
-        full = os.path.realpath(os.path.join(path, rel))
+        listed.add(relative)
+        full = os.path.realpath(os.path.join(path, relative))
         if os.path.commonpath([os.path.realpath(path), full]) != os.path.realpath(path):
-            _log("ERROR", f"[{language}] {name}: path escapes package directory")
+            emit("ERROR", f"[{language}] {name}: path escapes package directory")
             errors += 1
             continue
         if not os.path.isfile(full):
-            _log("ERROR", f"[{language}] {name}: listed file missing: {rel}")
+            emit("ERROR", f"[{language}] {name}: listed file missing: {relative}")
             errors += 1
             continue
         expected = entry.get("sha256", "")
         actual = _sha256_file(full)
         if actual != expected:
-            _log("ERROR", f"[{language}] {name}: hash mismatch")
+            emit("ERROR", f"[{language}] {name}: hash mismatch")
             errors += 1
             continue
         if language == "cpp":
             if not os.path.basename(full).endswith("Module.so"):
-                _log("WARN", f"[{language}] {name}: filename does not end with Module.so")
+                emit("WARN", f"[{language}] {name}: filename does not end with Module.so")
                 warnings += 1
             elif check_abi:
-                level, msg = _check_cpp_abi(full)
-                _log(level, f"[{language}] {name}: {msg}")
+                level, message = _check_cpp_abi(full)
+                emit(level, f"[{language}] {name}: {message}")
                 if level == "ERROR":
                     errors += 1
                 elif level == "WARN":
                     warnings += 1
             else:
-                _log("INFO", f"[{language}] {name}: hash OK")
+                emit("INFO", f"[{language}] {name}: hash OK")
         elif language == "python":
             if os.path.basename(full) != "__init__.py" and not os.path.basename(full).endswith("module.py"):
-                _log("WARN", f"[{language}] {name}: filename does not end with module.py")
+                emit("WARN", f"[{language}] {name}: filename does not end with module.py")
                 warnings += 1
             declared = entry.get("classes", [])
             discovered = _manifest_classes(full)
-            missing = [cls for cls in declared if cls not in discovered]
+            missing = [class_name for class_name in declared if class_name not in discovered]
             if missing:
-                _log("ERROR", f"[{language}] {name}: classes missing from source: {missing}")
+                emit("ERROR", f"[{language}] {name}: classes missing from source: {missing}")
                 errors += 1
             else:
-                _log("INFO", f"[{language}] {name}: hash OK, classes={declared or discovered}")
+                emit("INFO", f"[{language}] {name}: hash OK, classes={declared or discovered}")
 
     expected_suffix = "Module.so" if language == "cpp" else "module.py"
     ignored = []
-    for fname in sorted(os.listdir(path)):
-        if fname in {"plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
+    for filename in sorted(os.listdir(path)):
+        if filename in {"plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
             continue
-        if fname.endswith(expected_suffix) and fname not in listed:
-            ignored.append(fname)
+        if filename.endswith(expected_suffix) and filename not in listed:
+            ignored.append(filename)
     if ignored:
-        _log("WARN", f"[{language}] files ignored because they are not in manifest: {', '.join(ignored)}")
+        emit("WARN", f"[{language}] files ignored because they are not in manifest: {', '.join(ignored)}")
         warnings += 1
 
-    _log("INFO", f"[{language}] checked modules={len(listed)} errors={errors} warnings={warnings}")
-    return errors, names
+    emit(trust, f"[{language}] {os.path.basename(path)} modules={len(listed)} errors={errors} warnings={warnings}")
+    return finish()
 
 
-def _doctor_plugin_dir(path: str, language: str, check_abi: bool, trusted_keys: List[str]) -> Tuple[int, List[str]]:
-    _log("INFO", f"[{language}] package root: {path}")
+def _doctor_plugin_dir(
+    path: str,
+    language: str,
+    check_abi: bool,
+    trusted_keys: List[str],
+    require_signed: bool = False,
+    reports: Optional[List[Dict[str, Any]]] = None,
+    quiet: bool = False,
+) -> Tuple[int, List[str]]:
+    if not quiet:
+        _log("INFO", f"[{language}] package root: {path}")
     if not os.path.isdir(path):
-        _log("WARN", f"[{language}] package root not found")
+        if not quiet:
+            _log("WARN", f"[{language}] package root not found")
         return 0, []
     errors = 0
     names = []
@@ -284,10 +342,19 @@ def _doctor_plugin_dir(path: str, language: str, check_abi: bool, trusted_keys: 
         if os.path.isdir(os.path.join(path, entry))
     ]
     for package_dir in package_dirs:
-        package_errors, package_names = _doctor_plugin_package(package_dir, language, check_abi, trusted_keys)
+        package_errors, package_names = _doctor_plugin_package(
+            package_dir,
+            language,
+            check_abi,
+            trusted_keys,
+            require_signed=require_signed,
+            reports=reports,
+            quiet=quiet,
+        )
         errors += package_errors
         names.extend(package_names)
     return errors, names
+
 
 def cmd_doctor_plugins(args) -> None:
     cpp_default, py_default = _default_plugin_dirs()
@@ -303,17 +370,31 @@ def cmd_doctor_plugins(args) -> None:
             for entry in sorted(os.listdir(trust_store))
             if entry.endswith(".pem") and os.path.isfile(os.path.join(trust_store, entry))
         ]
-    if not trusted_keys:
-        _log("ERROR", f"no trusted plugin keys found in {trust_store}")
-        raise SystemExit(1)
-    errors = 0
-    cpp_errors, cpp_names = _doctor_plugin_dir(cpp_dir, "cpp", not args.no_abi, trusted_keys)
-    py_errors, py_names = _doctor_plugin_dir(py_dir, "python", False, trusted_keys)
-    errors += cpp_errors + py_errors
+    require_signed = bool(getattr(args, "require_signed", False))
+    quiet = bool(getattr(args, "json", False))
+    reports = []
+    if require_signed and not trusted_keys and not quiet:
+        _log("WARN", f"no trusted plugin keys found in {trust_store}")
+    cpp_errors, cpp_names = _doctor_plugin_dir(
+        cpp_dir, "cpp", not args.no_abi, trusted_keys, require_signed, reports, quiet
+    )
+    py_errors, py_names = _doctor_plugin_dir(
+        py_dir, "python", False, trusted_keys, require_signed, reports, quiet
+    )
+    errors = cpp_errors + py_errors
     duplicates = sorted(set(cpp_names) & set(py_names))
     if duplicates:
-        _log("ERROR", f"duplicate module names across C++ and Python plugins: {duplicates}")
+        if not quiet:
+            _log("ERROR", f"duplicate module names across C++ and Python plugins: {duplicates}")
         errors += 1
+    if quiet:
+        _emit({
+            "require_signed": require_signed,
+            "trust_store": os.path.realpath(trust_store),
+            "packages": reports,
+            "duplicates": duplicates,
+            "succeeded": errors == 0,
+        }, True)
     if errors:
         raise SystemExit(1)
 
@@ -365,6 +446,302 @@ def _emit(data: Any, as_json: bool = False) -> None:
     print(data)
 
 
+# ------------ provenance time machine ------------
+_PROVENANCE_SCHEMAS = {
+    "cascade.module-run": "module",
+    "cascade.workflow-run": "workflow",
+}
+_VOLATILE_PROVENANCE_KEYS = {
+    "run_id",
+    "timing",
+    "manifest_path",
+    "module_run_id",
+    "module_manifest",
+    "module_manifests",
+    "cache_source_manifest",
+}
+
+
+def _default_provenance_roots() -> List[str]:
+    cache_root = os.environ.get(
+        "CASCADE_CACHE_DIR",
+        os.path.join(os.path.expanduser("~"), ".cache", "cascade"),
+    )
+    return [os.getcwd(), cache_root]
+
+
+def _load_provenance_manifest(path: str) -> Dict[str, Any]:
+    resolved = os.path.realpath(os.path.expanduser(path))
+    with open(resolved, "r", encoding="utf-8") as source:
+        manifest = json.load(source)
+    if not isinstance(manifest, dict):
+        raise TypeError(f"provenance manifest root must be an object: {resolved}")
+    schema = manifest.get("schema")
+    if schema not in _PROVENANCE_SCHEMAS or manifest.get("schema_version") != 1:
+        raise ValueError(f"unsupported Cascade provenance manifest: {resolved}")
+    return manifest
+
+
+def _find_provenance_manifests(roots: Optional[List[str]] = None) -> List[Tuple[str, Dict[str, Any]]]:
+    manifests = []
+    visited = set()
+    for root in roots or _default_provenance_roots():
+        resolved_root = os.path.realpath(os.path.expanduser(root))
+        candidates = []
+        if os.path.isfile(resolved_root):
+            candidates.append(resolved_root)
+        elif os.path.isdir(resolved_root):
+            for directory, subdirectories, filenames in os.walk(resolved_root):
+                subdirectories[:] = [
+                    name for name in subdirectories
+                    if name not in {".git", ".venv", "__pycache__", "node_modules"}
+                ]
+                candidates.extend(
+                    os.path.join(directory, name)
+                    for name in filenames
+                    if name.endswith(".json")
+                )
+        for candidate in candidates:
+            resolved = os.path.realpath(candidate)
+            if resolved in visited:
+                continue
+            visited.add(resolved)
+            try:
+                manifests.append((resolved, _load_provenance_manifest(resolved)))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+    return manifests
+
+
+def _resolve_provenance_manifest(reference: str, roots: Optional[List[str]] = None) -> Tuple[str, Dict[str, Any]]:
+    expanded = os.path.realpath(os.path.expanduser(reference))
+    if os.path.isfile(expanded):
+        return expanded, _load_provenance_manifest(expanded)
+    matches = [
+        (path, manifest)
+        for path, manifest in _find_provenance_manifests(roots)
+        if manifest.get("run_id") == reference
+    ]
+    if not matches:
+        raise FileNotFoundError(f"Cascade run not found: {reference}")
+    if len(matches) > 1:
+        paths = ", ".join(path for path, _ in matches)
+        raise RuntimeError(f"Cascade run ID is ambiguous: {reference} ({paths})")
+    return matches[0]
+
+
+def _manifest_summary(path: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    schema = manifest["schema"]
+    if schema == "cascade.module-run":
+        module = manifest.get("module", {})
+        subject = module.get("instance") or module.get("name") or "unknown"
+        status = manifest.get("result", {}).get("status", "Unknown")
+    else:
+        nodes = manifest.get("dag", {}).get("nodes", [])
+        subject = f"{len(nodes)} nodes"
+        status = "Succeeded" if manifest.get("execution", {}).get("succeeded") else "Failed"
+    timing = manifest.get("timing", {})
+    return {
+        "run_id": manifest.get("run_id", ""),
+        "kind": _PROVENANCE_SCHEMAS[schema],
+        "subject": subject,
+        "status": status,
+        "started_at": timing.get("started_at", ""),
+        "finished_at": timing.get("finished_at", ""),
+        "manifest": path,
+    }
+
+
+def cmd_history(args) -> None:
+    entries = [
+        _manifest_summary(path, manifest)
+        for path, manifest in _find_provenance_manifests(args.root)
+        if args.kind == "all" or _PROVENANCE_SCHEMAS[manifest["schema"]] == args.kind
+    ]
+    entries.sort(key=lambda entry: (entry["started_at"], entry["run_id"]), reverse=True)
+    entries = entries[:args.limit]
+    if args.json:
+        _emit({"runs": entries}, True)
+        return
+    if not entries:
+        print("No Cascade runs found.")
+        return
+    for entry in entries:
+        print(
+            f"{entry['started_at'] or '-'}  {entry['status']:<11} "
+            f"{entry['kind']:<8} {entry['subject']}  {entry['run_id']}"
+        )
+        print(f"  {entry['manifest']}")
+
+
+def _print_manifest(manifest: Dict[str, Any]) -> None:
+    schema = manifest["schema"]
+    print(f"Run: {manifest.get('run_id', '')}")
+    print(f"Type: {_PROVENANCE_SCHEMAS[schema]}")
+    timing = manifest.get("timing", {})
+    print(f"Started: {timing.get('started_at', '')}")
+    print(f"Finished: {timing.get('finished_at', '')}")
+    if schema == "cascade.module-run":
+        module = manifest.get("module", {})
+        result = manifest.get("result", {})
+        execution = manifest.get("execution", {})
+        print(f"Module: {module.get('name', '')} ({module.get('instance', '')})")
+        plugin = manifest.get("plugin")
+        if isinstance(plugin, dict):
+            signer = plugin.get("signer_fingerprint") or "-"
+            print(f"Plugin: {plugin.get('package', '')} ({plugin.get('trust', '')}, signer={signer})")
+        print(f"Result: {result.get('status', '')} ({result.get('phase', '')})")
+        if result.get("message"):
+            print(f"Message: {result['message']}")
+        print(f"Cache hit: {bool(execution.get('cache_hit'))}")
+        print("Parameters:")
+        print(json.dumps(manifest.get("parameters", {}), ensure_ascii=False, indent=2, sort_keys=True))
+        artifacts = manifest.get("artifacts", {})
+        for kind in ("inputs", "outputs"):
+            print(f"{kind.title()}:")
+            for artifact in artifacts.get(kind, []):
+                digest = artifact.get("sha256") or "-"
+                print(f"  {artifact.get('path', '')}  {artifact.get('kind', '')}  {digest}")
+    else:
+        execution = manifest.get("execution", {})
+        print(f"Result: {'Succeeded' if execution.get('succeeded') else 'Failed'}")
+        print(f"Fail fast: {bool(execution.get('fail_fast'))}")
+        print("Nodes:")
+        for node in manifest.get("dag", {}).get("nodes", []):
+            dependencies = ", ".join(node.get("dependencies", [])) or "-"
+            detail = f": {node.get('message')}" if node.get("message") else ""
+            print(f"  {node.get('name', '')}: {node.get('status', '')} [{dependencies}]{detail}")
+    print(f"Manifest: {manifest.get('manifest_path', '')}")
+
+
+def cmd_inspect(args) -> None:
+    _, manifest = _resolve_provenance_manifest(args.run, args.root)
+    if args.json:
+        _emit(manifest, True)
+    else:
+        _print_manifest(manifest)
+
+
+def _stable_provenance(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _stable_provenance(item)
+            for key, item in value.items()
+            if key not in _VOLATILE_PROVENANCE_KEYS
+        }
+    if isinstance(value, list):
+        return [_stable_provenance(item) for item in value]
+    return value
+
+
+def _provenance_changes(before: Any, after: Any, path: str = "") -> List[Dict[str, Any]]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        changes = []
+        for key in sorted(set(before) | set(after)):
+            child_path = f"{path}.{key}" if path else key
+            if key not in before:
+                changes.append({"path": child_path, "before": "<missing>", "after": after[key]})
+            elif key not in after:
+                changes.append({"path": child_path, "before": before[key], "after": "<missing>"})
+            else:
+                changes.extend(_provenance_changes(before[key], after[key], child_path))
+        return changes
+    if before != after:
+        return [{"path": path, "before": before, "after": after}]
+    return []
+
+
+def cmd_diff(args) -> None:
+    before_path, before = _resolve_provenance_manifest(args.before, args.root)
+    after_path, after = _resolve_provenance_manifest(args.after, args.root)
+    changes = _provenance_changes(_stable_provenance(before), _stable_provenance(after))
+    payload = {
+        "before": {"run_id": before.get("run_id", ""), "manifest": before_path},
+        "after": {"run_id": after.get("run_id", ""), "manifest": after_path},
+        "changes": changes,
+    }
+    if args.json:
+        _emit(payload, True)
+        return
+    print(f"Before: {payload['before']['run_id']} ({before_path})")
+    print(f"After:  {payload['after']['run_id']} ({after_path})")
+    if not changes:
+        print("No reproducibility-relevant differences.")
+        return
+    for change in changes:
+        before_text = json.dumps(change["before"], ensure_ascii=False, sort_keys=True)
+        after_text = json.dumps(change["after"], ensure_ascii=False, sort_keys=True)
+        print(f"{change['path']}: {before_text} -> {after_text}")
+
+
+def _sensitive_parameter(key: str) -> bool:
+    lowered = key.lower()
+    return any(
+        pattern in lowered
+        for pattern in (
+            "password", "passwd", "secret", "token", "credential", "private_key", "api_key",
+        )
+    )
+
+
+def cmd_replay(args) -> None:
+    _, manifest = _resolve_provenance_manifest(args.run, args.root)
+    if manifest["schema"] != "cascade.module-run":
+        raise ValueError("replay currently supports module runs; replay DAGs from their workflow file")
+    parameters = manifest.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise TypeError("module provenance parameters must be an object")
+    overrides = dict(_parse_kv(value) for value in args.set)
+    redacted = sorted(
+        key for key, value in parameters.items()
+        if _sensitive_parameter(key) and value == "***" and key not in overrides
+    )
+    if redacted:
+        options = " ".join(f"--set {key}=VALUE" for key in redacted)
+        raise ValueError(f"replay requires redacted parameters to be supplied again: {options}")
+
+    module = manifest.get("module", {})
+    module_name = module.get("name")
+    instance_name = args.name or module.get("instance") or None
+    if not module_name:
+        raise ValueError("module provenance does not contain a module name")
+    directories = manifest.get("directories", {})
+    output_directory = args.output_directory or directories.get("output")
+    cache_directory = args.cache_directory or directories.get("cache")
+    isolated = args.isolated
+    if isolated is None:
+        isolated = bool(manifest.get("execution", {}).get("isolated"))
+
+    with _redirect_stdout_to_stderr(args.json):
+        controller = _load_controller(args.json, getattr(args, "require_signed", False))
+        handle = controller.register_module(module_name, instance_name)
+        if output_directory:
+            handle.set_output_directory(os.path.abspath(output_directory))
+        if cache_directory:
+            handle.set_cache_directory(os.path.abspath(cache_directory))
+        replay_parameters = {
+            key: value
+            for key, value in parameters.items()
+            if not (_sensitive_parameter(key) and value == "***")
+        }
+        replay_parameters.update(overrides)
+        _apply_parameters(handle, replay_parameters)
+        result = controller.run_module(handle.name(), isolated=isolated)
+    payload = _result_payload(result, handle.name())
+    payload["run_id"] = handle.get_run_id()
+    payload["provenance"] = handle.get_last_provenance_path()
+    payload["replayed_from"] = manifest.get("run_id", "")
+    if args.json:
+        _emit(payload, True)
+    else:
+        detail = f": {payload['message']}" if payload["message"] else ""
+        print(f"{payload['name']}: {payload['status']} ({payload['phase']}){detail}")
+        print(f"Replayed from: {payload['replayed_from']}")
+        print(f"Provenance: {payload['provenance']}")
+    if not payload["allows_dependents"]:
+        raise SystemExit(1)
+
+
 def cmd_info(args) -> None:
     info = _framework_info()
     _emit(info, args.json)
@@ -409,13 +786,13 @@ def cmd_doctor_env(args) -> None:
         raise SystemExit(1)
 
 
-def _load_controller(quiet: bool = False):
+def _load_controller(quiet: bool = False, require_signed: bool = False):
     import cascade
 
     if quiet:
         cascade.set_log_level(cascade.log_level.NONE)
     from cascade import py_amcm
-    return py_amcm()
+    return py_amcm(require_signed=require_signed)
 
 
 @contextmanager
@@ -489,7 +866,7 @@ def _result_payload(result, name: str) -> Dict[str, Any]:
 
 def cmd_module_list(args) -> None:
     with _redirect_stdout_to_stderr(args.json):
-        controller = _load_controller(args.json)
+        controller = _load_controller(args.json, getattr(args, "require_signed", False))
         modules = controller.get_list_available_module_metadata()
     if args.language:
         modules = [item for item in modules if item["language"] == args.language]
@@ -511,7 +888,7 @@ def cmd_module_list(args) -> None:
 
 def cmd_module_run(args) -> None:
     with _redirect_stdout_to_stderr(args.json):
-        controller = _load_controller(args.json)
+        controller = _load_controller(args.json, getattr(args, "require_signed", False))
         handle = controller.register_module(args.module, args.name)
         if args.output_directory:
             handle.set_output_directory(os.path.abspath(args.output_directory))
@@ -604,7 +981,7 @@ def cmd_dag_run(args) -> None:
     fail_fast = workflow_fail_fast if args.fail_fast is None else args.fail_fast
 
     with _redirect_stdout_to_stderr(args.json):
-        controller = _load_controller(args.json)
+        controller = _load_controller(args.json, getattr(args, "require_signed", False))
         for index, item in enumerate(modules):
             if not isinstance(item, dict):
                 raise TypeError(f"workflow.modules[{index}] must be a mapping")
@@ -752,6 +1129,11 @@ def build_parser() -> argparse.ArgumentParser:
     version = version_info.get("version", "unavailable")
     abi = version_info.get("abi_version", "unavailable")
     p.add_argument("--version", action="version", version=f"Cascade {version} (plugin ABI {abi})")
+    p.add_argument(
+        "--require-signed",
+        action="store_true",
+        help="Require every discovered plugin package to have a trusted signature",
+    )
     sub = p.add_subparsers(dest="command")
 
     info = sub.add_parser("info", help="Show framework version, ABI, and installation paths")
@@ -769,16 +1151,17 @@ def build_parser() -> argparse.ArgumentParser:
     plugins.add_argument("--py-dir", help="Python plugin directory")
     plugins.add_argument("--trust-store", help="Directory containing trusted plugin public keys")
     plugins.add_argument("--no-abi", action="store_true", help="Skip C++ plugin dlopen/ABI checks")
+    plugins.add_argument("--json", action="store_true", help="Emit machine-readable verification results")
     plugins.set_defaults(func=cmd_doctor_plugins)
 
-    module = sub.add_parser("module", help="Discover or run signed analysis modules")
+    module = sub.add_parser("module", help="Discover or run verified analysis modules")
     module_sub = module.add_subparsers(dest="module_command", required=True)
     module_list = module_sub.add_parser("list", help="List available C++ and Python modules")
     module_list.add_argument("--language", choices=("cpp", "python"), help="Filter by implementation language")
     module_list.add_argument("--tag", help="Filter by metadata tag")
     module_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     module_list.set_defaults(func=cmd_module_list)
-    module_run = module_sub.add_parser("run", help="Register and run one signed module")
+    module_run = module_sub.add_parser("run", help="Register and run one verified module")
     module_run.add_argument("module", help="Registered module class name")
     module_run.add_argument("--name", help="Instance name")
     module_run.add_argument("--params", help="YAML or JSON parameter file")
@@ -800,6 +1183,39 @@ def build_parser() -> argparse.ArgumentParser:
     dag_run.add_argument("--provenance", help="Write workflow provenance to this JSON file")
     dag_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
     dag_run.set_defaults(func=cmd_dag_run, fail_fast=None)
+
+    history = sub.add_parser("history", help="List module and workflow runs from provenance")
+    history.add_argument("--root", action="append", help="Search this provenance file or directory (repeatable)")
+    history.add_argument("--kind", choices=("all", "module", "workflow"), default="all", help="Filter run type")
+    history.add_argument("--limit", type=_positive_int, default=20, help="Maximum runs to show")
+    history.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    history.set_defaults(func=cmd_history)
+
+    inspect_run = sub.add_parser("inspect", help="Inspect a module or workflow run")
+    inspect_run.add_argument("run", help="Run ID or provenance manifest path")
+    inspect_run.add_argument("--root", action="append", help="Search this provenance file or directory (repeatable)")
+    inspect_run.add_argument("--json", action="store_true", help="Emit the complete provenance manifest")
+    inspect_run.set_defaults(func=cmd_inspect)
+
+    diff = sub.add_parser("diff", help="Compare reproducibility-relevant run state")
+    diff.add_argument("before", help="Earlier run ID or provenance manifest path")
+    diff.add_argument("after", help="Later run ID or provenance manifest path")
+    diff.add_argument("--root", action="append", help="Search this provenance file or directory (repeatable)")
+    diff.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    diff.set_defaults(func=cmd_diff)
+
+    replay = sub.add_parser("replay", help="Replay a module run from its provenance")
+    replay.add_argument("run", help="Run ID or module provenance manifest path")
+    replay.add_argument("--root", action="append", help="Search this provenance file or directory (repeatable)")
+    replay.add_argument("--name", help="Override the module instance name")
+    replay.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Override a recorded parameter")
+    replay.add_argument("--output-directory", help="Override the recorded output root")
+    replay.add_argument("--cache-directory", help="Override the recorded cache root")
+    replay_isolation = replay.add_mutually_exclusive_group()
+    replay_isolation.add_argument("--isolated", dest="isolated", action="store_true", help="Run in a subprocess")
+    replay_isolation.add_argument("--no-isolated", dest="isolated", action="store_false", help="Run in the current process")
+    replay.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
+    replay.set_defaults(func=cmd_replay, isolated=None)
 
     macro = sub.add_parser("macro", help="Run a legacy ROOT macro")
     macro_sub = macro.add_subparsers(dest="macro_command", required=True)

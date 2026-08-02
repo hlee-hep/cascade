@@ -580,6 +580,7 @@ class base_module:
         self._snapshot_hash = ""
         self._last_provenance = None
         self._pending_cache_provenance = ""
+        self._plugin_origin = None
 
     def check_interrupt(self):
         if self.context.cancellation.is_cancellation_requested():
@@ -600,6 +601,11 @@ class base_module:
     def set_output_directory(self, path):
         with self._run_lock:
             self.context.set_output_directory(path)
+
+    def set_plugin_origin(self, origin):
+        if origin is not None and not isinstance(origin, dict):
+            raise TypeError("Plugin origin must be a mapping or None")
+        self._plugin_origin = dict(origin) if origin is not None else None
 
     def stage_output(self, path):
         return self.context.stage_output(path)
@@ -843,6 +849,7 @@ class base_module:
                 "metadata": self.get_metadata(),
             },
             "runtime": _runtime_provenance("python"),
+            "plugin": self._plugin_origin,
             "identity": {
                 "code_hash": self.code_version_hash,
                 "snapshot_hash": self._snapshot_hash,

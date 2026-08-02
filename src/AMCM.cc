@@ -110,12 +110,12 @@ fs::path RuntimePrefix()
     return home && *home ? fs::path(home) / ".local" : fs::path(".");
 }
 
-std::vector<TrustedKey> LoadTrustedKeys(const fs::path &trustStore)
+std::vector<TrustedKey> LoadTrustedKeys(const fs::path &trustStore, bool warnIfMissing)
 {
     std::vector<TrustedKey> keys;
     if (!fs::is_directory(trustStore))
     {
-        LOG_WARN("PLUGIN", "Plugin trust store not found: " << trustStore.string());
+        if (warnIfMissing) LOG_WARN("PLUGIN", "Plugin trust store not found: " << trustStore.string());
         return keys;
     }
     std::vector<fs::path> paths;
@@ -168,24 +168,34 @@ std::vector<fs::path> PackageDirectories(const fs::path &pluginRoot)
     return packages;
 }
 
-std::vector<fs::path> VerifiedCppPluginPaths(const fs::path &packageDir, const std::vector<TrustedKey> &keys)
+struct VerifiedCppPlugin
+{
+    fs::path Path;
+    PluginOrigin Origin;
+};
+
+std::vector<VerifiedCppPlugin> VerifiedCppPluginPaths(const fs::path &packageDir, const std::vector<TrustedKey> &keys,
+                                                       PluginTrustPolicy policy)
 {
     fs::path manifestPath = packageDir / "plugin_manifest.json";
     fs::path sigPath = packageDir / "plugin_manifest.json.sig";
-    if (!fs::exists(manifestPath) || !fs::exists(sigPath))
+    if (!fs::is_regular_file(manifestPath))
     {
-        LOG_WARN("PLUGIN", "Signed plugin manifest missing in package " << packageDir.string());
+        LOG_WARN("PLUGIN", "Plugin manifest missing in package " << packageDir.string());
         return {};
     }
 
     try
     {
-        const TrustedKey *trustedKey = VerifyWithTrustedKey(manifestPath, sigPath, keys);
-        if (!trustedKey)
+        const bool hasSignature = fs::is_regular_file(sigPath);
+        const TrustedKey *trustedKey = hasSignature ? VerifyWithTrustedKey(manifestPath, sigPath, keys) : nullptr;
+        if (policy == PluginTrustPolicy::RequireSigned && !trustedKey)
         {
-            LOG_WARN("PLUGIN", "Plugin manifest is not signed by a trusted key: " << manifestPath.string());
+            LOG_WARN("PLUGIN", "Plugin package requires a trusted signature: " << manifestPath.string());
             return {};
         }
+        if (hasSignature && !trustedKey)
+            LOG_WARN("PLUGIN", "Plugin signature is not trusted; loading as verified: " << manifestPath.string());
 
         std::ifstream in(manifestPath);
         nlohmann::json manifest;
@@ -195,8 +205,14 @@ std::vector<fs::path> VerifiedCppPluginPaths(const fs::path &packageDir, const s
         if (manifest.value("package", "") != packageDir.filename().string())
             throw std::runtime_error("manifest package name does not match its directory");
 
-        LOG_DEBUG("PLUGIN", "Verified package " << packageDir.filename().string() << " with " << trustedKey->Path.string());
-        std::vector<fs::path> result;
+        PluginOrigin packageOrigin;
+        packageOrigin.Package = packageDir.filename().string();
+        packageOrigin.ManifestPath = fs::weakly_canonical(manifestPath).string();
+        packageOrigin.ManifestSha256 = Sha256File(manifestPath);
+        packageOrigin.Trust = trustedKey ? PluginTrustStatus::Signed : PluginTrustStatus::Verified;
+        if (trustedKey) packageOrigin.SignerFingerprint = Sha256File(trustedKey->Path);
+        LOG_DEBUG("PLUGIN", ToString(packageOrigin.Trust) << " package " << packageOrigin.Package);
+        std::vector<VerifiedCppPlugin> result;
         for (const auto &entry : manifest.value("modules", nlohmann::json::array()))
         {
             if (entry.value("language", "") != "cpp") continue;
@@ -225,9 +241,12 @@ std::vector<fs::path> VerifiedCppPluginPaths(const fs::path &packageDir, const s
                 LOG_WARN("PLUGIN", "Plugin hash mismatch: " << full.string());
                 continue;
             }
-            result.push_back(full);
+            auto origin = packageOrigin;
+            origin.ArtifactSha256 = actual;
+            result.push_back({full, std::move(origin)});
         }
-        std::sort(result.begin(), result.end());
+        std::sort(result.begin(), result.end(),
+                  [](const VerifiedCppPlugin &left, const VerifiedCppPlugin &right) { return left.Path < right.Path; });
         return result;
     }
     catch (const std::exception &e)
@@ -284,7 +303,9 @@ RunResult ExternalFailure(ModuleStatus status, const std::string &message)
 }
 } // namespace
 
-AMCM::AMCM()
+AMCM::AMCM() : AMCM(PluginTrustPolicy::Verified) {}
+
+AMCM::AMCM(PluginTrustPolicy trustPolicy) : m_TrustPolicy(trustPolicy)
 {
     InterruptManager::Init();
     m_Dag = std::make_unique<DAGManager>();
@@ -300,7 +321,11 @@ AMCM::AMCM()
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)
 {
     if (instanceName.empty()) throw std::invalid_argument("Module instance name cannot be empty");
+    const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(base);
+    if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && origin && origin->Trust != PluginTrustStatus::Signed)
+        throw std::runtime_error("Module requires a signed plugin under the active trust policy: " + base);
     auto mod = AnalysisModuleRegistry::Get().Create(base);
+    if (origin && mod->BaseName() != base) AnalysisModuleRegistry::Get().SetPluginOrigin(mod->BaseName(), *origin);
     mod->SetName(instanceName);
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
     std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
@@ -314,6 +339,39 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
     }
     LOG_INFO("CONTROL", "Module " << base << " is registered as " << instanceName);
     return ptr;
+}
+
+std::vector<std::string> AMCM::ListAvailableModules() const
+{
+    auto modules = AnalysisModuleRegistry::Get().ListModules();
+    if (m_TrustPolicy != PluginTrustPolicy::RequireSigned) return modules;
+    modules.erase(std::remove_if(modules.begin(), modules.end(),
+                                 [](const std::string &name)
+                                 {
+                                     const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(name);
+                                     return origin && origin->Trust != PluginTrustStatus::Signed;
+                                 }),
+                  modules.end());
+    return modules;
+}
+
+std::vector<ModuleMetadata> AMCM::ListAvailableModuleMetadata() const
+{
+    auto metadata = AnalysisModuleRegistry::Get().ListModuleMetadata();
+    if (m_TrustPolicy != PluginTrustPolicy::RequireSigned) return metadata;
+    metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
+                                  [](const ModuleMetadata &item)
+                                  {
+                                      const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(item.Name);
+                                      return origin && origin->Trust != PluginTrustStatus::Signed;
+                                  }),
+                   metadata.end());
+    return metadata;
+}
+
+std::optional<PluginOrigin> AMCM::GetPluginOrigin(const std::string &name) const
+{
+    return AnalysisModuleRegistry::Get().GetPluginOrigin(name);
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base)
@@ -707,16 +765,26 @@ void AMCM::LoadPlugins(const std::string &path)
         return;
     }
     const fs::path trustStore = DefaultTrustStore(pluginRoot);
-    const auto trustedKeys = LoadTrustedKeys(trustStore);
-    if (trustedKeys.empty()) return;
+    const auto trustedKeys = LoadTrustedKeys(trustStore, m_TrustPolicy == PluginTrustPolicy::RequireSigned);
 
     for (const auto &packageDir : PackageDirectories(pluginRoot))
     {
-        for (const auto &pluginFile : VerifiedCppPluginPaths(packageDir, trustedKeys))
+        for (const auto &plugin : VerifiedCppPluginPaths(packageDir, trustedKeys, m_TrustPolicy))
         {
             std::lock_guard<std::mutex> loadLock(pluginLoadMutex);
+            const auto &pluginFile = plugin.Path;
             const std::string canonicalPlugin = fs::weakly_canonical(pluginFile).string();
-            if (loadedPlugins.count(canonicalPlugin)) continue;
+            if (loadedPlugins.count(canonicalPlugin))
+            {
+                for (const auto &name : AnalysisModuleRegistry::Get().ListModules())
+                {
+                    const auto existing = AnalysisModuleRegistry::Get().GetPluginOrigin(name);
+                    if (existing && existing->ArtifactSha256 == plugin.Origin.ArtifactSha256 &&
+                        existing->Package == plugin.Origin.Package && plugin.Origin.Trust == PluginTrustStatus::Signed)
+                        AnalysisModuleRegistry::Get().SetPluginOrigin(name, plugin.Origin);
+                }
+                continue;
+            }
             const auto modulesBeforeLoad = AnalysisModuleRegistry::Get().ListModules();
             const std::set<std::string> moduleSetBeforeLoad(modulesBeforeLoad.begin(), modulesBeforeLoad.end());
             auto rollbackRegistrations = [&]()
@@ -778,10 +846,13 @@ void AMCM::LoadPlugins(const std::string &path)
             try
             {
                 regFn();
-                if (AnalysisModuleRegistry::Get().ListModules() == modulesBeforeLoad)
+                const auto modulesAfterLoad = AnalysisModuleRegistry::Get().ListModules();
+                if (modulesAfterLoad == modulesBeforeLoad)
                     throw std::runtime_error("plugin registration did not add a module");
+                for (const auto &name : modulesAfterLoad)
+                    if (!moduleSetBeforeLoad.count(name)) AnalysisModuleRegistry::Get().SetPluginOrigin(name, plugin.Origin);
                 loadedPlugins.insert(canonicalPlugin);
-                LOG_INFO("PLUGIN", "Loaded plugin " << pluginFile.string());
+                LOG_INFO("PLUGIN", "Loaded " << ToString(plugin.Origin.Trust) << " plugin " << pluginFile.string());
             }
             catch (const std::exception &error)
             {

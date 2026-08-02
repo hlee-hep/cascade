@@ -10,7 +10,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 | Semantic version | `0.3.0` |
 | C++ plugin ABI | 1 |
 | C++ standard | C++17 |
-| Plugin manifest | Schema 2, signed |
+| Plugin manifest | Schema 2, verified; optional signature |
 | Analysis config | `schema_version: 1` |
 | Lifecycle result | `RunResult` with status, phase, message, exception |
 | Protected output | `StageOutput` / `stage_output` |
@@ -43,10 +43,17 @@ print(cascade.__abi_version__)
 print(cascade.__abi_tag__)
 ```
 
-## 2. Regenerate and sign manifests
+## 2. Regenerate plugin manifests
 
-Installed files changed after rebuilding, so old SHA-256 entries and signatures
-are invalid.
+Installed files changed after rebuilding, so old SHA-256 entries and any existing
+signatures are invalid. Local development requires only a regenerated manifest:
+
+```bash
+CASCADE_PLUGIN_PACKAGE=my_package scons install
+cascade doctor plugins
+```
+
+For a signed distribution:
 
 ```bash
 CASCADE_PLUGIN_PACKAGE=my_package \
@@ -54,7 +61,7 @@ CASCADE_PLUGIN_PRIVATE_KEY=/secure/path/private.pem \
 CASCADE_PLUGIN_PUBLIC_KEY=/provisioning/path/public.pem \
 scons install
 
-cascade doctor plugins
+cascade --require-signed doctor plugins
 ```
 
 Keep the private key outside the installed plugin directory and source repository.
@@ -189,6 +196,7 @@ and upgraded to schema 1 when written.
 - [ ] Every external parameter is registered.
 - [ ] Material file inputs are explicitly tracked for provenance.
 - [ ] Callers inspect `RunResult`.
-- [ ] Signed manifests were regenerated after the rebuild.
+- [ ] Plugin manifests were regenerated after the rebuild.
+- [ ] Distributed signed manifests were re-signed when applicable.
 - [ ] `cascade doctor plugins` reports zero errors.
 - [ ] Normal, cached, failure, and isolated smoke tests pass.

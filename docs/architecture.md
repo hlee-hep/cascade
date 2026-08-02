@@ -7,7 +7,7 @@ flowchart LR
     U["User / workflow"] --> Q["cascade CLI"]
     U --> C["py_amcm or AMCM"]
     Q --> C
-    C --> R["Signed plugin registry"]
+    C --> R["Verified plugin registry"]
     R --> M["C++ IAnalysisModule"]
     R --> P["Python base_module"]
     M --> X["ExecutionContext"]
@@ -26,7 +26,8 @@ The full diagram source is [architecture.mmd](architecture.mmd).
 ## Boundary 1: core versus plugins
 
 Core libraries provide lifecycle, managers, caching, plugin verification, and
-control APIs. Physics/experiment-specific analysis modules live in signed packages.
+control APIs. Physics/experiment-specific analysis modules live in verified
+packages, with optional publisher signatures for distribution.
 This keeps the runtime reusable and makes module provenance explicit.
 
 ## Boundary 2: module logic versus execution
@@ -68,8 +69,9 @@ paths.
 ### Registration
 
 ```text
-signed manifest
-  -> signature/hash verification
+package manifest
+  -> boundary/hash verification
+  -> optional trusted signature
   -> ABI verification (C++)
   -> module factory/class index
   -> controller instance

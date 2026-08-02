@@ -7,3 +7,5 @@ include/json.hpp
 compile_commands.json
 __pycache__/
 *.py[cod]
+.codex/
+.agents/

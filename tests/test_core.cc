@@ -849,6 +849,60 @@ void TestDagValidationAndReset()
     executor.join();
     assert(rejected);
 }
+
+void TestPluginTrustPolicy()
+{
+    const std::string className = "CascadeVerifiedPolicyModule";
+    auto &registry = AnalysisModuleRegistry::Get();
+    registry.Register(className, []() { return std::make_unique<LifecycleModule>(); });
+    PluginOrigin verifiedOrigin;
+    verifiedOrigin.Package = "local-package";
+    verifiedOrigin.ManifestPath = "/tmp/local-package/plugin_manifest.json";
+    verifiedOrigin.ManifestSha256 = std::string(64, 'a');
+    verifiedOrigin.ArtifactSha256 = std::string(64, 'b');
+    verifiedOrigin.Trust = PluginTrustStatus::Verified;
+    registry.SetPluginOrigin(className, verifiedOrigin);
+
+    AMCM verifiedController;
+    const auto verifiedModules = verifiedController.ListAvailableModules();
+    assert(std::find(verifiedModules.begin(), verifiedModules.end(), className) != verifiedModules.end());
+    auto module = verifiedController.RegisterModule(className, "verified-policy-instance");
+    const auto output = std::filesystem::temp_directory_path() / "cascade-verified-policy";
+    std::filesystem::remove_all(output);
+    module->SetOutputDirectory(output.string());
+    assert(verifiedController.RunAModule(module).Succeeded());
+    {
+        std::ifstream input(module->GetLastProvenancePath());
+        nlohmann::json manifest;
+        input >> manifest;
+        assert(manifest.at("plugin").at("package") == "local-package");
+        assert(manifest.at("plugin").at("trust") == "Verified");
+        assert(manifest.at("plugin").at("signer_fingerprint").is_null());
+    }
+
+    AMCM strictController(PluginTrustPolicy::RequireSigned);
+    const auto strictModules = strictController.ListAvailableModules();
+    assert(std::find(strictModules.begin(), strictModules.end(), className) == strictModules.end());
+    bool unsignedRejected = false;
+    try
+    {
+        strictController.RegisterModule(className, "strict-rejected");
+    }
+    catch (const std::exception &)
+    {
+        unsignedRejected = true;
+    }
+    assert(unsignedRejected);
+
+    verifiedOrigin.Trust = PluginTrustStatus::Signed;
+    verifiedOrigin.SignerFingerprint = std::string(64, 'c');
+    registry.SetPluginOrigin(className, verifiedOrigin);
+    const auto signedModules = strictController.ListAvailableModules();
+    assert(std::find(signedModules.begin(), signedModules.end(), className) != signedModules.end());
+    strictController.RegisterModule(className, "strict-signed");
+    registry.Unregister(className);
+    std::filesystem::remove_all(output);
+}
 } // namespace
 
 int main()
@@ -863,6 +917,7 @@ int main()
     TestOutputTransactions();
     TestProvenanceCacheLink();
     TestControllerContracts();
+    TestPluginTrustPolicy();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();
     TestBorrowedRootObjectsRemainAlive();

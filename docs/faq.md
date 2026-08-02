@@ -10,13 +10,14 @@ around them.
 
 Use C++ for event-heavy loops, ROOT-native algorithms, and libraries already
 implemented in C++. Use Python for orchestration, summaries, light transformations,
-and ecosystem integration. A signed package can contain both.
+and ecosystem integration. One verified package can contain both.
 
-## Why must Python modules also be signed?
+## Why are Python modules verified too?
 
 Python plugin code executes with the user's privileges just like C++ plugin code.
-The manifest provides publisher trust, file integrity, and deterministic discovery
-for both languages.
+The manifest provides file integrity and deterministic discovery for both
+languages. Publisher signing is optional; use `--require-signed` when
+authentication is required for both C++ and Python packages.
 
 ## Why is my successful module `Skipped`?
 

@@ -6,7 +6,8 @@
 # Cascade
 
 Cascade is a C++17/Python analysis framework for ROOT-based workflows. Analysis
-code is packaged as signed plugins; the core supplies lifecycle management,
+code is packaged as verified plugins with optional publisher signing; the core
+supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
@@ -27,7 +28,7 @@ owns the operational boundary:
 - deterministic snapshot caching linked to versioned provenance manifests;
 - transactional output promotion and rollback;
 - DAG dependencies and parameter links;
-- signed plugin manifests and strict C++ build fingerprints;
+- verified plugin manifests, optional signatures, and strict C++ build fingerprints;
 - subprocess isolation for native crashes and abnormal exits.
 
 ## Core model
@@ -85,28 +86,19 @@ all install variables and runtime environment setup.
 
 ## First complete run
 
-The repository includes a signed-package example with four modules:
+The repository includes a verified mixed-language package with four modules:
 
 ```text
 TextProducerModule (C++) ──> TextTransformModule (Python)
 RootEventModule (C++) ─────> RootSummaryModule (Python)
 ```
 
-Create a development signing key:
-
-```bash
-cd examples/plugins/mixed_pipeline
-openssl genpkey -algorithm Ed25519 -out plugin_private.pem
-openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
-```
-
 Build and install the example against the Cascade prefix:
 
 ```bash
+cd examples/plugins/mixed_pipeline
 CASCADE_PREFIX=/your/cascade/prefix \
 CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
-CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
 scons install
 ```
 
@@ -271,15 +263,17 @@ the child module object's memory. It currently requires POSIX `fork()`.
 
 See [Execution contract](docs/execution.md).
 
-## Plugin security and compatibility
+## Plugin verification and compatibility
 
-Installed plugins are accepted only when:
+Installed plugins are verified by default when:
 
 1. the package manifest uses schema 2;
-2. its Ed25519 signature matches a key in the external trust store;
-3. every listed file matches its SHA-256 digest;
-4. module names and paths satisfy package rules;
-5. C++ ABI version and full build fingerprint match the runtime.
+2. every listed file matches its SHA-256 digest;
+3. module names and paths satisfy package rules;
+4. C++ ABI version and full build fingerprint match the runtime.
+
+Publisher signatures are optional. Use `cascade --require-signed ...` when every
+plugin must also have an Ed25519 signature matching the external trust store.
 
 The ABI fingerprint includes compiler, standard library, C++ mode, ROOT version,
 pointer width, build mode, and libstdc++ ABI/debug settings.
@@ -305,7 +299,7 @@ See [Plugin development and distribution](docs/plugins.md) and
 | [DAG execution](docs/dag.md) | Composing modules and propagating failures or parameters |
 | [Command-line interface](docs/cli.md) | Diagnosing installations and running modules, DAG workflows, or ROOT macros |
 | [Plotting](docs/plotting.md) | Producing ROOT or Matplotlib plots |
-| [Plugin guide](docs/plugins.md) | Packaging, signing, installing, and diagnosing plugins |
+| [Plugin guide](docs/plugins.md) | Packaging, verifying, optionally signing, and diagnosing plugins |
 | [Examples](docs/examples.md) | Finding runnable scripts and ROOT macros |
 | [Migration to 0.3](docs/migration-0.3.md) | Updating pre-0.3 source and older configuration |
 | [Troubleshooting](docs/troubleshooting.md) | Resolving build, plugin, cache, config, and runtime failures |
@@ -319,10 +313,10 @@ See [Plugin development and distribution](docs/plugins.md) and
 - Subprocess isolation contains plugin crashes; it is not a security sandbox.
 - Snapshot caching assumes a module's parameters, manager state, code hash, and
   output root describe its deterministic inputs.
-- Python plugin discovery accepts only signed manifest entries ending in
+- Python plugin discovery accepts only verified manifest entries ending in
   `module.py`.
-- C++ plugins must be rebuilt and re-signed whenever the plugin ABI or fingerprint
-  changes.
+- C++ plugins must be rebuilt whenever the plugin ABI or fingerprint changes;
+  signed distributions must also be re-signed.
 
 ## Development checks
 

@@ -132,8 +132,8 @@ python3 -c 'import cascade; print(cascade.__version__); print(cascade.__abi_tag_
 cascade doctor plugins
 ```
 
-For a new empty prefix, `doctor plugins` may report missing plugin roots or trusted
-keys. That is expected until the first signed package is installed.
+For a new empty prefix, `doctor plugins` may report missing plugin roots. A trust
+store is required only by `cascade --require-signed ...`.
 
 Check direct dynamic linking when imports fail:
 
@@ -155,7 +155,7 @@ framework change:
 
 1. reinstall Cascade;
 2. rebuild all C++ plugin libraries;
-3. regenerate and re-sign plugin manifests;
+3. regenerate plugin manifests and re-sign distributed packages;
 4. run `cascade doctor plugins`;
 5. run normal and isolated smoke tests.
 
@@ -168,6 +168,7 @@ scons test -j2
 git diff --check
 ```
 
-For plugin changes, also install into a temporary prefix, build a signed test
+For plugin changes, also install into a temporary prefix, build a verified test
 package, run `cascade doctor plugins`, and execute one in-process and one isolated
-workflow.
+workflow. Distribution pipelines should additionally build a signed package and
+run `cascade --require-signed doctor plugins`.

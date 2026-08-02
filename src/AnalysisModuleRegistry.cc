@@ -25,8 +25,29 @@ void AnalysisModuleRegistry::Register(const std::string &name, ModuleFactory fac
 void AnalysisModuleRegistry::Unregister(const std::string &name)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
+    m_PluginOrigins.erase(name);
     m_MetadataProviders.erase(name);
     m_Factories.erase(name);
+}
+
+void AnalysisModuleRegistry::SetPluginOrigin(const std::string &name, PluginOrigin origin)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_PluginOrigins[name] = std::move(origin);
+}
+
+void AnalysisModuleRegistry::ClearPluginOrigin(const std::string &name)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_PluginOrigins.erase(name);
+}
+
+std::optional<PluginOrigin> AnalysisModuleRegistry::GetPluginOrigin(const std::string &name) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const auto iterator = m_PluginOrigins.find(name);
+    if (iterator == m_PluginOrigins.end()) return std::nullopt;
+    return iterator->second;
 }
 
 std::unique_ptr<IAnalysisModule> AnalysisModuleRegistry::Create(const std::string &name) const

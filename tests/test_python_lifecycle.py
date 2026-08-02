@@ -115,6 +115,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(manifest["result"]["status"], "Done")
         self.assertEqual(len(manifest["identity"]["snapshot_hash"]), 64)
 
+    def test_plugin_origin_is_recorded_in_provenance(self):
+        module = Module()
+        module.set_plugin_origin({
+            "package": "python-local",
+            "trust": "Verified",
+            "manifest_path": "/tmp/python-local/plugin_manifest.json",
+            "manifest_sha256": "a" * 64,
+            "artifact_sha256": "b" * 64,
+            "signer_fingerprint": None,
+        })
+        module._hash_cache_path = lambda: str(pathlib.Path(self.tempdir.name) / "origin-cache.json")
+        self.assertTrue(module.run().succeeded())
+        manifest = json.loads(
+            pathlib.Path(module.get_last_provenance_path()).read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["plugin"]["package"], "python-local")
+        self.assertEqual(manifest["plugin"]["trust"], "Verified")
+
     def test_each_failure_phase(self):
         for phase in (
             base.ModulePhase.INIT,

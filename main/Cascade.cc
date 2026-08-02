@@ -47,8 +47,21 @@ ParamValue ParamValueFromPython(const py::handle &object)
 
 PYBIND11_MODULE(_cascade, m)
 {
+    py::enum_<PluginTrustPolicy>(m, "PluginTrustPolicy")
+        .value("Verified", PluginTrustPolicy::Verified)
+        .value("RequireSigned", PluginTrustPolicy::RequireSigned);
+    py::enum_<PluginTrustStatus>(m, "PluginTrustStatus")
+        .value("Verified", PluginTrustStatus::Verified)
+        .value("Signed", PluginTrustStatus::Signed);
+    py::class_<PluginOrigin>(m, "PluginOrigin")
+        .def_readonly("package", &PluginOrigin::Package)
+        .def_readonly("manifest_path", &PluginOrigin::ManifestPath)
+        .def_readonly("manifest_sha256", &PluginOrigin::ManifestSha256)
+        .def_readonly("artifact_sha256", &PluginOrigin::ArtifactSha256)
+        .def_readonly("signer_fingerprint", &PluginOrigin::SignerFingerprint)
+        .def_readonly("trust", &PluginOrigin::Trust);
     py::class_<AMCM>(m, "AMCM")
-        .def(py::init<>())
+        .def(py::init<PluginTrustPolicy>(), py::arg("trust_policy") = PluginTrustPolicy::Verified)
         .def("register_module",
              [](AMCM &self, const std::string &base)
              {
@@ -63,6 +76,8 @@ PYBIND11_MODULE(_cascade, m)
              })
         .def("get_list_available_modules", &AMCM::ListAvailableModules)
         .def("get_list_available_module_metadata", &AMCM::ListAvailableModuleMetadata)
+        .def("get_plugin_origin", &AMCM::GetPluginOrigin)
+        .def("get_plugin_trust_policy", &AMCM::GetPluginTrustPolicy)
         .def("get_list_registered_modules", &AMCM::ListRegisteredModules)
         .def("get_status", &AMCM::GetStatus)
         .def("get_module", &AMCM::GetModule, py::return_value_policy::reference_internal)
