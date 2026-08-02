@@ -60,7 +60,8 @@ flowchart TD
     A4 --> H1
 
     %% Plugins (C++)
-    C3 --> J1["Plugin dir<br/>CASCADE_PLUGIN_DIR"]
+    C3 --> J0["Runtime + persistent prefixes<br/>config.json"]
+    J0 --> J1["C++ plugin roots<br/>temporary env override"]
     J1 --> J2["Package subdirectories"]
     J1 --> J3["Manifest per package<br/>optional signature"]
     J3 --> J4["Verify hash/boundary<br/>optional publisher trust"]
@@ -72,7 +73,8 @@ flowchart TD
 
     %% Plugins (Python)
     A2 --> K1["Unified module controller<br/>py_amcm.register_module"]
-    K1 --> K2["Python plugin discovery<br/>cascade.pyplugin"]
+    J0 --> K2["Python plugin discovery<br/>cascade.pyplugin"]
+    K1 --> K2
     K2 --> K3["Package-specific manifest<br/>optional signature"]
     K3 --> K4["Verify hash/boundary<br/>optional publisher trust"]
     K4 --> K5["SHA-256 file checks"]

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 class DummyBaseModule:
@@ -47,6 +48,53 @@ def _sha256(path):
 
 
 class PluginPackageTests(unittest.TestCase):
+    def test_persistent_prefix_is_discovered_without_plugin_root_environment(self):
+        controller = _load_controller()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            prefix = root / "plugin-prefix"
+            plugin_root = prefix / "lib" / "cascade" / "pyplugin"
+            package = plugin_root / "persistent-package"
+            package.mkdir(parents=True)
+            source = package / "persistent_module.py"
+            source.write_text(
+                "from cascade.pymodule import base_module\n"
+                "class PersistentModule(base_module):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            (package / "plugin_manifest.json").write_text(
+                json.dumps({
+                    "schema": 2,
+                    "package": package.name,
+                    "modules": [{
+                        "name": "persistent_module",
+                        "language": "python",
+                        "path": source.name,
+                        "sha256": _sha256(source),
+                        "classes": ["PersistentModule"],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            config = root / "config.json"
+            config.write_text(
+                json.dumps({
+                    "schema": 1,
+                    "plugin_prefixes": [{"path": str(prefix), "enabled": True}],
+                }),
+                encoding="utf-8",
+            )
+            environment = {"CASCADE_CONFIG_FILE": str(config)}
+            with mock.patch.dict(os.environ, environment, clear=False):
+                os.environ.pop("CASCADE_PYPLUGIN_DIR", None)
+                os.environ.pop("CASCADE_PLUGIN_TRUST_STORE", None)
+                controller._PYPLUGIN_CACHE = None
+                controller._PYPLUGIN_CACHE_KEY = None
+                index = controller._load_python_plugin_index()
+            self.assertEqual(set(index), {"PersistentModule"})
+            self.assertEqual(index["PersistentModule"]["origin"]["trust"], "Verified")
+
     def test_multiple_signed_packages_coexist(self):
         controller = _load_controller()
         with tempfile.TemporaryDirectory() as directory:

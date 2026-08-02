@@ -93,14 +93,16 @@ TextProducerModule (C++) ──> TextTransformModule (Python)
 RootEventModule (C++) ─────> RootSummaryModule (Python)
 ```
 
-Build and install the example against the Cascade prefix:
+Install the example into a persistent plugin prefix:
 
 ```bash
-cd examples/plugins/mixed_pipeline
-CASCADE_PREFIX=/your/cascade/prefix \
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-scons install
+cascade plugin install examples/plugins/mixed_pipeline \
+  --prefix ~/.local
 ```
+
+The command builds into a staging prefix, verifies both languages, publishes the
+package, and records the prefix in the user Cascade configuration. Future
+terminals discover it without `CASCADE_PLUGIN_DIR` or `CASCADE_PYPLUGIN_DIR`.
 
 Verify the installed package and run both execution modes:
 
@@ -274,6 +276,9 @@ Installed plugins are verified by default when:
 
 Publisher signatures are optional. Use `cascade --require-signed ...` when every
 plugin must also have an Ed25519 signature matching the external trust store.
+
+Additional plugin prefixes are persisted with `cascade plugin install` or
+`cascade plugin path add`; each new process rescans and revalidates them.
 
 The ABI fingerprint includes compiler, standard library, C++ mode, ROOT version,
 pointer width, build mode, and libstdc++ ABI/debug settings.

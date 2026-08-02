@@ -35,12 +35,13 @@ export LD_LIBRARY_PATH="${CASCADE_PREFIX}/lib:${LD_LIBRARY_PATH}"
 ## Build and install
 
 ```bash
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline scons install
+cascade plugin install . --prefix ~/.local
 ```
 
 The source-tree `SConstruct` delegates to Cascade's plugin template. It replaces
 `@BASENAME@` and `@VERSION_HASH@`, compiles C++ modules, installs Python sources,
-and generates separate verified manifests.
+generates separate verified manifests, verifies the staged package, and records
+the prefix in the persistent Cascade configuration.
 
 To test a signed distribution instead:
 
@@ -48,10 +49,10 @@ To test a signed distribution instead:
 openssl genpkey -algorithm Ed25519 -out plugin_private.pem
 openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
 
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
-CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
-scons install
+cascade --require-signed plugin install . \
+  --prefix ~/.local \
+  --private-key "$PWD/plugin_private.pem" \
+  --public-key "$PWD/plugin_public.pem"
 ```
 
 The local `.gitignore` excludes these development keys. Use an external protected

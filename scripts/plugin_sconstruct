@@ -123,18 +123,19 @@ def require_env(name, default=None):
     return value
 
 prefix = os.environ.get("CASCADE_PREFIX", os.path.expanduser("~/.local"))
+plugin_prefix = os.environ.get("CASCADE_PLUGIN_PREFIX", prefix)
 package_name = os.environ.get("CASCADE_PLUGIN_PACKAGE", os.path.basename(os.getcwd()))
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", package_name):
     raise RuntimeError("CASCADE_PLUGIN_PACKAGE must contain only letters, digits, '.', '_', or '-'")
-pyplugin_root = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "pyplugin"))
-plugin_root = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(prefix, "lib", "cascade", "plugin"))
+pyplugin_root = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(plugin_prefix, "lib", "cascade", "pyplugin"))
+plugin_root = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(plugin_prefix, "lib", "cascade", "plugin"))
 site_packages = os.path.join(pyplugin_root, package_name)
 plugin_lib_dir = os.path.join(plugin_root, package_name)
 plugin_include_dir = os.path.join(
-    os.environ.get("CASCADE_PLUGIN_INCLUDE_DIR", os.path.join(prefix, "include", "cascade", "plugin")),
+    os.environ.get("CASCADE_PLUGIN_INCLUDE_DIR", os.path.join(plugin_prefix, "include", "cascade", "plugin")),
     package_name,
 )
-trust_store_dir = os.environ.get("CASCADE_PLUGIN_TRUST_STORE", os.path.join(prefix, "share", "cascade", "trusted_keys"))
+trust_store_dir = os.environ.get("CASCADE_PLUGIN_TRUST_STORE", os.path.join(plugin_prefix, "share", "cascade", "trusted_keys"))
 core_inc = os.environ.get("CASCADE_CORE_INCLUDE", os.path.join(prefix, "include", "cascade"))
 core_lib = os.environ.get("CASCADE_CORE_LIB", os.path.join(prefix, "lib"))
 root_config = require_env("ROOT_CONFIG", "root-config")

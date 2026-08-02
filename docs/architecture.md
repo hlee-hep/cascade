@@ -69,7 +69,9 @@ paths.
 ### Registration
 
 ```text
-package manifest
+persistent prefix config + runtime prefix
+  -> package roots
+  -> package manifest
   -> boundary/hash verification
   -> optional trusted signature
   -> ABI verification (C++)

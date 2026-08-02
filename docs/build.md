@@ -108,7 +108,17 @@ ${CASCADE_PREFIX}/lib/cascade/pyplugin
 ${CASCADE_PREFIX}/share/cascade/trusted_keys
 ```
 
-Override them when testing an alternate installation:
+Additional plugin installations should normally be registered persistently:
+
+```bash
+cascade plugin install /path/to/plugin --prefix /data/cascade-plugins
+cascade plugin path list
+```
+
+Registered prefixes survive new terminal sessions. Cascade still validates
+their packages on every process start.
+
+Environment overrides remain useful for temporary tests:
 
 ```bash
 export CASCADE_PLUGIN_DIR=/path/to/cpp/packages

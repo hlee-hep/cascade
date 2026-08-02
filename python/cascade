@@ -10,8 +10,10 @@ Cascade CLI:
 import argparse
 import ctypes
 import hashlib
+import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -28,6 +30,31 @@ _CLI_PREFIX = os.environ.get(
 _CLI_PYTHON_ROOT = os.path.join(_CLI_PREFIX, "lib")
 if os.path.isdir(os.path.join(_CLI_PYTHON_ROOT, "cascade")):
     sys.path.insert(0, _CLI_PYTHON_ROOT)
+
+try:
+    from cascade.plugin_paths import (
+        add_plugin_prefix,
+        canonical_prefix,
+        config_path,
+        configured_plugin_prefixes,
+        load_config,
+        plugin_layout,
+        remove_plugin_prefix,
+        unique_paths,
+    )
+except ImportError:
+    _PLUGIN_PATHS_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "plugin_paths.py")
+    _PLUGIN_PATHS_SPEC = importlib.util.spec_from_file_location("cascade_cli_plugin_paths", _PLUGIN_PATHS_FILE)
+    _PLUGIN_PATHS_MODULE = importlib.util.module_from_spec(_PLUGIN_PATHS_SPEC)
+    _PLUGIN_PATHS_SPEC.loader.exec_module(_PLUGIN_PATHS_MODULE)
+    add_plugin_prefix = _PLUGIN_PATHS_MODULE.add_plugin_prefix
+    canonical_prefix = _PLUGIN_PATHS_MODULE.canonical_prefix
+    config_path = _PLUGIN_PATHS_MODULE.config_path
+    configured_plugin_prefixes = _PLUGIN_PATHS_MODULE.configured_plugin_prefixes
+    load_config = _PLUGIN_PATHS_MODULE.load_config
+    plugin_layout = _PLUGIN_PATHS_MODULE.plugin_layout
+    remove_plugin_prefix = _PLUGIN_PATHS_MODULE.remove_plugin_prefix
+    unique_paths = _PLUGIN_PATHS_MODULE.unique_paths
 
 # ------------ logging  ------------
 def _log(level: str, msg: str) -> None:
@@ -93,6 +120,44 @@ def _default_plugin_dirs() -> Tuple[str, str]:
     cpp_dir = os.environ.get("CASCADE_PLUGIN_DIR", os.path.join(_CLI_PREFIX, "lib", "cascade", "plugin"))
     py_dir = os.environ.get("CASCADE_PYPLUGIN_DIR", os.path.join(_CLI_PREFIX, "lib", "cascade", "pyplugin"))
     return cpp_dir, py_dir
+
+
+def _runtime_plugin_layouts() -> List[Dict[str, str]]:
+    layouts = []
+    trust_override = os.environ.get("CASCADE_PLUGIN_TRUST_STORE")
+    cpp_override = os.environ.get("CASCADE_PLUGIN_DIR")
+    python_override = os.environ.get("CASCADE_PYPLUGIN_DIR")
+    if cpp_override or python_override:
+        layouts.append({
+            "prefix": "environment",
+            "cpp": os.path.realpath(cpp_override) if cpp_override else "",
+            "python": os.path.realpath(python_override) if python_override else "",
+            "trust_store": os.path.realpath(
+                trust_override or os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys")
+            ),
+            "source": "environment",
+        })
+    for prefix in configured_plugin_prefixes():
+        layout = plugin_layout(prefix)
+        layout["source"] = "config"
+        if trust_override:
+            layout["trust_store"] = os.path.realpath(trust_override)
+        layouts.append(layout)
+    default_layout = plugin_layout(_CLI_PREFIX)
+    default_layout["source"] = "cascade"
+    if trust_override:
+        default_layout["trust_store"] = os.path.realpath(trust_override)
+    layouts.append(default_layout)
+
+    result = []
+    seen = set()
+    for layout in layouts:
+        key = (layout["cpp"], layout["python"], layout["trust_store"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(layout)
+    return result
 
 def _manifest_classes(path: str) -> List[str]:
     try:
@@ -357,46 +422,348 @@ def _doctor_plugin_dir(
 
 
 def cmd_doctor_plugins(args) -> None:
-    cpp_default, py_default = _default_plugin_dirs()
-    cpp_dir = args.cpp_dir or cpp_default
-    py_dir = args.py_dir or py_default
-    trust_store = args.trust_store or os.environ.get(
-        "CASCADE_PLUGIN_TRUST_STORE", os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys")
-    )
-    trusted_keys = []
-    if os.path.isdir(trust_store):
-        trusted_keys = [
-            os.path.join(trust_store, entry)
-            for entry in sorted(os.listdir(trust_store))
-            if entry.endswith(".pem") and os.path.isfile(os.path.join(trust_store, entry))
-        ]
     require_signed = bool(getattr(args, "require_signed", False))
     quiet = bool(getattr(args, "json", False))
     reports = []
-    if require_signed and not trusted_keys and not quiet:
-        _log("WARN", f"no trusted plugin keys found in {trust_store}")
-    cpp_errors, cpp_names = _doctor_plugin_dir(
-        cpp_dir, "cpp", not args.no_abi, trusted_keys, require_signed, reports, quiet
-    )
-    py_errors, py_names = _doctor_plugin_dir(
-        py_dir, "python", False, trusted_keys, require_signed, reports, quiet
-    )
-    errors = cpp_errors + py_errors
-    duplicates = sorted(set(cpp_names) & set(py_names))
-    if duplicates:
+    if args.cpp_dir or args.py_dir:
+        cpp_default, py_default = _default_plugin_dirs()
+        layouts = [{
+            "prefix": "explicit",
+            "cpp": os.path.realpath(args.cpp_dir or cpp_default),
+            "python": os.path.realpath(args.py_dir or py_default),
+            "trust_store": os.path.realpath(
+                args.trust_store
+                or os.environ.get("CASCADE_PLUGIN_TRUST_STORE")
+                or os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys")
+            ),
+            "source": "explicit",
+        }]
+    else:
+        layouts = _runtime_plugin_layouts()
+        if args.trust_store:
+            for layout in layouts:
+                layout["trust_store"] = os.path.realpath(args.trust_store)
+
+    errors = 0
+    cpp_names = []
+    py_names = []
+    for layout in layouts:
+        trust_store = layout["trust_store"]
+        trusted_keys = []
+        if os.path.isdir(trust_store):
+            trusted_keys = [
+                os.path.join(trust_store, entry)
+                for entry in sorted(os.listdir(trust_store))
+                if entry.endswith(".pem") and os.path.isfile(os.path.join(trust_store, entry))
+            ]
+        if require_signed and not trusted_keys and not quiet:
+            _log("WARN", f"no trusted plugin keys found in {trust_store}")
+
+        report_start = len(reports)
+        cpp_errors, layout_cpp_names = (0, [])
+        py_errors, layout_py_names = (0, [])
+        if layout["cpp"]:
+            cpp_errors, layout_cpp_names = _doctor_plugin_dir(
+                layout["cpp"], "cpp", not args.no_abi, trusted_keys, require_signed, reports, quiet
+            )
+        if layout["python"]:
+            py_errors, layout_py_names = _doctor_plugin_dir(
+                layout["python"], "python", False, trusted_keys, require_signed, reports, quiet
+            )
+        for report in reports[report_start:]:
+            report["prefix"] = layout["prefix"]
+            report["source"] = layout["source"]
+        errors += cpp_errors + py_errors
+        cpp_names.extend(layout_cpp_names)
+        py_names.extend(layout_py_names)
+
+    duplicate_cpp = sorted({name for name in cpp_names if cpp_names.count(name) > 1})
+    duplicate_python = sorted({name for name in py_names if py_names.count(name) > 1})
+    cross_language_duplicates = sorted(set(cpp_names) & set(py_names))
+    duplicates = {
+        "cpp": duplicate_cpp,
+        "python": duplicate_python,
+        "cross_language": cross_language_duplicates,
+    }
+    if any(duplicates.values()):
         if not quiet:
-            _log("ERROR", f"duplicate module names across C++ and Python plugins: {duplicates}")
+            _log("ERROR", f"duplicate plugin module names: {duplicates}")
         errors += 1
     if quiet:
         _emit({
             "require_signed": require_signed,
-            "trust_store": os.path.realpath(trust_store),
+            "config": config_path(),
+            "layouts": layouts,
             "packages": reports,
             "duplicates": duplicates,
             "succeeded": errors == 0,
         }, True)
     if errors:
         raise SystemExit(1)
+
+
+# ------------ plugin management ------------
+def cmd_plugin_path_list(args) -> None:
+    document = load_config()
+    entries = []
+    for entry in document["plugin_prefixes"]:
+        layout = plugin_layout(entry["path"])
+        entries.append({
+            "path": entry["path"],
+            "enabled": entry.get("enabled", True),
+            "exists": os.path.isdir(entry["path"]),
+            "cpp": layout["cpp"],
+            "python": layout["python"],
+            "trust_store": layout["trust_store"],
+        })
+    if args.json:
+        _emit({"config": config_path(), "plugin_prefixes": entries}, True)
+        return
+    print(f"Config: {config_path()}")
+    if not entries:
+        print("No persistent plugin prefixes configured.")
+        return
+    for entry in entries:
+        state = "enabled" if entry["enabled"] else "disabled"
+        availability = "present" if entry["exists"] else "missing"
+        print(f"{entry['path']} ({state}, {availability})")
+
+
+def cmd_plugin_path_add(args) -> None:
+    prefix = canonical_prefix(args.prefix)
+    if not os.path.isdir(prefix):
+        if not args.create:
+            raise FileNotFoundError(f"Plugin prefix does not exist: {prefix}")
+        os.makedirs(prefix, exist_ok=True)
+    changed = add_plugin_prefix(prefix)
+    _emit({
+        "prefix": prefix,
+        "config": config_path(),
+        "changed": changed,
+    }, args.json)
+
+
+def cmd_plugin_path_remove(args) -> None:
+    prefix = canonical_prefix(args.prefix)
+    changed = remove_plugin_prefix(prefix)
+    if not changed:
+        raise RuntimeError(f"Plugin prefix is not registered: {prefix}")
+    _emit({
+        "prefix": prefix,
+        "config": config_path(),
+        "changed": True,
+    }, args.json)
+
+
+def _remove_path(path: str) -> None:
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+
+
+def _publish_staged_plugin(stage_prefix: str, target_prefix: str, package: str) -> List[Dict[str, Any]]:
+    stage = plugin_layout(stage_prefix)
+    target = plugin_layout(target_prefix)
+    rollback_root = os.path.join(stage_prefix, ".rollback")
+    os.makedirs(rollback_root, exist_ok=True)
+    operations = []
+    specifications = [
+        (os.path.join(stage["cpp"], package), os.path.join(target["cpp"], package), "cpp"),
+        (os.path.join(stage["python"], package), os.path.join(target["python"], package), "python"),
+        (os.path.join(stage["include"], package), os.path.join(target["include"], package), "include"),
+    ]
+    staged_key = os.path.join(stage["trust_store"], package + ".pem")
+    if os.path.isfile(staged_key):
+        specifications.append(
+            (staged_key, os.path.join(target["trust_store"], package + ".pem"), "public-key")
+        )
+
+    try:
+        for source, destination, label in specifications:
+            backup = os.path.join(rollback_root, label)
+            operation = {
+                "label": label,
+                "destination": destination,
+                "backup": backup,
+                "had_destination": False,
+                "published": False,
+            }
+            operations.append(operation)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            operation["had_destination"] = os.path.lexists(destination)
+            if operation["had_destination"]:
+                os.replace(destination, backup)
+            if os.path.lexists(source):
+                os.replace(source, destination)
+                operation["published"] = True
+    except Exception:
+        _restore_publish_operations(operations)
+        raise
+    return operations
+
+
+def _restore_publish_operations(operations: List[Dict[str, Any]]) -> None:
+    for operation in reversed(operations):
+        destination = operation["destination"]
+        backup = operation["backup"]
+        if operation["published"] and os.path.lexists(destination):
+            _remove_path(destination)
+        if operation["had_destination"] and os.path.lexists(backup):
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            os.replace(backup, destination)
+
+
+def _verify_staged_plugin(
+    stage_prefix: str,
+    package: str,
+    require_signed: bool,
+    quiet: bool = False,
+) -> Dict[str, Any]:
+    layout = plugin_layout(stage_prefix)
+    trusted_keys = []
+    if os.path.isdir(layout["trust_store"]):
+        trusted_keys = [
+            os.path.join(layout["trust_store"], name)
+            for name in sorted(os.listdir(layout["trust_store"]))
+            if name.endswith(".pem") and os.path.isfile(os.path.join(layout["trust_store"], name))
+        ]
+    reports = []
+    errors = 0
+    found = False
+    for language, root, check_abi in (
+        ("cpp", layout["cpp"], True),
+        ("python", layout["python"], False),
+    ):
+        package_dir = os.path.join(root, package)
+        if not os.path.isdir(package_dir):
+            continue
+        found = True
+        package_errors, _ = _doctor_plugin_package(
+            package_dir,
+            language,
+            check_abi,
+            trusted_keys,
+            require_signed=require_signed,
+            reports=reports,
+            quiet=quiet,
+        )
+        errors += package_errors
+    if not found:
+        raise RuntimeError("Plugin build did not install a C++ or Python package")
+    if errors:
+        raise RuntimeError(f"Staged plugin verification failed with {errors} error(s)")
+    return {"packages": reports, "trust_store": layout["trust_store"]}
+
+
+def _other_prefix_package_locations(package: str, target_prefix: str) -> List[str]:
+    target_prefix = canonical_prefix(target_prefix)
+    prefixes = unique_paths(configured_plugin_prefixes() + [os.path.realpath(_CLI_PREFIX)])
+    locations = []
+    for prefix in prefixes:
+        if prefix == target_prefix:
+            continue
+        layout = plugin_layout(prefix)
+        for root in (layout["cpp"], layout["python"]):
+            package_dir = os.path.join(root, package)
+            if os.path.isdir(package_dir):
+                locations.append(package_dir)
+    for root in (os.environ.get("CASCADE_PLUGIN_DIR"), os.environ.get("CASCADE_PYPLUGIN_DIR")):
+        if root:
+            package_dir = os.path.join(os.path.realpath(root), package)
+            if os.path.isdir(package_dir) and package_dir not in locations:
+                locations.append(package_dir)
+    return locations
+
+
+def cmd_plugin_install(args) -> None:
+    source = os.path.realpath(os.path.abspath(os.path.expanduser(args.source)))
+    if not os.path.isdir(source):
+        raise FileNotFoundError(f"Plugin source directory not found: {source}")
+    if not os.path.isfile(os.path.join(source, "SConstruct")):
+        raise FileNotFoundError(f"Plugin source does not contain SConstruct: {source}")
+    package = args.package or os.path.basename(source)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", package):
+        raise ValueError("Plugin package must contain only letters, digits, '.', '_', or '-'")
+    target_prefix = canonical_prefix(args.prefix)
+    conflicts = _other_prefix_package_locations(package, target_prefix)
+    if conflicts:
+        raise RuntimeError(
+            "Plugin package is already installed under another active prefix: "
+            + ", ".join(conflicts)
+        )
+    os.makedirs(target_prefix, exist_ok=True)
+    stage_prefix = tempfile.mkdtemp(prefix=".cascade-plugin-stage-", dir=target_prefix)
+    publish_operations = []
+    try:
+        stage = plugin_layout(stage_prefix)
+        environment = dict(os.environ)
+        environment.update({
+            "CASCADE_PREFIX": os.path.realpath(_CLI_PREFIX),
+            "CASCADE_PLUGIN_PREFIX": stage_prefix,
+            "CASCADE_PLUGIN_PACKAGE": package,
+            "CASCADE_PLUGIN_DIR": stage["cpp"],
+            "CASCADE_PYPLUGIN_DIR": stage["python"],
+            "CASCADE_PLUGIN_INCLUDE_DIR": stage["include"],
+            "CASCADE_PLUGIN_TRUST_STORE": stage["trust_store"],
+            "CASCADE_CORE_INCLUDE": os.path.join(os.path.realpath(_CLI_PREFIX), "include", "cascade"),
+            "CASCADE_CORE_LIB": os.path.join(os.path.realpath(_CLI_PREFIX), "lib"),
+        })
+        environment.pop("CASCADE_PLUGIN_PRIVATE_KEY", None)
+        environment.pop("CASCADE_PLUGIN_PUBLIC_KEY", None)
+        if args.private_key:
+            environment["CASCADE_PLUGIN_PRIVATE_KEY"] = os.path.realpath(os.path.expanduser(args.private_key))
+        if args.public_key:
+            environment["CASCADE_PLUGIN_PUBLIC_KEY"] = os.path.realpath(os.path.expanduser(args.public_key))
+
+        command = [args.scons, "install", f"-j{args.jobs}"]
+        if not args.json:
+            _log("INFO", f"Building plugin {package} in {source}")
+        completed = subprocess.run(
+            command,
+            cwd=source,
+            env=environment,
+            capture_output=args.json,
+            text=args.json,
+        )
+        if completed.returncode != 0:
+            if args.json and completed.stderr:
+                _log("ERROR", completed.stderr.rstrip())
+            raise RuntimeError(f"Plugin build failed with exit code {completed.returncode}")
+
+        verification = _verify_staged_plugin(
+            stage_prefix,
+            package,
+            bool(getattr(args, "require_signed", False)),
+            quiet=args.json,
+        )
+        publish_operations = _publish_staged_plugin(stage_prefix, target_prefix, package)
+        try:
+            registered = add_plugin_prefix(target_prefix)
+        except Exception:
+            _restore_publish_operations(publish_operations)
+            raise
+        published = [
+            operation["destination"]
+            for operation in publish_operations
+            if operation["published"]
+        ]
+        target_layout = plugin_layout(target_prefix)
+        verification["trust_store"] = target_layout["trust_store"]
+        for report in verification.get("packages", []):
+            staged_path = report.get("path", "")
+            if staged_path.startswith(stage_prefix + os.sep):
+                report["path"] = target_prefix + staged_path[len(stage_prefix):]
+        _emit({
+            "package": package,
+            "source": source,
+            "prefix": target_prefix,
+            "registered_prefix": registered,
+            "published": published,
+            "verification": verification,
+        }, args.json)
+    finally:
+        shutil.rmtree(stage_prefix, ignore_errors=True)
 
 # ------------ framework commands ------------
 def _framework_info() -> Dict[str, Any]:
@@ -1153,6 +1520,38 @@ def build_parser() -> argparse.ArgumentParser:
     plugins.add_argument("--no-abi", action="store_true", help="Skip C++ plugin dlopen/ABI checks")
     plugins.add_argument("--json", action="store_true", help="Emit machine-readable verification results")
     plugins.set_defaults(func=cmd_doctor_plugins)
+
+    plugin = sub.add_parser("plugin", help="Install plugins and manage persistent plugin prefixes")
+    plugin_sub = plugin.add_subparsers(dest="plugin_command", required=True)
+    plugin_install = plugin_sub.add_parser("install", help="Build, verify, publish, and register a plugin")
+    plugin_install.add_argument("source", help="Plugin source directory containing SConstruct")
+    plugin_install.add_argument(
+        "--prefix",
+        default=os.path.expanduser("~/.local"),
+        help="Plugin installation prefix (default: ~/.local)",
+    )
+    plugin_install.add_argument("--package", help="Installed package name (default: source directory name)")
+    plugin_install.add_argument("--private-key", help="Ed25519 private key used to sign installed manifests")
+    plugin_install.add_argument("--public-key", help="Public key installed into the target trust store")
+    plugin_install.add_argument("--jobs", type=_positive_int, default=2, help="Parallel SCons jobs")
+    plugin_install.add_argument("--scons", default="scons", help="SCons executable name or path")
+    plugin_install.add_argument("--json", action="store_true", help="Emit machine-readable installation result")
+    plugin_install.set_defaults(func=cmd_plugin_install)
+
+    plugin_path = plugin_sub.add_parser("path", help="Manage persistent plugin prefixes")
+    plugin_path_sub = plugin_path.add_subparsers(dest="plugin_path_command", required=True)
+    plugin_path_list = plugin_path_sub.add_parser("list", help="List persistent plugin prefixes")
+    plugin_path_list.add_argument("--json", action="store_true", help="Emit machine-readable prefix information")
+    plugin_path_list.set_defaults(func=cmd_plugin_path_list)
+    plugin_path_add = plugin_path_sub.add_parser("add", help="Register a persistent plugin prefix")
+    plugin_path_add.add_argument("prefix", help="Plugin installation prefix")
+    plugin_path_add.add_argument("--create", action="store_true", help="Create the prefix if it does not exist")
+    plugin_path_add.add_argument("--json", action="store_true", help="Emit machine-readable result")
+    plugin_path_add.set_defaults(func=cmd_plugin_path_add)
+    plugin_path_remove = plugin_path_sub.add_parser("remove", help="Unregister a persistent plugin prefix")
+    plugin_path_remove.add_argument("prefix", help="Plugin installation prefix")
+    plugin_path_remove.add_argument("--json", action="store_true", help="Emit machine-readable result")
+    plugin_path_remove.set_defaults(func=cmd_plugin_path_remove)
 
     module = sub.add_parser("module", help="Discover or run verified analysis modules")
     module_sub = module.add_subparsers(dest="module_command", required=True)

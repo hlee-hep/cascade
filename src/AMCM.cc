@@ -110,6 +110,72 @@ fs::path RuntimePrefix()
     return home && *home ? fs::path(home) / ".local" : fs::path(".");
 }
 
+fs::path UserConfigPath()
+{
+    if (const char *configured = std::getenv("CASCADE_CONFIG_FILE"); configured && *configured) return configured;
+    if (const char *configHome = std::getenv("XDG_CONFIG_HOME"); configHome && *configHome)
+        return fs::path(configHome) / "cascade" / "config.json";
+    const char *home = std::getenv("HOME");
+    return (home && *home ? fs::path(home) : fs::path(".")) / ".config" / "cascade" / "config.json";
+}
+
+std::vector<fs::path> ConfiguredPluginPrefixes()
+{
+    const fs::path configPath = UserConfigPath();
+    if (!fs::is_regular_file(configPath)) return {};
+    try
+    {
+        std::ifstream input(configPath);
+        nlohmann::json config;
+        input >> config;
+        if (!config.is_object() || config.value("schema", 0) != 1)
+            throw std::runtime_error("unsupported config schema");
+        const auto entries = config.value("plugin_prefixes", nlohmann::json::array());
+        if (!entries.is_array()) throw std::runtime_error("plugin_prefixes must be an array");
+        std::vector<fs::path> prefixes;
+        for (const auto &entry : entries)
+        {
+            std::string path;
+            bool enabled = true;
+            if (entry.is_string())
+                path = entry.get<std::string>();
+            else if (entry.is_object())
+            {
+                path = entry.value("path", "");
+                enabled = entry.value("enabled", true);
+            }
+            else
+                throw std::runtime_error("invalid plugin prefix entry");
+            if (enabled && !path.empty()) prefixes.emplace_back(path);
+        }
+        return prefixes;
+    }
+    catch (const std::exception &error)
+    {
+        LOG_WARN("PLUGIN", "Cannot read Cascade plugin config '" << configPath.string() << "': " << error.what());
+        return {};
+    }
+}
+
+std::vector<fs::path> CppPluginRoots()
+{
+    std::vector<fs::path> candidates;
+    if (const char *configured = std::getenv("CASCADE_PLUGIN_DIR"); configured && *configured)
+        candidates.emplace_back(configured);
+    for (const auto &prefix : ConfiguredPluginPrefixes())
+        candidates.push_back(prefix / "lib" / "cascade" / "plugin");
+    candidates.push_back(RuntimePrefix() / "lib" / "cascade" / "plugin");
+
+    std::vector<fs::path> roots;
+    std::set<std::string> seen;
+    for (const auto &candidate : candidates)
+    {
+        const std::string normalized = fs::absolute(candidate).lexically_normal().string();
+        if (seen.insert(normalized).second) roots.emplace_back(normalized);
+    }
+    return roots;
+}
+
 std::vector<TrustedKey> LoadTrustedKeys(const fs::path &trustStore, bool warnIfMissing)
 {
     std::vector<TrustedKey> keys;
@@ -309,13 +375,8 @@ AMCM::AMCM(PluginTrustPolicy trustPolicy) : m_TrustPolicy(trustPolicy)
 {
     InterruptManager::Init();
     m_Dag = std::make_unique<DAGManager>();
-    const char *pluginDir = std::getenv("CASCADE_PLUGIN_DIR");
-    if (!pluginDir || std::string(pluginDir).empty())
-        LoadPlugins((RuntimePrefix() / "lib" / "cascade" / "plugin").string());
-    else
-    {
-        LoadPlugins(pluginDir);
-    }
+    for (const auto &pluginRoot : CppPluginRoots())
+        LoadPlugins(pluginRoot.string());
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)

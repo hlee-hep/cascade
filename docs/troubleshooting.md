@@ -95,6 +95,20 @@ Always start with:
 cascade doctor plugins
 ```
 
+### Plugin disappears in a new terminal
+
+Environment-only plugin roots are temporary. Register the installation prefix:
+
+```bash
+cascade plugin path add /path/to/plugin-prefix
+cascade plugin path list
+```
+
+The prefix is the directory containing `lib/cascade/plugin` and
+`lib/cascade/pyplugin`, not either package root itself. Prefer
+`cascade plugin install SOURCE --prefix PREFIX` to install and register in one
+transaction.
+
 ### Trust store missing or empty
 
 This affects only commands using `--require-signed`. Install the publisher public

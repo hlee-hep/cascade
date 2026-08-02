@@ -19,6 +19,44 @@ plugin roots, and trust store. `doctor plugins` reports `VERIFIED` or `SIGNED`
 packages and checks manifests, hashes, package boundaries, Python class
 declarations, and the complete C++ ABI tag.
 
+## Install and locate plugins
+
+The recommended installation command combines build, staged verification,
+publish, and persistent prefix registration:
+
+```bash
+cascade plugin install ./my-plugin
+cascade plugin install ./my-plugin --prefix /data/cascade-plugins
+```
+
+The default plugin prefix is `~/.local`. The source directory must contain a
+Cascade-compatible `SConstruct`. Installation first targets a temporary
+directory inside the destination prefix. Cascade publishes the package only
+after its manifest, hashes, Python declarations, C++ ABI, and active signature
+policy pass verification. Existing package directories are restored if publish
+or configuration update fails.
+
+Signed installation uses explicit key arguments:
+
+```bash
+cascade --require-signed plugin install ./my-plugin \
+  --private-key /secure/publisher-private.pem \
+  --public-key /provisioning/publisher-public.pem
+```
+
+Persistent prefixes are managed separately when packages were installed by an
+external tool:
+
+```bash
+cascade plugin path add /opt/experiment-plugins
+cascade plugin path list
+cascade plugin path remove /opt/experiment-plugins
+```
+
+`path add --create` creates a missing prefix. Configuration is stored in
+`${XDG_CONFIG_HOME:-~/.config}/cascade/config.json`. `CASCADE_CONFIG_FILE`
+selects another file for tests and isolated environments.
+
 Require trusted publisher signatures for controller-backed commands by placing
 the global option before the command:
 
@@ -102,9 +140,10 @@ The mixed plugin contains a runnable
 
 ## JSON output
 
-`info`, `doctor env`, `doctor plugins`, `module list`, `module run`, and `dag run`
-support `--json`. Framework and module stdout is redirected to stderr during
-execution so stdout remains a single JSON document.
+`info`, `doctor env`, `doctor plugins`, plugin management commands, `module
+list`, `module run`, and `dag run` support `--json`. Framework and module stdout
+is redirected to stderr during execution so stdout remains a single JSON
+document.
 
 Single-module JSON includes the module `run_id` and `provenance` path. DAG JSON
 includes the workflow `provenance` path.

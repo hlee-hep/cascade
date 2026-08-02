@@ -133,6 +133,28 @@ Python packages are imported through the private namespace.
 
 ## Build and install
 
+The recommended workflow is the transactional CLI installer:
+
+```bash
+cascade plugin install . --prefix ~/.local
+```
+
+It uses the active Cascade installation as the build SDK, installs into a
+temporary directory below the destination prefix, verifies the staged package,
+publishes it, and persistently registers the prefix. A new terminal therefore
+discovers the package without plugin-root environment variables.
+
+Use signing keys when building a signed distribution:
+
+```bash
+cascade --require-signed plugin install . \
+  --prefix /opt/experiment-plugins \
+  --private-key /secure/path/plugin_private.pem \
+  --public-key /provisioning/path/plugin_public.pem
+```
+
+The low-level SCons workflow remains available for packaging and development.
+
 Set the same prefix used to install Cascade:
 
 ```bash
@@ -163,6 +185,45 @@ with a letter or digit.
 The public key argument is optional when an operator provisions trusted keys
 separately. Supplying a public key without a private key is rejected. Reinstalling
 without a private key removes a stale package signature.
+
+To install plugins outside the core Cascade prefix with low-level SCons, keep
+the SDK and destination concepts separate:
+
+```bash
+CASCADE_PREFIX=/opt/cascade \
+CASCADE_PLUGIN_PREFIX=/data/cascade-plugins \
+CASCADE_PLUGIN_PACKAGE=my_package \
+scons install
+
+cascade plugin path add /data/cascade-plugins
+```
+
+`CASCADE_PREFIX` locates headers, libraries, and the installed SCons template.
+`CASCADE_PLUGIN_PREFIX` controls only the plugin destination.
+
+## Persistent plugin prefixes
+
+Cascade stores paths, not discovery results, in:
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/cascade/config.json
+```
+
+Schema 1 is:
+
+```json
+{
+  "schema": 1,
+  "plugin_prefixes": [
+    {"path": "/data/cascade-plugins", "enabled": true}
+  ]
+}
+```
+
+Each process scans the configured prefixes and repeats the normal manifest,
+artifact, ABI, and signature validation. The configuration is not a trusted
+module cache. `CASCADE_PLUGIN_DIR`, `CASCADE_PYPLUGIN_DIR`, and
+`CASCADE_PLUGIN_TRUST_STORE` remain temporary compatibility overrides.
 
 ## Installed layout
 

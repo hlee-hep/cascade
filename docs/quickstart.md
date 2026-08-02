@@ -61,13 +61,13 @@ Expected version/ABI for this tree:
 ## 4. Install the example plugin
 
 ```bash
-cd examples/plugins/mixed_pipeline
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-scons install
+cascade plugin install examples/plugins/mixed_pipeline \
+  --prefix ~/.local
 ```
 
 This installs two C++ libraries and two Python modules into separate package
-roots, then generates a verified manifest in each root.
+roots, generates a verified manifest in each root, validates the staged package,
+and persistently registers `~/.local` for future terminals.
 
 ## 5. Verify plugin installation
 
@@ -89,6 +89,7 @@ with the same compiler, ROOT installation, standard library, and build mode.
 ## 6. Run the mixed DAG
 
 ```bash
+cd examples/plugins/mixed_pipeline
 cascade module list
 cascade dag run workflow.yaml
 ```
@@ -159,10 +160,10 @@ Create a publisher key only when testing the signed-distribution policy:
 openssl genpkey -algorithm Ed25519 -out plugin_private.pem
 openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
 
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline \
-CASCADE_PLUGIN_PRIVATE_KEY="$PWD/plugin_private.pem" \
-CASCADE_PLUGIN_PUBLIC_KEY="$PWD/plugin_public.pem" \
-scons install
+cascade --require-signed plugin install . \
+  --prefix ~/.local \
+  --private-key "$PWD/plugin_private.pem" \
+  --public-key "$PWD/plugin_public.pem"
 
 cascade --require-signed doctor plugins
 cascade --require-signed dag run workflow.yaml

@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import tempfile
 import types
@@ -242,6 +243,125 @@ class CliTests(unittest.TestCase):
                     reports=strict_reports,
                 )
             self.assertEqual(strict_errors, 1)
+
+    def test_plugin_path_parser_and_commands_persist_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            config = root / "config.json"
+            prefix = root / "plugins"
+            prefix.mkdir()
+            with mock.patch.dict(os.environ, {"CASCADE_CONFIG_FILE": str(config)}, clear=False):
+                args = cli.build_parser().parse_args(["plugin", "path", "add", str(prefix), "--json"])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    args.func(args)
+                self.assertEqual(cli.configured_plugin_prefixes(), [str(prefix.resolve())])
+
+                listed = cli.build_parser().parse_args(["plugin", "path", "list", "--json"])
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    listed.func(listed)
+                payload = json.loads(output.getvalue())
+                self.assertEqual(payload["plugin_prefixes"][0]["path"], str(prefix.resolve()))
+
+                removed = cli.build_parser().parse_args(["plugin", "path", "remove", str(prefix), "--json"])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    removed.func(removed)
+                self.assertEqual(cli.configured_plugin_prefixes(), [])
+
+    def test_publish_transaction_can_restore_previous_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stage = root / "stage"
+            target = root / "target"
+            package = "example"
+            staged_package = stage / "lib" / "cascade" / "pyplugin" / package
+            target_package = target / "lib" / "cascade" / "pyplugin" / package
+            staged_package.mkdir(parents=True)
+            target_package.mkdir(parents=True)
+            (staged_package / "module.py").write_text("new", encoding="utf-8")
+            (target_package / "module.py").write_text("old", encoding="utf-8")
+
+            operations = cli._publish_staged_plugin(str(stage), str(target), package)
+            self.assertEqual((target_package / "module.py").read_text(encoding="utf-8"), "new")
+            cli._restore_publish_operations(operations)
+            self.assertEqual((target_package / "module.py").read_text(encoding="utf-8"), "old")
+
+    def test_plugin_install_publishes_then_registers_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source-plugin"
+            target = root / "target"
+            stage = target / ".cascade-plugin-stage-test"
+            config = root / "config.json"
+            source.mkdir()
+            target.mkdir()
+            (source / "SConstruct").write_text("", encoding="utf-8")
+            staged_package = stage / "lib" / "cascade" / "pyplugin" / source.name
+            staged_package.mkdir(parents=True)
+            (staged_package / "module.py").write_text("installed", encoding="utf-8")
+            args = types.SimpleNamespace(
+                source=str(source),
+                prefix=str(target),
+                package=None,
+                private_key=None,
+                public_key=None,
+                scons="scons",
+                jobs=2,
+                json=True,
+                require_signed=False,
+            )
+            completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            with mock.patch.dict(os.environ, {"CASCADE_CONFIG_FILE": str(config)}, clear=False), \
+                    mock.patch.object(cli.tempfile, "mkdtemp", return_value=str(stage)), \
+                    mock.patch.object(cli.subprocess, "run", return_value=completed) as run, \
+                    mock.patch.object(cli, "_verify_staged_plugin", return_value={"packages": []}):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli.cmd_plugin_install(args)
+
+            installed = target / "lib" / "cascade" / "pyplugin" / source.name / "module.py"
+            self.assertEqual(installed.read_text(encoding="utf-8"), "installed")
+            config_document = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(
+                config_document["plugin_prefixes"],
+                [{"enabled": True, "path": str(target.resolve())}],
+            )
+            build_environment = run.call_args.kwargs["env"]
+            self.assertEqual(build_environment["CASCADE_PYPLUGIN_DIR"], str(stage / "lib" / "cascade" / "pyplugin"))
+
+    def test_plugin_install_restores_previous_package_if_config_update_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "rollback-plugin"
+            target = root / "target"
+            stage = target / ".cascade-plugin-stage-test"
+            source.mkdir()
+            target.mkdir()
+            (source / "SConstruct").write_text("", encoding="utf-8")
+            staged_package = stage / "lib" / "cascade" / "pyplugin" / source.name
+            installed_package = target / "lib" / "cascade" / "pyplugin" / source.name
+            staged_package.mkdir(parents=True)
+            installed_package.mkdir(parents=True)
+            (staged_package / "module.py").write_text("new", encoding="utf-8")
+            (installed_package / "module.py").write_text("old", encoding="utf-8")
+            args = types.SimpleNamespace(
+                source=str(source),
+                prefix=str(target),
+                package=None,
+                private_key=None,
+                public_key=None,
+                scons="scons",
+                jobs=2,
+                json=True,
+                require_signed=False,
+            )
+            completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            with mock.patch.object(cli.tempfile, "mkdtemp", return_value=str(stage)), \
+                    mock.patch.object(cli.subprocess, "run", return_value=completed), \
+                    mock.patch.object(cli, "_verify_staged_plugin", return_value={"packages": []}), \
+                    mock.patch.object(cli, "add_plugin_prefix", side_effect=OSError("config failed")):
+                with self.assertRaises(OSError), contextlib.redirect_stdout(io.StringIO()):
+                    cli.cmd_plugin_install(args)
+            self.assertEqual((installed_package / "module.py").read_text(encoding="utf-8"), "old")
 
     def test_dag_workflow_wires_modules_and_links(self):
         workflow = {

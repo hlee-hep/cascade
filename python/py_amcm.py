@@ -18,6 +18,17 @@ import signal
 import time
 from datetime import datetime, timezone
 
+try:
+    from cascade.plugin_paths import configured_plugin_prefixes, plugin_layout, unique_paths
+except ImportError:
+    _plugin_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin_paths.py")
+    _plugin_paths_spec = importlib.util.spec_from_file_location("cascade_runtime_plugin_paths", _plugin_paths_file)
+    _plugin_paths_module = importlib.util.module_from_spec(_plugin_paths_spec)
+    _plugin_paths_spec.loader.exec_module(_plugin_paths_module)
+    configured_plugin_prefixes = _plugin_paths_module.configured_plugin_prefixes
+    plugin_layout = _plugin_paths_module.plugin_layout
+    unique_paths = _plugin_paths_module.unique_paths
+
 
 _PYPLUGIN_CACHE = None
 _PYPLUGIN_CACHE_KEY = None
@@ -77,11 +88,21 @@ def _verify_manifest(manifest_path, public_key_path):
 
 
 def _default_python_plugin_root():
-    configured = os.getenv("CASCADE_PYPLUGIN_DIR")
-    if configured:
-        return os.path.abspath(configured)
     import cascade
     return os.path.join(os.path.dirname(os.path.abspath(cascade.__file__)), "pyplugin")
+
+
+def _python_plugin_roots():
+    roots = []
+    configured = os.getenv("CASCADE_PYPLUGIN_DIR")
+    if configured:
+        roots.append(configured)
+    try:
+        roots.extend(plugin_layout(prefix)["python"] for prefix in configured_plugin_prefixes())
+    except Exception as error:
+        log(log_level.WARN, "PLUGIN", f"Cannot read persistent plugin prefixes: {error}")
+    roots.append(_default_python_plugin_root())
+    return unique_paths(roots)
 
 
 def _default_trust_store(plugin_root):
@@ -187,51 +208,58 @@ def _classes_from_file(path):
     return classes
 
 
-def _plugin_cache_key(plugin_root, require_signed=False):
-    trust_store = _default_trust_store(plugin_root)
+def _plugin_cache_key(plugin_roots, require_signed=False):
     tracked = []
-    for root, _, files in os.walk(plugin_root) if os.path.isdir(plugin_root) else []:
-        for name in files:
-            if name.endswith((".py", ".json", ".sig")):
-                path = os.path.join(root, name)
-                try:
-                    stat = os.stat(path)
-                except FileNotFoundError:
-                    continue
-                tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
-    if os.path.isdir(trust_store):
-        for name in os.listdir(trust_store):
-            if name.endswith(".pem"):
-                path = os.path.join(trust_store, name)
-                if os.path.isfile(path):
+    trust_stores = []
+    for plugin_root in plugin_roots:
+        for root, _, files in os.walk(plugin_root) if os.path.isdir(plugin_root) else []:
+            for name in files:
+                if name.endswith((".py", ".json", ".sig")):
+                    path = os.path.join(root, name)
                     try:
                         stat = os.stat(path)
                     except FileNotFoundError:
                         continue
                     tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
-    return os.path.realpath(plugin_root), os.path.realpath(trust_store), bool(require_signed), tuple(sorted(tracked))
+        trust_store = _default_trust_store(plugin_root)
+        trust_stores.append(trust_store)
+        if os.path.isdir(trust_store):
+            for name in os.listdir(trust_store):
+                if name.endswith(".pem"):
+                    path = os.path.join(trust_store, name)
+                    if os.path.isfile(path):
+                        try:
+                            stat = os.stat(path)
+                        except FileNotFoundError:
+                            continue
+                        tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
+    return (
+        tuple(plugin_roots),
+        tuple(unique_paths(trust_stores)),
+        bool(require_signed),
+        tuple(sorted(tracked)),
+    )
 
 
 def _load_python_plugin_index(require_signed=False):
     global _PYPLUGIN_CACHE, _PYPLUGIN_CACHE_KEY
-    plugin_root = _default_python_plugin_root()
-    cache_key = _plugin_cache_key(plugin_root, require_signed)
+    plugin_roots = _python_plugin_roots()
+    cache_key = _plugin_cache_key(plugin_roots, require_signed)
     if _PYPLUGIN_CACHE is not None and _PYPLUGIN_CACHE_KEY == cache_key:
         return _PYPLUGIN_CACHE
 
     index = {}
-    if not os.path.isdir(plugin_root):
-        _PYPLUGIN_CACHE = index
-        _PYPLUGIN_CACHE_KEY = cache_key
-        return index
-    trusted_keys = _trusted_key_paths(plugin_root, warn_if_missing=require_signed)
-
-    package_dirs = [
-        os.path.join(plugin_root, name)
-        for name in sorted(os.listdir(plugin_root))
-        if os.path.isdir(os.path.join(plugin_root, name))
-    ]
-    for root in package_dirs:
+    package_dirs = []
+    for plugin_root in plugin_roots:
+        if not os.path.isdir(plugin_root):
+            continue
+        trusted_keys = _trusted_key_paths(plugin_root, warn_if_missing=require_signed)
+        package_dirs.extend(
+            (os.path.join(plugin_root, name), trusted_keys)
+            for name in sorted(os.listdir(plugin_root))
+            if os.path.isdir(os.path.join(plugin_root, name))
+        )
+    for root, trusted_keys in package_dirs:
         manifest_path = os.path.join(root, "plugin_manifest.json")
         try:
             trusted_key = _verify_with_trusted_key(manifest_path, trusted_keys)
