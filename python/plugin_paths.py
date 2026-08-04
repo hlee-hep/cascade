@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 
@@ -13,7 +14,8 @@ def config_path():
         return os.path.abspath(os.path.expanduser(configured))
     config_home = os.environ.get("XDG_CONFIG_HOME")
     if not config_home:
-        config_home = os.path.join(os.path.expanduser("~"), ".config")
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        config_home = os.path.join(home, ".config")
     return os.path.join(os.path.abspath(os.path.expanduser(config_home)), "cascade", "config.json")
 
 
@@ -72,7 +74,7 @@ def configured_plugin_prefixes(path=None):
 
 def _atomic_write_config(document, path):
     directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    _ensure_real_directory(directory)
     descriptor, temporary = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
@@ -81,7 +83,20 @@ def _atomic_write_config(document, path):
             output.flush()
             os.fsync(output.fileno())
         os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        if os.rename in os.supports_dir_fd:
+            directory_descriptor = _open_real_directory(directory)
+            try:
+                os.replace(
+                    os.path.basename(temporary),
+                    os.path.basename(path),
+                    src_dir_fd=directory_descriptor,
+                    dst_dir_fd=directory_descriptor,
+                )
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        else:
+            os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
@@ -90,20 +105,92 @@ def _atomic_write_config(document, path):
 @contextmanager
 def _config_lock(path):
     directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    _ensure_real_directory(directory)
     lock_path = path + ".lock"
-    with open(lock_path, "a+", encoding="utf-8") as lock:
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if os.open in os.supports_dir_fd:
+        directory_descriptor = _open_real_directory(directory)
         try:
-            import fcntl
-        except ImportError:
-            fcntl = None
-        if fcntl is not None:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
+            descriptor = os.open(os.path.basename(lock_path), flags, 0o600, dir_fd=directory_descriptor)
         finally:
-            if fcntl is not None:
+            os.close(directory_descriptor)
+    else:
+        descriptor = os.open(lock_path, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RuntimeError(f"Cascade config lock must be a regular file: {lock_path}")
+    with os.fdopen(descriptor, "a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            if os.path.getsize(lock_path) == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _ensure_real_directory(directory):
+    directory = os.path.abspath(directory)
+    missing = []
+    current = directory
+    while not os.path.lexists(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    while True:
+        metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(f"Cascade config parent must not be a symbolic link: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"Cascade config parent is not a directory: {current}")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(missing):
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise RuntimeError(f"Cascade config parent is not a real directory: {path}")
+
+
+def _open_real_directory(directory):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(os.sep, flags)
+    try:
+        for component in os.path.abspath(directory).split(os.sep):
+            if not component:
+                continue
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        result = descriptor
+        descriptor = -1
+        return result
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def add_plugin_prefix(prefix, path=None):

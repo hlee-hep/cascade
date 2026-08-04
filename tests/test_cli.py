@@ -6,6 +6,8 @@ import io
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import tempfile
 import types
 import unittest
@@ -22,6 +24,13 @@ def _load_cli():
 
 
 cli = _load_cli()
+from cascade_cli import common as cli_common
+from cascade_cli import cache as cli_cache
+from cascade_cli import execution as cli_execution
+from cascade_cli import plugin as cli_plugin
+from cascade_cli import parser as cli_parser
+from cascade_cli import provenance as cli_provenance
+from cascade_cli import system as cli_system
 
 
 class _FakeHandle:
@@ -154,24 +163,113 @@ class CliTests(unittest.TestCase):
         }
 
     def test_key_value_parsing(self):
-        self.assertEqual(cli._parse_kv("enabled=true"), ("enabled", True))
-        self.assertEqual(cli._parse_kv("count=4"), ("count", 4))
-        self.assertEqual(cli._parse_kv('items=["a", 2]'), ("items", ["a", 2]))
+        self.assertEqual(cli_common._parse_kv("enabled=true"), ("enabled", True))
+        self.assertEqual(cli_common._parse_kv("count=4"), ("count", 4))
+        self.assertEqual(cli_common._parse_kv('items=["a", 2]'), ("items", ["a", 2]))
         with self.assertRaises(argparse.ArgumentTypeError):
-            cli._parse_kv("=missing")
+            cli_common._parse_kv("=missing")
+
+    def test_entrypoint_exports_main(self):
+        self.assertTrue(callable(cli.main))
 
     def test_signed_policy_is_a_global_strengthening_option(self):
-        args = cli.build_parser().parse_args(["--require-signed", "module", "list"])
+        args = cli_parser.build_parser().parse_args(["--require-signed", "module", "list"])
         self.assertTrue(args.require_signed)
-        self.assertIs(args.func, cli.cmd_module_list)
+        self.assertIs(args.func, cli_execution.cmd_module_list)
+
+    def test_cache_list_explain_and_prune_missing_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            existing = root / "run.json"
+            existing.write_text("{}", encoding="utf-8")
+            cache_file = root / "analysis.yaml"
+            cache_file.write_text(
+                "schema_version: 1\n"
+                "snapshots:\n"
+                "  - hash: present\n"
+                f"    provenance: {existing}\n"
+                "  - hash: stale\n"
+                f"    provenance: {root / 'missing.json'}\n",
+                encoding="utf-8",
+            )
+
+            listed = types.SimpleNamespace(
+                cache_directory=str(root), module=None, json=True
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                cli_cache.cmd_cache_list(listed)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["count"], 2)
+            self.assertEqual(
+                [entry["hash"] for entry in payload["snapshots"]],
+                ["present", "stale"],
+            )
+
+            explained = types.SimpleNamespace(
+                cache_directory=str(root), module="analysis", hash="present", json=True
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                cli_cache.cmd_cache_explain(explained)
+            self.assertTrue(json.loads(output.getvalue())["cached"])
+
+            pruned = types.SimpleNamespace(
+                cache_directory=str(root), module=None, all=False, dry_run=False, json=True
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                cli_cache.cmd_cache_prune(pruned)
+            self.assertEqual(json.loads(output.getvalue())["removed_count"], 1)
+            remaining = cli_cache._entries(str(root))
+            self.assertEqual([entry["hash"] for entry in remaining], ["present"])
+
+    def test_cache_prune_dry_run_does_not_modify_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            cache_file = root / "analysis.yaml"
+            cache_file.write_text("- first\n- second\n", encoding="utf-8")
+            before = cache_file.read_text(encoding="utf-8")
+            args = types.SimpleNamespace(
+                cache_directory=str(root), module="analysis", all=True, dry_run=True, json=True
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_cache.cmd_cache_prune(args)
+            self.assertEqual(cache_file.read_text(encoding="utf-8"), before)
+
+    def test_cache_commands_include_python_cache_and_filter_pruning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            cache_file = root / "python_modules.json"
+            cache_file.write_text(json.dumps({
+                "schema_version": 1,
+                "snapshots": [
+                    {"hash": "one", "provenance": "", "module": "first"},
+                    {"hash": "two", "provenance": "", "module": "second"},
+                ],
+            }), encoding="utf-8")
+
+            entries = cli_cache._entries(str(root), "first")
+            self.assertEqual([(entry["module"], entry["hash"]) for entry in entries], [("first", "one")])
+
+            args = types.SimpleNamespace(
+                cache_directory=str(root), module="first", all=True, dry_run=False, json=True
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_cache.cmd_cache_prune(args)
+            document = json.loads(cache_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [(entry["module"], entry["hash"]) for entry in document["snapshots"]],
+                [("second", "two")],
+            )
 
     def test_root_arguments_are_escaped(self):
         with tempfile.TemporaryDirectory() as directory:
             macro = pathlib.Path(directory) / "Macro.C"
             macro.write_text("", encoding="utf-8")
             completed = types.SimpleNamespace(returncode=0)
-            with mock.patch.object(cli.subprocess, "run", return_value=completed) as run:
-                cli._root_invoke(
+            with mock.patch.object(cli_system.subprocess, "run", return_value=completed) as run:
+                cli_system._root_invoke(
                     str(macro),
                     None,
                     ['quote"value', r"slash\value"],
@@ -191,11 +289,11 @@ class CliTests(unittest.TestCase):
             (root / "two").mkdir()
             (root / "ignored.txt").write_text("", encoding="utf-8")
             with mock.patch.object(
-                cli,
+                cli_plugin,
                 "_doctor_plugin_package",
                 return_value=(0, []),
             ) as doctor:
-                cli._doctor_plugin_dir(str(root), "python", False, [])
+                cli_plugin._doctor_plugin_dir(str(root), "python", False, [])
             visited = [pathlib.Path(call.args[0]).name for call in doctor.call_args_list]
             self.assertEqual(visited, ["one", "two"])
 
@@ -217,7 +315,7 @@ class CliTests(unittest.TestCase):
                     "name": "local_module",
                     "language": "python",
                     "path": source.name,
-                    "sha256": cli._sha256_file(str(source)),
+                    "sha256": cli_plugin._sha256_file(str(source)),
                     "classes": ["LocalModule"],
                 }],
             }
@@ -225,7 +323,7 @@ class CliTests(unittest.TestCase):
 
             reports = []
             with contextlib.redirect_stdout(io.StringIO()):
-                errors, names = cli._doctor_plugin_package(
+                errors, names = cli_plugin._doctor_plugin_package(
                     str(package), "python", False, [], reports=reports
                 )
             self.assertEqual(errors, 0)
@@ -234,7 +332,7 @@ class CliTests(unittest.TestCase):
 
             strict_reports = []
             with contextlib.redirect_stdout(io.StringIO()):
-                strict_errors, _ = cli._doctor_plugin_package(
+                strict_errors, _ = cli_plugin._doctor_plugin_package(
                     str(package),
                     "python",
                     False,
@@ -251,22 +349,22 @@ class CliTests(unittest.TestCase):
             prefix = root / "plugins"
             prefix.mkdir()
             with mock.patch.dict(os.environ, {"CASCADE_CONFIG_FILE": str(config)}, clear=False):
-                args = cli.build_parser().parse_args(["plugin", "path", "add", str(prefix), "--json"])
+                args = cli_parser.build_parser().parse_args(["plugin", "path", "add", str(prefix), "--json"])
                 with contextlib.redirect_stdout(io.StringIO()):
                     args.func(args)
-                self.assertEqual(cli.configured_plugin_prefixes(), [str(prefix.resolve())])
+                self.assertEqual(cli_plugin.configured_plugin_prefixes(), [str(prefix.resolve())])
 
-                listed = cli.build_parser().parse_args(["plugin", "path", "list", "--json"])
+                listed = cli_parser.build_parser().parse_args(["plugin", "path", "list", "--json"])
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     listed.func(listed)
                 payload = json.loads(output.getvalue())
                 self.assertEqual(payload["plugin_prefixes"][0]["path"], str(prefix.resolve()))
 
-                removed = cli.build_parser().parse_args(["plugin", "path", "remove", str(prefix), "--json"])
+                removed = cli_parser.build_parser().parse_args(["plugin", "path", "remove", str(prefix), "--json"])
                 with contextlib.redirect_stdout(io.StringIO()):
                     removed.func(removed)
-                self.assertEqual(cli.configured_plugin_prefixes(), [])
+                self.assertEqual(cli_plugin.configured_plugin_prefixes(), [])
 
     def test_publish_transaction_can_restore_previous_package(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -281,10 +379,126 @@ class CliTests(unittest.TestCase):
             (staged_package / "module.py").write_text("new", encoding="utf-8")
             (target_package / "module.py").write_text("old", encoding="utf-8")
 
-            operations = cli._publish_staged_plugin(str(stage), str(target), package)
+            operations = cli_plugin._publish_staged_plugin(str(stage), str(target), package)
             self.assertEqual((target_package / "module.py").read_text(encoding="utf-8"), "new")
-            cli._restore_publish_operations(operations)
+            cli_plugin._restore_publish_operations(operations)
             self.assertEqual((target_package / "module.py").read_text(encoding="utf-8"), "old")
+
+    def test_strict_install_does_not_trust_a_key_created_by_the_build(self):
+        if shutil.which("openssl") is None:
+            self.skipTest("openssl is required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stage = root / "stage"
+            target = root / "target"
+            package_name = "self-signed"
+            package = stage / "lib" / "cascade" / "pyplugin" / package_name
+            trust_store = stage / "share" / "cascade" / "trusted_keys"
+            package.mkdir(parents=True)
+            trust_store.mkdir(parents=True)
+            source = package / "module.py"
+            source.write_text("class SelfSignedModule:\n    pass\n", encoding="utf-8")
+            manifest = package / "plugin_manifest.json"
+            manifest.write_text(json.dumps({
+                "schema": 2,
+                "package": package_name,
+                "modules": [{
+                    "name": "module",
+                    "language": "python",
+                    "path": source.name,
+                    "sha256": cli_plugin._sha256_file(str(source)),
+                    "classes": ["SelfSignedModule"],
+                }],
+            }), encoding="utf-8")
+            private_key = root / "private.pem"
+            staged_key = trust_store / f"{package_name}.pem"
+            subprocess.check_call(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)])
+            subprocess.check_call(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(staged_key)])
+            subprocess.check_call([
+                "openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
+                "-in", str(manifest), "-out", str(manifest) + ".sig",
+            ])
+
+            snapshots = cli_plugin._snapshot_trusted_keys(str(target), None)
+            with self.assertRaisesRegex(RuntimeError, "verification failed"):
+                cli_plugin._verify_staged_plugin(
+                    str(stage), package_name, True, snapshots, quiet=True
+                )
+
+    def test_staged_plugin_symlinks_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            stage = root / "stage"
+            package = stage / "lib" / "cascade" / "pyplugin" / "linked"
+            package.parent.mkdir(parents=True)
+            package.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "real directory"):
+                cli_plugin._verify_staged_plugin(str(stage), "linked", False, [], quiet=True)
+
+    def test_rollback_attempts_every_operation_and_preserves_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first_destination = root / "first"
+            second_destination = root / "second"
+            first_backup = root / "backup-first"
+            second_backup = root / "backup-second"
+            first_destination.write_text("new-first", encoding="utf-8")
+            second_destination.write_text("new-second", encoding="utf-8")
+            first_backup.write_text("old-first", encoding="utf-8")
+            second_backup.write_text("old-second", encoding="utf-8")
+            operations = [
+                {"label": "first", "destination": str(first_destination), "backup": str(first_backup), "had_destination": True, "published": True},
+                {"label": "second", "destination": str(second_destination), "backup": str(second_backup), "had_destination": True, "published": True},
+            ]
+            real_remove = cli_plugin._remove_path
+
+            def fail_first(path):
+                if path == str(first_destination):
+                    raise OSError("injected removal failure")
+                return real_remove(path)
+
+            with mock.patch.object(cli_plugin, "_remove_path", side_effect=fail_first):
+                with self.assertRaisesRegex(RuntimeError, "first remove"):
+                    cli_plugin._restore_publish_operations(operations)
+            self.assertEqual(second_destination.read_text(encoding="utf-8"), "old-second")
+            self.assertTrue(first_backup.exists())
+
+    def test_prospective_install_rejects_cross_package_and_cross_language_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stage = root / "stage"
+            target = root / "target"
+
+            def write_manifest(package_dir, package_name, language, module_name):
+                package_dir.mkdir(parents=True)
+                (package_dir / "plugin_manifest.json").write_text(json.dumps({
+                    "schema": 2,
+                    "package": package_name,
+                    "modules": [{
+                        "name": module_name,
+                        "language": language,
+                        "path": "module.py" if language == "python" else "Module.so",
+                        "sha256": "unused",
+                        "classes": [module_name] if language == "python" else [],
+                    }],
+                }), encoding="utf-8")
+
+            write_manifest(
+                target / "lib" / "cascade" / "pyplugin" / "existing",
+                "existing", "python", "DuplicateModule",
+            )
+            write_manifest(
+                stage / "lib" / "cascade" / "plugin" / "incoming",
+                "incoming", "cpp", "DuplicateModule",
+            )
+            layout = cli_plugin.plugin_layout(str(target))
+            with mock.patch.object(cli_plugin, "_runtime_plugin_layouts", return_value=[{
+                **layout, "source": "test",
+            }]):
+                with self.assertRaisesRegex(RuntimeError, "DuplicateModule"):
+                    cli_plugin._reject_prospective_duplicates(str(stage), str(target), "incoming")
 
     def test_plugin_install_publishes_then_registers_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -312,11 +526,11 @@ class CliTests(unittest.TestCase):
             )
             completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
             with mock.patch.dict(os.environ, {"CASCADE_CONFIG_FILE": str(config)}, clear=False), \
-                    mock.patch.object(cli.tempfile, "mkdtemp", return_value=str(stage)), \
-                    mock.patch.object(cli.subprocess, "run", return_value=completed) as run, \
-                    mock.patch.object(cli, "_verify_staged_plugin", return_value={"packages": []}):
+                    mock.patch.object(cli_plugin.tempfile, "mkdtemp", return_value=str(stage)), \
+                    mock.patch.object(cli_plugin.subprocess, "run", return_value=completed) as run, \
+                    mock.patch.object(cli_plugin, "_verify_staged_plugin", return_value={"packages": []}):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    cli.cmd_plugin_install(args)
+                    cli_plugin.cmd_plugin_install(args)
 
             installed = target / "lib" / "cascade" / "pyplugin" / source.name / "module.py"
             self.assertEqual(installed.read_text(encoding="utf-8"), "installed")
@@ -355,12 +569,12 @@ class CliTests(unittest.TestCase):
                 require_signed=False,
             )
             completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
-            with mock.patch.object(cli.tempfile, "mkdtemp", return_value=str(stage)), \
-                    mock.patch.object(cli.subprocess, "run", return_value=completed), \
-                    mock.patch.object(cli, "_verify_staged_plugin", return_value={"packages": []}), \
-                    mock.patch.object(cli, "add_plugin_prefix", side_effect=OSError("config failed")):
+            with mock.patch.object(cli_plugin.tempfile, "mkdtemp", return_value=str(stage)), \
+                    mock.patch.object(cli_plugin.subprocess, "run", return_value=completed), \
+                    mock.patch.object(cli_plugin, "_verify_staged_plugin", return_value={"packages": []}), \
+                    mock.patch.object(cli_plugin, "add_plugin_prefix", side_effect=OSError("config failed")):
                 with self.assertRaises(OSError), contextlib.redirect_stdout(io.StringIO()):
-                    cli.cmd_plugin_install(args)
+                    cli_plugin.cmd_plugin_install(args)
             self.assertEqual((installed_package / "module.py").read_text(encoding="utf-8"), "old")
 
     def test_dag_workflow_wires_modules_and_links(self):
@@ -398,8 +612,8 @@ class CliTests(unittest.TestCase):
                 dot=None,
                 json=False,
             )
-            with mock.patch.object(cli, "_load_controller", return_value=controller):
-                cli.cmd_dag_run(args)
+            with mock.patch.object(cli_execution, "_load_controller", return_value=controller):
+                cli_execution.cmd_dag_run(args)
 
             self.assertEqual(
                 controller.nodes,
@@ -442,7 +656,45 @@ class CliTests(unittest.TestCase):
                 json=False,
             )
             with self.assertRaises(ValueError):
-                cli.cmd_dag_run(args)
+                cli_execution.cmd_dag_run(args)
+
+    def test_dag_validate_configures_without_execution(self):
+        workflow = {
+            "schema_version": 1,
+            "modules": [
+                {"module": "Producer", "name": "producer", "params": {"value": 1}},
+                {"module": "Consumer", "name": "consumer", "dependencies": ["producer"]},
+            ],
+            "links": [{"from": "producer.value", "to": "consumer.input"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "workflow.json"
+            path.write_text(json.dumps(workflow), encoding="utf-8")
+            controller = _FakeController()
+            args = types.SimpleNamespace(workflow=str(path), json=False, require_signed=False)
+            output = io.StringIO()
+            with mock.patch.object(cli_execution, "_load_controller", return_value=controller), \
+                    contextlib.redirect_stdout(output):
+                cli_execution.cmd_dag_validate(args)
+            self.assertIn("Valid workflow: 2 module(s), 1 parameter link(s).", output.getvalue())
+            self.assertIsNone(controller.fail_fast)
+
+    def test_dag_validate_rejects_cycles_before_loading_controller(self):
+        workflow = {
+            "schema_version": 1,
+            "modules": [
+                {"module": "First", "name": "first", "dependencies": ["second"]},
+                {"module": "Second", "name": "second", "dependencies": ["first"]},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "workflow.json"
+            path.write_text(json.dumps(workflow), encoding="utf-8")
+            args = types.SimpleNamespace(workflow=str(path), json=False, require_signed=False)
+            with mock.patch.object(cli_execution, "_load_controller") as load_controller, \
+                    self.assertRaisesRegex(ValueError, "dependency cycle"):
+                cli_execution.cmd_dag_validate(args)
+            load_controller.assert_not_called()
 
     def test_history_discovers_and_sorts_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -456,16 +708,16 @@ class CliTests(unittest.TestCase):
             args = types.SimpleNamespace(root=[directory], kind="module", limit=1, json=True)
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                cli.cmd_history(args)
+                cli_provenance.cmd_history(args)
             payload = json.loads(output.getvalue())
             self.assertEqual([entry["run_id"] for entry in payload["runs"]], ["run-newer"])
 
     def test_diff_ignores_run_identity_and_reports_parameter_changes(self):
         before = self._module_manifest("run-before", 10)
         after = self._module_manifest("run-after", 20)
-        changes = cli._provenance_changes(
-            cli._stable_provenance(before),
-            cli._stable_provenance(after),
+        changes = cli_provenance._provenance_changes(
+            cli_provenance._stable_provenance(before),
+            cli_provenance._stable_provenance(after),
         )
         paths = {change["path"] for change in changes}
         self.assertIn("parameters.threshold", paths)
@@ -488,9 +740,9 @@ class CliTests(unittest.TestCase):
                 isolated=None,
                 json=False,
             )
-            with mock.patch.object(cli, "_load_controller", return_value=controller):
+            with mock.patch.object(cli_provenance, "_load_controller", return_value=controller):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    cli.cmd_replay(args)
+                    cli_provenance.cmd_replay(args)
             module_name, handle = controller.handles["analysis"]
             self.assertEqual(module_name, "AnalysisModule")
             self.assertEqual(handle.params, {"threshold": 25})
@@ -515,7 +767,7 @@ class CliTests(unittest.TestCase):
                 json=False,
             )
             with self.assertRaisesRegex(ValueError, "api_token"):
-                cli.cmd_replay(args)
+                cli_provenance.cmd_replay(args)
 
 
 if __name__ == "__main__":

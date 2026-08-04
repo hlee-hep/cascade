@@ -105,6 +105,10 @@ def run_tests(target, source, env):
     ):
         with open(python_source, "r", encoding="utf-8") as source_file:
             compile(source_file.read(), python_source, "exec")
+    for python_source in Glob("python/cascade_cli/*.py"):
+        source_path = str(python_source)
+        with open(source_path, "r", encoding="utf-8") as source_file:
+            compile(source_file.read(), source_path, "exec")
     subprocess.check_call(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
         env=test_environment,
@@ -223,6 +227,9 @@ cascade_dir = env['PYTHONDIR']
 cascade_files = Glob("python/*.py")
 py_install = env.Install(cascade_dir, cascade_files)
 
+cascade_cli_package_dir = os.path.join(os.path.dirname(cascade_dir), "cascade_cli")
+cascade_cli_package = env.Install(cascade_cli_package_dir, Glob("python/cascade_cli/*.py"))
+
 cascade_cli_dir = env['BINDIR']
 cascade_cli = Glob("python/cascade")
 cli_install = env.Install(cascade_cli_dir, cascade_cli)
@@ -234,7 +241,7 @@ env.AddPostAction(sign_script, make_executable)
 plugin_sconstruct = env.Install(scripts_dir, "scripts/plugin_sconstruct")
 
 cascade_init_target = os.path.join(cascade_dir, "__init__.py")
-cascade_init = env.Command(cascade_init_target, py_install, generate_init_py_head)
+cascade_init = env.Command(cascade_init_target, py_install + cascade_cli_package, generate_init_py_head)
 
 cascade_so_target = os.path.join(cascade_dir, f"_cascade{env['SHLIBSUFFIX']}")
 cascade_so_link = env.Command(cascade_so_target, pybind_install, create_symlink)
@@ -263,7 +270,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
+install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj
 
 install_targets = SCons.Util.unique(install_targets)

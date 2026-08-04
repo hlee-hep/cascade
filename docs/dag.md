@@ -54,6 +54,21 @@ controller.add_module_to_dag(
 `DAGRunResult.succeeded()` is true only when every node succeeded.
 `DAGRunResult.failed()` is true when at least one node failed or was blocked.
 
+## Validate before execution
+
+For declarative workflows, validate plugin discovery, parameters, links, and
+graph structure without running modules:
+
+```bash
+cascade dag validate workflow.yaml
+cascade dag validate workflow.yaml --json
+```
+
+Validation constructs registered module instances, so constructors should remain
+limited to parameter registration and inexpensive metadata setup. It does not
+call `Init`, `Check`, `Execute`, `Finalize`, or `Commit`, and does not create the
+configured output files.
+
 Structural errors such as cycles, missing dependencies, or invalid data links
 throw before node execution. Task failures are captured in node results.
 

@@ -242,6 +242,44 @@ class PluginPackageTests(unittest.TestCase):
                 else:
                     os.environ["CASCADE_PLUGIN_TRUST_STORE"] = previous_trust
 
+    def test_import_executes_the_exact_source_bytes_that_were_verified(self):
+        controller = _load_controller()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            plugin_root = root / "pyplugin"
+            package = plugin_root / "immutable-package"
+            package.mkdir(parents=True)
+            source = package / "immutable_module.py"
+            verified_source = (
+                "from cascade.pymodule import base_module\n"
+                "VALUE = 'verified'\n"
+                "class ImmutableModule(base_module):\n"
+                "    pass\n"
+            )
+            source.write_text(verified_source, encoding="utf-8")
+            (package / "plugin_manifest.json").write_text(json.dumps({
+                "schema": 2,
+                "package": package.name,
+                "modules": [{
+                    "name": "immutable_module",
+                    "language": "python",
+                    "path": source.name,
+                    "sha256": _sha256(source),
+                    "classes": ["ImmutableModule"],
+                }],
+            }), encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {
+                "CASCADE_PYPLUGIN_DIR": str(plugin_root),
+                "CASCADE_PLUGIN_TRUST_STORE": str(root / "missing-trust-store"),
+            }, clear=False):
+                controller._PYPLUGIN_CACHE = None
+                controller._PYPLUGIN_CACHE_KEY = None
+                index = controller._load_python_plugin_index()
+                source.write_text("raise RuntimeError('replacement executed')\n", encoding="utf-8")
+                loaded = controller._import_python_plugin(index["ImmutableModule"])
+            self.assertEqual(loaded.VALUE, "verified")
+
 
 if __name__ == "__main__":
     unittest.main()

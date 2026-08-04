@@ -87,11 +87,40 @@ file. Add `--isolated` to execute the module in a subprocess.
 Successful and cache/dry-run skipped results exit with status 0. Failed or
 interrupted results exit with status 1.
 
+## Inspect and prune snapshot caches
+
+Snapshot cache commands use `CASCADE_CACHE_DIR` or the default
+`~/.cache/cascade/snapshot_cache`. Select another root explicitly when a module
+or workflow used a custom cache directory:
+
+```bash
+cascade cache list
+cascade cache list --cache-directory output/.cache --module selection
+cascade cache explain selection SNAPSHOT_HASH --cache-directory output/.cache
+```
+
+`cache explain` reports a hit when the exact module instance and snapshot hash
+exist. It also reports the linked provenance path and whether that manifest is
+still present.
+
+Pruning removes entries whose recorded provenance manifest no longer exists:
+
+```bash
+cascade cache prune --cache-directory output/.cache --dry-run
+cascade cache prune --cache-directory output/.cache
+```
+
+Legacy hash-only entries have no provenance link and are preserved by the
+default prune mode. Use `--all` to remove every matching entry, and optionally
+`--module NAME` to restrict the operation. Cache files are read and rewritten
+under the same locks used by module execution.
+
 ## DAG workflow files
 
 Run a workflow with:
 
 ```bash
+cascade dag validate workflow.yaml
 cascade dag run workflow.yaml
 cascade dag run workflow.yaml --keep-going --dot output/final.dot
 cascade dag run workflow.yaml --json
@@ -130,6 +159,13 @@ All fields are validated and unknown fields are rejected. Module names must be
 unique. Dependencies and parameter links use instance names, while `module`
 selects the verified C++ or Python class.
 
+`dag validate` loads verified plugins, constructs every module, applies parameter
+files and inline values, checks registered parameter types, and wires the DAG
+without executing a lifecycle phase. It rejects missing or duplicate
+dependencies, self-dependencies, cycles, missing link nodes, links whose source
+is not an ancestor of the target, unregistered linked parameters, and conflicting
+DOT/provenance paths.
+
 Workflow-relative paths include `output_directory`, `cache_directory`,
 `param_file`, `dot`, and `provenance`. Parameter values themselves are not rewritten.
 `--fail-fast` and `--keep-going` override the file's failure policy.
@@ -140,8 +176,8 @@ The mixed plugin contains a runnable
 
 ## JSON output
 
-`info`, `doctor env`, `doctor plugins`, plugin management commands, `module
-list`, `module run`, and `dag run` support `--json`. Framework and module stdout
+`info`, `doctor env`, `doctor plugins`, plugin management commands, cache
+commands, `module list`, `module run`, and DAG commands support `--json`. Framework and module stdout
 is redirected to stderr during execution so stdout remains a single JSON
 document.
 

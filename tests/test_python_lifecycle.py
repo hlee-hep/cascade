@@ -114,6 +114,10 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"]["language"], "python")
         self.assertEqual(manifest["result"]["status"], "Done")
         self.assertEqual(len(manifest["identity"]["snapshot_hash"]), 64)
+        cache = json.loads(
+            (pathlib.Path(self.tempdir.name) / "cache.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(cache["snapshots"][0]["module"], "Module")
 
     def test_plugin_origin_is_recorded_in_provenance(self):
         module = Module()

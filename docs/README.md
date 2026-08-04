@@ -22,6 +22,7 @@
 - [FAQ](faq.md)
 - [Migrating to 0.3](migration-0.3.md)
 - [Versioning and compatibility](versioning.md)
+- [Preparing a release](releasing.md)
 - [Coding conventions](CONVENTIONS.md)
 - [Architecture](architecture.md)
 

@@ -279,6 +279,10 @@ provenance manifest. A cache-hit manifest records that source path, which makes 
 possible to distinguish a stale cache decision from the run that originally
 created the snapshot.
 
+Inspect both cache formats through `cascade cache list`. Python cache entries
+also record their module instance name; older schema-1 entries without that
+optional field remain readable and are identified from provenance when possible.
+
 ## Isolated execution failures
 
 ### `terminated by signal N`

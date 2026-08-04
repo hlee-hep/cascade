@@ -15,6 +15,10 @@ The current development release is **0.3.0** with the initial public
 **plugin ABI 1**. The full build fingerprint is checked in addition to the
 integer ABI.
 
+Release notes are tracked in [CHANGELOG.md](CHANGELOG.md), and the verification
+process is documented in [Preparing a release](docs/releasing.md).
+Cascade is distributed under the [MIT License](LICENSE).
+
 ## Why Cascade
 
 A Cascade analysis module concentrates on analysis logic while the framework

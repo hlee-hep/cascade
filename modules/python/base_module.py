@@ -965,7 +965,7 @@ class base_module:
         with open(path, "r", encoding="utf-8") as cache:
             data = json.load(cache)
         if isinstance(data, list) and all(isinstance(item, str) for item in data):
-            return {item: "" for item in data}
+            return {item: {"provenance": "", "module": ""} for item in data}
         if not isinstance(data, dict) or not isinstance(data.get("snapshots"), list):
             raise RuntimeError(f"Python snapshot cache has an invalid schema: {path}")
         if data.get("schema_version") != 1:
@@ -976,7 +976,10 @@ class base_module:
         for entry in data["snapshots"]:
             if not isinstance(entry, dict) or not isinstance(entry.get("hash"), str):
                 raise RuntimeError(f"Python snapshot cache has an invalid entry: {path}")
-            result[entry["hash"]] = str(entry.get("provenance") or "")
+            result[entry["hash"]] = {
+                "provenance": str(entry.get("provenance") or ""),
+                "module": str(entry.get("module") or ""),
+            }
         return result
 
     @staticmethod
@@ -984,7 +987,11 @@ class base_module:
         return {
             "schema_version": 1,
             "snapshots": [
-                {"hash": key, "provenance": hashes[key]}
+                {
+                    "hash": key,
+                    "provenance": hashes[key]["provenance"],
+                    "module": hashes[key]["module"],
+                }
                 for key in sorted(hashes)
             ],
         }
@@ -1007,7 +1014,8 @@ class base_module:
             with open(lock_path, "a+", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
                 try:
-                    return self._read_hashes(path).get(snapshot_hash, "")
+                    entry = self._read_hashes(path).get(snapshot_hash)
+                    return entry["provenance"] if entry else ""
                 finally:
                     fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -1018,7 +1026,10 @@ class base_module:
             with open(lock_path, "a+", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
                 existing = self._read_hashes(path)
-                existing[snapshot_hash] = self._pending_cache_provenance
+                existing[snapshot_hash] = {
+                    "provenance": self._pending_cache_provenance,
+                    "module": self.name() or self.get_basename(),
+                }
                 descriptor, temporary = tempfile.mkstemp(prefix=".cascade-cache-", dir=os.path.dirname(path), text=True)
                 try:
                     with os.fdopen(descriptor, "w", encoding="utf-8") as output:

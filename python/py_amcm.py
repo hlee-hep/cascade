@@ -11,10 +11,13 @@ import os
 import subprocess
 import yaml
 import copy
+import contextlib
 import sys
 import types
 import re
 import signal
+import stat
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -65,26 +68,52 @@ def _status_text(value):
     return text.title() if text.isupper() else text
 
 
-def _sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
 
 
-def _verify_manifest(manifest_path, public_key_path):
-    sig_path = manifest_path + ".sig"
-    if not os.path.exists(manifest_path) or not os.path.exists(sig_path):
-        raise RuntimeError(f"Signed plugin manifest missing: {manifest_path}")
-    cmd = [
-        "openssl", "pkeyutl", "-verify", "-pubin",
-        "-inkey", public_key_path, "-rawin",
-        "-in", manifest_path, "-sigfile", sig_path,
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if result.returncode != 0:
-        raise RuntimeError(f"Plugin manifest signature invalid: {manifest_path}")
+def _read_regular_bytes(path):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"Plugin file is not a regular file: {path}")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_manifest_bytes(manifest_bytes, signature_bytes, public_key_bytes):
+    with tempfile.TemporaryDirectory(prefix="cascade-signature-") as directory:
+        paths = {}
+        for name, data in (
+            ("manifest", manifest_bytes),
+            ("signature", signature_bytes),
+            ("public.pem", public_key_bytes),
+        ):
+            path = os.path.join(directory, name)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(data)
+            paths[name] = path
+        cmd = [
+            "openssl", "pkeyutl", "-verify", "-pubin",
+            "-inkey", paths["public.pem"], "-rawin",
+            "-in", paths["manifest"], "-sigfile", paths["signature"],
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return result.returncode == 0
 
 
 def _default_python_plugin_root():
@@ -128,21 +157,115 @@ def _trusted_key_paths(plugin_root, warn_if_missing=False):
     ]
 
 
-def _verify_with_trusted_key(manifest_path, keys):
-    for key in keys:
+def _trusted_key_snapshots(plugin_root, warn_if_missing=False):
+    snapshots = []
+    for path in _trusted_key_paths(plugin_root, warn_if_missing):
         try:
-            _verify_manifest(manifest_path, key)
-            return key
-        except RuntimeError:
-            pass
+            data = _read_regular_bytes(path)
+        except (OSError, RuntimeError) as error:
+            log(log_level.WARN, "PLUGIN", f"Cannot read trusted plugin key {path}: {error}")
+            continue
+        snapshots.append((path, data))
+    return snapshots
+
+
+def _verify_with_trusted_key(manifest_bytes, signature_bytes, keys):
+    for path, key_bytes in keys:
+        if _verify_manifest_bytes(manifest_bytes, signature_bytes, key_bytes):
+            return path, key_bytes
     return None
+
+
+@contextlib.contextmanager
+def _runtime_package_lock(package_dir):
+    package = os.path.basename(package_dir)
+    prefix = os.path.abspath(package_dir)
+    for _ in range(4):
+        prefix = os.path.dirname(prefix)
+    lock_path = os.path.join(prefix, ".cascade-locks", package + ".lock")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags)
+    except FileNotFoundError:
+        yield
+        return
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RuntimeError(f"Plugin package lock is not a regular file: {lock_path}")
+    lock = os.fdopen(descriptor, "rb")
+    with lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_RLCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _runtime_root_lock(plugin_root):
+    prefix = os.path.abspath(plugin_root)
+    for _ in range(3):
+        prefix = os.path.dirname(prefix)
+    lock_path = os.path.join(prefix, ".cascade-locks", ".index.lock")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags)
+    except FileNotFoundError:
+        yield
+        return
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RuntimeError(f"Plugin index lock is not a regular file: {lock_path}")
+    lock = os.fdopen(descriptor, "rb")
+    with lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_RLCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _contained_path(root, relative):
     if not relative or os.path.isabs(relative):
         return None
     root = os.path.realpath(root)
-    candidate = os.path.realpath(os.path.join(root, relative))
+    lexical_candidate = os.path.abspath(os.path.join(root, relative))
+    try:
+        if os.path.commonpath([root, lexical_candidate]) != root:
+            return None
+    except ValueError:
+        return None
+    current = root
+    for component in os.path.relpath(lexical_candidate, root).split(os.sep):
+        current = os.path.join(current, component)
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return None
+        except OSError:
+            return None
+    candidate = os.path.realpath(lexical_candidate)
     try:
         if os.path.commonpath([root, candidate]) != root:
             return None
@@ -153,7 +276,8 @@ def _contained_path(root, relative):
 
 def _import_python_plugin(info):
     expected_hash = info.get("sha256", "")
-    if not expected_hash or _sha256_file(info["path"]) != expected_hash:
+    source_bytes = info.get("source_bytes", b"")
+    if not expected_hash or _sha256_bytes(source_bytes) != expected_hash:
         raise RuntimeError(f"Python plugin changed after verification: {info['path']}")
     module_name = info["module"]
     if module_name in sys.modules:
@@ -173,13 +297,14 @@ def _import_python_plugin(info):
         package.__package__ = package_name
         sys.modules[package_name] = package
 
-    spec = importlib.util.spec_from_file_location(module_name, info["path"])
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot create import spec for Python plugin: {info['path']}")
-    module = importlib.util.module_from_spec(spec)
+    module = types.ModuleType(module_name)
+    module.__file__ = info["path"]
+    module.__package__ = package_name
+    module.__loader__ = None
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        code = compile(source_bytes, info["path"], "exec")
+        exec(code, module.__dict__)
     except Exception:
         sys.modules.pop(module_name, None)
         raise
@@ -194,18 +319,16 @@ def _is_base_module(base):
     return False
 
 
-def _classes_from_file(path):
+def _classes_from_bytes(data, path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=path)
+        tree = ast.parse(data.decode("utf-8"), filename=path)
     except Exception:
         return []
-    classes = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            if any(_is_base_module(base) for base in node.bases):
-                classes.append(node.name)
-    return classes
+    return [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and any(_is_base_module(base) for base in node.bases)
+    ]
 
 
 def _plugin_cache_key(plugin_roots, require_signed=False):
@@ -251,78 +374,90 @@ def _load_python_plugin_index(require_signed=False):
     index = {}
     package_dirs = []
     for plugin_root in plugin_roots:
-        if not os.path.isdir(plugin_root):
-            continue
-        trusted_keys = _trusted_key_paths(plugin_root, warn_if_missing=require_signed)
-        package_dirs.extend(
-            (os.path.join(plugin_root, name), trusted_keys)
-            for name in sorted(os.listdir(plugin_root))
-            if os.path.isdir(os.path.join(plugin_root, name))
-        )
+        with _runtime_root_lock(plugin_root):
+            if not os.path.isdir(plugin_root):
+                continue
+            trusted_keys = _trusted_key_snapshots(plugin_root, warn_if_missing=require_signed)
+            package_dirs.extend(
+                (os.path.join(plugin_root, name), trusted_keys)
+                for name in sorted(os.listdir(plugin_root))
+                if os.path.isdir(os.path.join(plugin_root, name))
+                and not os.path.islink(os.path.join(plugin_root, name))
+            )
     for root, trusted_keys in package_dirs:
         manifest_path = os.path.join(root, "plugin_manifest.json")
-        try:
-            trusted_key = _verify_with_trusted_key(manifest_path, trusted_keys)
-            signature_exists = os.path.isfile(manifest_path + ".sig")
-            if require_signed and trusted_key is None:
-                raise RuntimeError(f"Plugin package requires a trusted signature: {manifest_path}")
-            if signature_exists and trusted_key is None:
-                log(log_level.WARN, "PLUGIN", f"Plugin signature is not trusted; loading as verified: {manifest_path}")
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            if manifest.get("schema") != 2:
-                raise RuntimeError(f"Unsupported plugin manifest schema: {manifest_path}")
-            if manifest.get("package") != os.path.basename(root):
-                raise RuntimeError(f"Plugin package name does not match directory: {manifest_path}")
-        except Exception as e:
-            log(log_level.WARN, "PLUGIN", str(e))
-            continue
+        with _runtime_package_lock(root):
+            try:
+                manifest_bytes = _read_regular_bytes(manifest_path)
+                try:
+                    signature_bytes = _read_regular_bytes(manifest_path + ".sig")
+                except FileNotFoundError:
+                    signature_bytes = None
+                trusted_key = (
+                    _verify_with_trusted_key(manifest_bytes, signature_bytes, trusted_keys)
+                    if signature_bytes is not None else None
+                )
+                if require_signed and trusted_key is None:
+                    raise RuntimeError(f"Plugin package requires a trusted signature: {manifest_path}")
+                if signature_bytes is not None and trusted_key is None:
+                    log(log_level.WARN, "PLUGIN", f"Plugin signature is not trusted; loading as verified: {manifest_path}")
+                manifest = json.loads(manifest_bytes.decode("utf-8"))
+                if manifest.get("schema") != 2:
+                    raise RuntimeError(f"Unsupported plugin manifest schema: {manifest_path}")
+                if manifest.get("package") != os.path.basename(root):
+                    raise RuntimeError(f"Plugin package name does not match directory: {manifest_path}")
+            except Exception as e:
+                log(log_level.WARN, "PLUGIN", str(e))
+                continue
 
-        for entry in manifest.get("modules", []):
-            if entry.get("language") != "python":
-                continue
-            rel_path = entry.get("path", "")
-            path = _contained_path(root, rel_path)
-            if path is None:
-                log(log_level.WARN, "PLUGIN", f"Ignoring invalid python plugin manifest path: {rel_path}")
-                continue
-            if not os.path.exists(path):
-                log(log_level.WARN, "PLUGIN", f"Manifest-listed python plugin file missing: {path}")
-                continue
-            if _sha256_file(path) != entry.get("sha256", ""):
-                log(log_level.WARN, "PLUGIN", f"Python plugin hash mismatch: {path}")
-                continue
-            safe_package = "".join(character if character.isalnum() or character == "_" else "_" for character in os.path.basename(root))
-            package_token = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:12]
-            source_token = entry.get("sha256", "")[:12]
-            modname = (
-                f"cascade.pyplugin.{safe_package}_{package_token}."
-                f"{os.path.splitext(os.path.basename(path))[0]}_{source_token}"
-            )
-            for class_name in entry.get("classes") or _classes_from_file(path):
-                if class_name in index:
-                    previous = index[class_name]
-                    raise RuntimeError(
-                        "Duplicate python plugin module name "
-                        f"{class_name}: {previous['path']} and {path}"
-                    )
-                index[class_name] = {
-                    "module": modname,
-                    "class": class_name,
-                    "path": path,
-                    "package_dir": root,
-                    "manifest": manifest_path,
-                    "trusted_key": trusted_key,
-                    "sha256": entry.get("sha256", ""),
-                    "origin": {
-                        "package": os.path.basename(root),
-                        "trust": "Signed" if trusted_key else "Verified",
-                        "manifest_path": os.path.realpath(manifest_path),
-                        "manifest_sha256": _sha256_file(manifest_path),
-                        "artifact_sha256": entry.get("sha256", ""),
-                        "signer_fingerprint": _sha256_file(trusted_key) if trusted_key else None,
-                    },
-                }
+            for entry in manifest.get("modules", []):
+                if entry.get("language") != "python":
+                    continue
+                rel_path = entry.get("path", "")
+                path = _contained_path(root, rel_path)
+                if path is None:
+                    log(log_level.WARN, "PLUGIN", f"Ignoring invalid python plugin manifest path: {rel_path}")
+                    continue
+                try:
+                    source_bytes = _read_regular_bytes(path)
+                except (OSError, RuntimeError) as error:
+                    log(log_level.WARN, "PLUGIN", f"Cannot read python plugin file {path}: {error}")
+                    continue
+                if _sha256_bytes(source_bytes) != entry.get("sha256", ""):
+                    log(log_level.WARN, "PLUGIN", f"Python plugin hash mismatch: {path}")
+                    continue
+                safe_package = "".join(character if character.isalnum() or character == "_" else "_" for character in os.path.basename(root))
+                package_token = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:12]
+                source_token = entry.get("sha256", "")[:12]
+                modname = (
+                    f"cascade.pyplugin.{safe_package}_{package_token}."
+                    f"{os.path.splitext(os.path.basename(path))[0]}_{source_token}"
+                )
+                for class_name in entry.get("classes") or _classes_from_bytes(source_bytes, path):
+                    if class_name in index:
+                        previous = index[class_name]
+                        raise RuntimeError(
+                            "Duplicate python plugin module name "
+                            f"{class_name}: {previous['path']} and {path}"
+                        )
+                    index[class_name] = {
+                        "module": modname,
+                        "class": class_name,
+                        "path": path,
+                        "package_dir": root,
+                        "manifest": manifest_path,
+                        "trusted_key": trusted_key[0] if trusted_key else None,
+                        "sha256": entry.get("sha256", ""),
+                        "source_bytes": source_bytes,
+                        "origin": {
+                            "package": os.path.basename(root),
+                            "trust": "Signed" if trusted_key else "Verified",
+                            "manifest_path": os.path.realpath(manifest_path),
+                            "manifest_sha256": _sha256_bytes(manifest_bytes),
+                            "artifact_sha256": entry.get("sha256", ""),
+                            "signer_fingerprint": _sha256_bytes(trusted_key[1]) if trusted_key else None,
+                        },
+                    }
 
     _PYPLUGIN_CACHE = index
     _PYPLUGIN_CACHE_KEY = cache_key
