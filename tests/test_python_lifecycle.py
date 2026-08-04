@@ -1,8 +1,11 @@
 import importlib.util
+import importlib.machinery
+import ctypes
 import json
 import os
 import pathlib
 import signal
+import subprocess
 import sys
 import tempfile
 import types
@@ -16,6 +19,34 @@ def _load_base_module():
     cascade.log = lambda *args, **kwargs: None
     cascade.log_level = types.SimpleNamespace(INFO=1, WARN=2, ERROR=3)
     sys.modules["cascade"] = cascade
+
+    extension_path = pathlib.Path(__file__).parents[1] / "build" / "main" / "libCascade.so"
+    build_root = pathlib.Path(__file__).parents[1] / "build"
+    for library in (
+        build_root / "utils" / "libutils.so",
+        build_root / "ParamManager" / "libParamManager.so",
+        build_root / "AnalysisManager" / "libAnalysisManager.so",
+        build_root / "PlotManager" / "libPlotManager.so",
+        build_root / "src" / "libAMCM.so",
+    ):
+        ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+    loader = importlib.machinery.ExtensionFileLoader("cascade._cascade", str(extension_path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    extension = importlib.util.module_from_spec(spec)
+    loader.exec_module(extension)
+    cascade.CancellationToken = extension.CancellationToken
+    cascade.CacheManager = extension.CacheManager
+    cascade.OutputTransaction = extension.OutputTransaction
+    cascade.ExecutionContext = extension.ExecutionContext
+    cascade.IAnalysisModule = extension.IAnalysisModule
+    cascade.ModulePhase = extension.ModulePhase
+    cascade.ModuleStatus = extension.ModuleStatus
+    cascade.ProvenanceRecorder = extension.ProvenanceRecorder
+    cascade.PluginTrustPolicy = extension.PluginTrustPolicy
+    cascade.PluginVerifier = extension.PluginVerifier
+    cascade.ParamManager = extension.ParamManager
+    cascade.SnapshotHasher = extension.SnapshotHasher
+    cascade.RunResult = extension.RunResult
 
     path = pathlib.Path(__file__).parents[1] / "modules" / "python" / "base_module.py"
     spec = importlib.util.spec_from_file_location("cascade_test_base_module", path)
@@ -52,11 +83,6 @@ class Module(base.base_module):
         if self.failure is base.ModulePhase.CHECK:
             raise RuntimeError("check failed")
         return {}
-
-    def _save_hash_cache(self, snapshot_hash):
-        if self.failure is base.ModulePhase.COMMIT:
-            raise RuntimeError("commit failed")
-        return super()._save_hash_cache(snapshot_hash)
 
     def on_failure(self, phase, message):
         self.failure_hook = (phase, message)
@@ -103,7 +129,6 @@ class LifecycleTests(unittest.TestCase):
 
     def test_success(self):
         module = Module()
-        module._hash_cache_path = lambda: str(pathlib.Path(self.tempdir.name) / "cache.json")
         result = module.run()
         self.assertEqual(result.status, base.ModuleStatus.DONE)
         self.assertTrue(result.succeeded())
@@ -114,10 +139,9 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"]["language"], "python")
         self.assertEqual(manifest["result"]["status"], "Done")
         self.assertEqual(len(manifest["identity"]["snapshot_hash"]), 64)
-        cache = json.loads(
-            (pathlib.Path(self.tempdir.name) / "cache.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(cache["snapshots"][0]["module"], "Module")
+        self.assertTrue(sys.modules["cascade"].CacheManager.is_hash_cached(
+            "Module", manifest["identity"]["snapshot_hash"], str(module.context.cache_directory)
+        ))
 
     def test_plugin_origin_is_recorded_in_provenance(self):
         module = Module()
@@ -129,13 +153,58 @@ class LifecycleTests(unittest.TestCase):
             "artifact_sha256": "b" * 64,
             "signer_fingerprint": None,
         })
-        module._hash_cache_path = lambda: str(pathlib.Path(self.tempdir.name) / "origin-cache.json")
         self.assertTrue(module.run().succeeded())
         manifest = json.loads(
             pathlib.Path(module.get_last_provenance_path()).read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["plugin"]["package"], "python-local")
         self.assertEqual(manifest["plugin"]["trust"], "Verified")
+
+    def test_core_plugin_verifier_enforces_package_bound_signatures(self):
+        import hashlib
+
+        root = pathlib.Path(self.tempdir.name)
+        package = root / "pyplugin" / "signed-package"
+        trust_store = root / "trusted_keys"
+        package.mkdir(parents=True)
+        trust_store.mkdir()
+        source = package / "signed_module.py"
+        source.write_text("hello", encoding="utf-8")
+        manifest = package / "plugin_manifest.json"
+        manifest.write_text(json.dumps({
+            "schema": 2,
+            "package": package.name,
+            "modules": [{
+                "name": "signed_module",
+                "language": "python",
+                "path": source.name,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "classes": ["SignedModule"],
+            }],
+        }), encoding="utf-8")
+        private_key = root / "private.pem"
+        public_key = trust_store / f"{package.name}.pem"
+        subprocess.check_call([
+            "openssl", "genpkey", "-algorithm", "ED25519", "-out", str(private_key)
+        ])
+        subprocess.check_call([
+            "openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)
+        ])
+        subprocess.check_call([
+            "openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
+            "-in", str(manifest), "-out", str(manifest) + ".sig",
+        ])
+        cascade = sys.modules["cascade"]
+        verified = cascade.PluginVerifier.verify_package(
+            str(package), str(trust_store), cascade.PluginTrustPolicy.Verified, "python"
+        )
+        self.assertEqual(verified.trust.name, "Signed")
+
+        public_key.rename(trust_store / "another-package.pem")
+        with self.assertRaisesRegex(RuntimeError, "package-bound trusted key"):
+            cascade.PluginVerifier.verify_package(
+                str(package), str(trust_store), cascade.PluginTrustPolicy.Verified, "python"
+            )
 
     def test_each_failure_phase(self):
         for phase in (
@@ -147,7 +216,10 @@ class LifecycleTests(unittest.TestCase):
         ):
             with self.subTest(phase=phase):
                 module = Module(phase)
-                module._hash_cache_path = lambda: str(pathlib.Path(self.tempdir.name) / "cache.json")
+                if phase is base.ModulePhase.COMMIT:
+                    cache_file = pathlib.Path(self.tempdir.name) / "cache-file"
+                    cache_file.write_text("not a directory", encoding="utf-8")
+                    module.set_cache_directory(cache_file)
                 result = module.run()
                 self.assertEqual(result.status, base.ModuleStatus.FAILED)
                 self.assertEqual(result.phase, phase)
@@ -156,6 +228,9 @@ class LifecycleTests(unittest.TestCase):
 
     def test_parameter_types_are_stable(self):
         module = Module()
+        self.assertEqual(base.ModuleStatus.DONE.value, "Done")
+        self.assertEqual(base.ModulePhase.EXECUTE.value, "Execute")
+        self.assertEqual(set(module.params), {"dry_run", "force_run"})
         module.register_param("count", 1)
         module.set_param("count", 2)
         self.assertEqual(module.get_param("count"), 2)
@@ -165,9 +240,25 @@ class LifecycleTests(unittest.TestCase):
             module.set_param("missing", 1)
 
         module.register_param("items", [])
-        descriptor = module.params._types["items"]
+        descriptor = module.params.type_of("items")
         module.set_param("items", [1, "two"])
-        self.assertEqual(module.params._types["items"], descriptor)
+        self.assertEqual(module.params.type_of("items"), descriptor)
+
+        module.register_param("counts", [1, 2])
+        with self.assertRaises(TypeError):
+            module.set_param("counts", [1, "two"])
+
+    def test_parameter_yaml_uses_the_core_format(self):
+        module = Module()
+        module.register_param("threshold", 1.0, "selection threshold")
+        path = pathlib.Path(self.tempdir.name) / "params.yaml"
+        path.write_text(
+            "threshold:\n  type: double\n  value: 2\n  description: updated\n",
+            encoding="utf-8",
+        )
+        module.set_param_from_yaml(path)
+        self.assertEqual(module.get_param("threshold"), 2.0)
+        self.assertIn("description: updated", module.params.dump_yaml())
 
     def test_output_transaction_commits_and_rolls_back(self):
         output_dir = pathlib.Path(self.tempdir.name) / "outputs"
@@ -265,6 +356,22 @@ class LifecycleTests(unittest.TestCase):
         result = base.RunResult(base.ModuleStatus.DONE, base.ModulePhase.NONE, "")
         adopted = module.adopt_external_run_result(result)
         self.assertTrue(adopted.succeeded())
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
+    def test_cpp_controller_runs_python_module_isolated(self):
+        module = Module()
+        module.set_name("python-isolated")
+        module.set_output_directory(pathlib.Path(self.tempdir.name) / "outputs")
+        module.set_cache_directory(pathlib.Path(self.tempdir.name) / "cache")
+        controller = sys.modules["cascade._cascade"].AMCM()
+        controller.register_module_handle(module)
+        result = controller.run_module_isolated(module)
+        self.assertEqual(result.status, base.ModuleStatus.DONE)
+        manifest = json.loads(
+            pathlib.Path(module.get_last_provenance_path()).read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["runtime"]["language"], "python")
+        self.assertTrue(manifest["execution"]["isolated"])
 
     @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
     def test_parent_recovers_output_after_isolated_crash(self):

@@ -5,6 +5,8 @@
 #include "DAGManager.hh"
 #include "ParamManager.hh"
 #include "PlotManager.hh"
+#include "PluginVerifier.hh"
+#include "PluginPaths.hh"
 
 #include <TCanvas.h>
 #include <TFile.h>
@@ -154,6 +156,32 @@ void TestLifecycle()
     assert(commitResult.Status == ModuleStatus::Failed);
     assert(commitResult.Phase == ModulePhase::Commit);
     assert(commitResult.HasException());
+}
+
+void TestCacheManagerService()
+{
+    const auto root = std::filesystem::temp_directory_path() / "cascade-cache-manager-service";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto provenance = root / "run.json";
+    {
+        std::ofstream output(provenance);
+        output << "{}";
+    }
+    CacheManager::AddHash("first", "present", root.string(), provenance.string());
+    CacheManager::AddHash("first", "stale", root.string(), (root / "missing.json").string());
+    CacheManager::AddHash("second", "other", root.string(), "");
+    assert(CacheManager::IsHashCached("first", "present", root.string()));
+    assert(CacheManager::FindProvenance("first", "present", root.string()) == provenance.string());
+    assert(CacheManager::ListSnapshots(root.string()).size() == 3);
+    assert(CacheManager::ListSnapshots(root.string(), "second").size() == 1);
+    assert(CacheManager::Prune(root.string(), "", false, true).size() == 1);
+    assert(CacheManager::ListSnapshots(root.string()).size() == 3);
+    assert(CacheManager::Prune(root.string(), "", false).size() == 1);
+    assert(CacheManager::ListSnapshots(root.string()).size() == 2);
+    assert(CacheManager::Prune(root.string(), "first", true).size() == 1);
+    assert(CacheManager::ListSnapshots(root.string()).size() == 1);
+    std::filesystem::remove_all(root);
 }
 
 void TestOutputTransactions()
@@ -751,6 +779,7 @@ void TestDagValidationAndReset()
         });
     dag.AddDataLink("source", "target", "value -> value",
                     [&]() { target.SetParamVariant("value", source.Get<ParamValue>("value")); });
+    dag.Validate();
     const auto firstResult = dag.Execute();
     assert(firstResult.Succeeded());
     assert(executions == 1);
@@ -764,7 +793,7 @@ void TestDagValidationAndReset()
     bool rejected = false;
     try
     {
-        invalid.Execute();
+        invalid.Validate();
     }
     catch (const std::exception &)
     {
@@ -903,6 +932,97 @@ void TestPluginTrustPolicy()
     registry.Unregister(className);
     std::filesystem::remove_all(output);
 }
+
+void TestPluginVerifierService()
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "cascade-plugin-verifier-service";
+    const fs::path package = root / "pyplugin" / "example-package";
+    const fs::path trustStore = root / "trusted_keys";
+    fs::remove_all(root);
+    fs::create_directories(package);
+    fs::create_directories(trustStore);
+    {
+        std::ofstream source(package / "example_module.py");
+        source << "hello";
+    }
+    nlohmann::json manifest = {
+        {"schema", 2},
+        {"package", "example-package"},
+        {"modules",
+         {{{"name", "example_module"},
+           {"language", "python"},
+           {"path", "example_module.py"},
+           {"sha256", "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"},
+           {"classes", {"ExampleModule"}}}}},
+    };
+    {
+        std::ofstream output(package / "plugin_manifest.json");
+        output << manifest.dump(2) << '\n';
+    }
+
+    const auto verified = PluginVerifier::VerifyPackage(package.string(), trustStore.string(),
+                                                        PluginTrustPolicy::Verified, "python");
+    assert(verified.Package == "example-package");
+    assert(verified.Trust == PluginTrustStatus::Verified);
+    assert(verified.Artifacts.size() == 1);
+    assert(verified.Artifacts.front().Source == "hello");
+    assert(verified.Artifacts.front().Classes == std::vector<std::string>{"ExampleModule"});
+    assert(PluginVerifier::HashFile((package / "example_module.py").string()) ==
+           "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert(PluginVerifier::ReadFile((package / "example_module.py").string()) == "hello");
+    PluginVerifier::ValidateStagedTree(package.string());
+    const auto discovery = PluginVerifier::Discover({(root / "pyplugin").string()},
+                                                     PluginTrustPolicy::Verified, "python");
+    assert(discovery.Errors.empty());
+    assert(discovery.Packages.size() == 1);
+
+    const fs::path prefix = root / "prefix";
+    fs::create_directories(prefix);
+    const fs::path config = root / "config.json";
+    {
+        std::ofstream output(config);
+        nlohmann::json configDocument = {
+            {"schema", 1},
+            {"plugin_prefixes", nlohmann::json::array({{{"path", prefix.string()}, {"enabled", true}}})},
+        };
+        output << configDocument.dump();
+    }
+    setenv("CASCADE_CONFIG_FILE", config.string().c_str(), 1);
+    const auto prefixes = PluginPaths::ConfiguredPrefixes();
+    assert(prefixes == std::vector<std::string>{fs::weakly_canonical(prefix).string()});
+    assert(PluginPaths::Layout(prefix.string()).Python == (prefix / "lib" / "cascade" / "pyplugin").string());
+    unsetenv("CASCADE_CONFIG_FILE");
+
+    bool strictRejected = false;
+    try
+    {
+        PluginVerifier::VerifyPackage(package.string(), trustStore.string(), PluginTrustPolicy::RequireSigned,
+                                      "python");
+    }
+    catch (const std::runtime_error &)
+    {
+        strictRejected = true;
+    }
+    assert(strictRejected);
+
+    manifest["modules"][0]["sha256"] = std::string(64, '0');
+    {
+        std::ofstream output(package / "plugin_manifest.json");
+        output << manifest.dump(2) << '\n';
+    }
+    bool hashRejected = false;
+    try
+    {
+        PluginVerifier::VerifyPackage(package.string(), trustStore.string());
+    }
+    catch (const std::runtime_error &)
+    {
+        hashRejected = true;
+    }
+    assert(hashRejected);
+    fs::remove_all(root);
+}
 } // namespace
 
 int main()
@@ -914,10 +1034,12 @@ int main()
     setenv("CASCADE_OUTPUT_DIR", outputRoot.c_str(), 1);
     setenv("CASCADE_CACHE_DIR", cacheRoot.c_str(), 1);
     TestLifecycle();
+    TestCacheManagerService();
     TestOutputTransactions();
     TestProvenanceCacheLink();
     TestControllerContracts();
     TestPluginTrustPolicy();
+    TestPluginVerifierService();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();
     TestBorrowedRootObjectsRemainAlive();

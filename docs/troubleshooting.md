@@ -128,7 +128,8 @@ Keys inside a plugin package do not grant trust.
 scons install
 ```
 
-Add `CASCADE_PLUGIN_PRIVATE_KEY` only for a signed distribution.
+Use `cascade plugin install --private-key ... --public-key ...` for a signed
+distribution. Low-level plugin SCons builds are intentionally unsigned.
 
 ### Signature invalid
 
@@ -270,8 +271,7 @@ set `force_run=true`.
 Cache defaults:
 
 ```text
-C++:    ~/.cache/cascade/snapshot_cache/<module>.yaml
-Python: ~/.cache/cascade/snapshot_cache/python_modules.json
+C++/Python: ~/.cache/cascade/snapshot_cache/<module>.yaml
 ```
 
 Each schema-versioned cache entry links its hash to the successful module
@@ -279,9 +279,8 @@ provenance manifest. A cache-hit manifest records that source path, which makes 
 possible to distinguish a stale cache decision from the run that originally
 created the snapshot.
 
-Inspect both cache formats through `cascade cache list`. Python cache entries
-also record their module instance name; older schema-1 entries without that
-optional field remain readable and are identified from provenance when possible.
+Inspect the single schema-versioned cache format through `cascade cache list`.
+Python and C++ modules use the same core cache manager and locking rules.
 
 ## Isolated execution failures
 

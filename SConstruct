@@ -19,7 +19,7 @@ def generate_init_py_head(target, source, env):
     files = [f for f in os.listdir(target_dir) if f.endswith(".py") and f != "__init__.py"]
     lines = [
         "# Auto-generated cascade __init__.py\n",
-        "from ._cascade import log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version, get_abi_tag",
+        "from ._cascade import CacheManager, CancellationToken, ExecutionContext, IAnalysisModule, ModulePhase, ModuleRunManifest, ModuleStatus, OutputTransaction, ParamManager, PluginPaths, PluginVerifier, ProvenanceRecorder, RunResult, SnapshotHasher, log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version, get_abi_tag",
         "import importlib",
         "",
         "__version__ = get_version()",
@@ -36,6 +36,20 @@ def generate_init_py_head(target, source, env):
         "",
         "__all__ = [",
         "    \"log_level\",",
+        "    \"CacheManager\",",
+        "    \"CancellationToken\",",
+        "    \"ExecutionContext\",",
+        "    \"IAnalysisModule\",",
+        "    \"ModulePhase\",",
+        "    \"ModuleStatus\",",
+        "    \"OutputTransaction\",",
+        "    \"ParamManager\",",
+        "    \"PluginPaths\",",
+        "    \"ModuleRunManifest\",",
+        "    \"PluginVerifier\",",
+        "    \"ProvenanceRecorder\",",
+        "    \"RunResult\",",
+        "    \"SnapshotHasher\",",
         "    \"set_log_level\",",
         "    \"set_log_file\",",
         "    \"get_version\",",
@@ -109,10 +123,11 @@ def run_tests(target, source, env):
         source_path = str(python_source)
         with open(source_path, "r", encoding="utf-8") as source_file:
             compile(source_file.read(), source_path, "exec")
-    subprocess.check_call(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
-        env=test_environment,
-    )
+    for test_source in sorted(str(path) for path in Glob("tests/test_*.py")):
+        subprocess.check_call(
+            [sys.executable, "-m", "unittest", test_source],
+            env=test_environment,
+        )
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
     with open(str(target[0]), "w") as stamp:
         stamp.write("ok\n")

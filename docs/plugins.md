@@ -4,6 +4,13 @@ Cascade core contains no analysis modules. C++ and Python modules are discovered
 from verified plugin packages. Publisher signatures are optional and can be
 required for distributed or managed installations.
 
+Plugin root discovery, persistent prefix configuration, filesystem validation,
+hashing, manifest verification, trust decisions, and index locking are implemented
+once in the C++ core. The Python API and CLI keep their existing function names but
+delegate these operations to the same services. Python retains only the language
+boundary needed to compile/import a verified Python artifact and inspect its class
+metadata.
+
 ## Source layout
 
 The installed `plugin_sconstruct` template expects:
@@ -153,7 +160,7 @@ cascade --require-signed plugin install . \
   --public-key /provisioning/path/plugin_public.pem
 ```
 
-The low-level SCons workflow remains available for packaging and development.
+The low-level SCons workflow remains available for unsigned packaging and development.
 
 Set the same prefix used to install Cascade:
 
@@ -169,22 +176,14 @@ not require a signing key:
 CASCADE_PLUGIN_PACKAGE=my_package scons install
 ```
 
-To create a signed distribution, provide a private key and optionally install its
-public key into the selected prefix:
-
-```bash
-CASCADE_PLUGIN_PACKAGE=my_package \
-CASCADE_PLUGIN_PRIVATE_KEY=/secure/path/plugin_private.pem \
-CASCADE_PLUGIN_PUBLIC_KEY=/provisioning/path/plugin_public.pem \
-scons install
-```
-
 `CASCADE_PLUGIN_PACKAGE` accepts letters, digits, `.`, `_`, and `-`, and must start
 with a letter or digit.
 
-The public key argument is optional when an operator provisions trusted keys
-separately. Supplying a public key without a private key is rejected. Reinstalling
-without a private key removes a stale package signature.
+Signed installation must use `cascade plugin install` with both `--private-key`
+and `--public-key`. Cascade signs the completed staging tree after the plugin build
+process exits, so plugin-controlled build code never receives the private-key path.
+The trusted key is installed as `<package>.pem`; a key trusted for one package
+cannot authorize another package.
 
 To install plugins outside the core Cascade prefix with low-level SCons, keep
 the SDK and destination concepts separate:
@@ -283,8 +282,9 @@ Validation requires:
 - files exist and match SHA-256;
 - language-specific filename and class rules hold.
 
-With `RequireSigned`, the manifest must additionally have a valid Ed25519
-signature from the external trust store. Changing any installed file invalidates
+If a signature is present, it must be valid under the package-bound
+`<package>.pem` key even with the default policy. `RequireSigned` additionally
+rejects packages that have no signature. Changing any installed file invalidates
 the manifest hash and, for signed packages, requires regeneration and re-signing.
 
 ## Trust policy
@@ -317,10 +317,9 @@ cascade --require-signed module run EventModule
 cascade --require-signed dag run workflow.yaml
 ```
 
-Under the default policy, an untrusted signature is reported and the package may
-still load as `VERIFIED`; it is not claimed as publisher-authenticated. Under
-`RequireSigned`, missing, invalid, and untrusted signatures are rejected without
-fallback.
+Under the default policy, unsigned packages may load as `VERIFIED`. Invalid or
+untrusted signatures are always rejected; there is no downgrade to unsigned
+trust. Under `RequireSigned`, missing signatures are rejected as well.
 
 ## ABI 1
 
@@ -363,9 +362,11 @@ cascade doctor plugins \
   --trust-store /path/to/trusted_keys
 ```
 
-The command reports each package as `VERIFIED` or `SIGNED`, then checks hashes,
-paths, module names, Python classes, ABI version, and ABI tag. `--require-signed`
-turns every unsigned or untrusted package into an error.
+The command reports each package as `VERIFIED` or `SIGNED`, then performs the
+same static manifest, signature, boundary, hash, and identity validation used by
+both runtimes. It does not `dlopen` libraries merely for diagnosis, avoiding
+execution of plugin constructors; C++ ABI checks still run in the actual loader.
+`--require-signed` turns every unsigned package into an error.
 
 Useful runtime inspection:
 

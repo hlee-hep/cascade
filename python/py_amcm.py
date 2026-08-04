@@ -1,61 +1,15 @@
 from cascade.pymodule import base_module
-from cascade._cascade import AMCM, IAnalysisModule, PluginTrustPolicy
+from cascade._cascade import AMCM, IAnalysisModule, PluginPaths, PluginTrustPolicy, PluginVerifier
 from cascade import init_interrupt, is_interrupted, log, log_level
 import cascade
-import ast
-import hashlib
 import importlib
-import importlib.util
 import json
 import os
-import subprocess
-import yaml
-import copy
-import contextlib
 import sys
 import types
-import re
-import signal
-import stat
-import tempfile
-import time
-from datetime import datetime, timezone
-
-try:
-    from cascade.plugin_paths import configured_plugin_prefixes, plugin_layout, unique_paths
-except ImportError:
-    _plugin_paths_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin_paths.py")
-    _plugin_paths_spec = importlib.util.spec_from_file_location("cascade_runtime_plugin_paths", _plugin_paths_file)
-    _plugin_paths_module = importlib.util.module_from_spec(_plugin_paths_spec)
-    _plugin_paths_spec.loader.exec_module(_plugin_paths_module)
-    configured_plugin_prefixes = _plugin_paths_module.configured_plugin_prefixes
-    plugin_layout = _plugin_paths_module.plugin_layout
-    unique_paths = _plugin_paths_module.unique_paths
-
 
 _PYPLUGIN_CACHE = None
 _PYPLUGIN_CACHE_KEY = None
-
-
-def _utc_now():
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def _atomic_write_json(path, document):
-    path = os.path.abspath(os.path.expanduser(path))
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = f"{path}.tmp.{os.getpid()}"
-    try:
-        with open(temporary, "w", encoding="utf-8") as output:
-            json.dump(document, output, indent=2, sort_keys=False)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-    return path
 
 
 def _status_text(value):
@@ -68,217 +22,16 @@ def _status_text(value):
     return text.title() if text.isupper() else text
 
 
-def _sha256_bytes(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def _read_regular_bytes(path):
-    flags = os.O_RDONLY
-    if hasattr(os, "O_BINARY"):
-        flags |= os.O_BINARY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"Plugin file is not a regular file: {path}")
-        chunks = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
-
-
-def _verify_manifest_bytes(manifest_bytes, signature_bytes, public_key_bytes):
-    with tempfile.TemporaryDirectory(prefix="cascade-signature-") as directory:
-        paths = {}
-        for name, data in (
-            ("manifest", manifest_bytes),
-            ("signature", signature_bytes),
-            ("public.pem", public_key_bytes),
-        ):
-            path = os.path.join(directory, name)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(data)
-            paths[name] = path
-        cmd = [
-            "openssl", "pkeyutl", "-verify", "-pubin",
-            "-inkey", paths["public.pem"], "-rawin",
-            "-in", paths["manifest"], "-sigfile", paths["signature"],
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return result.returncode == 0
-
-
-def _default_python_plugin_root():
-    import cascade
-    return os.path.join(os.path.dirname(os.path.abspath(cascade.__file__)), "pyplugin")
-
-
 def _python_plugin_roots():
-    roots = []
-    configured = os.getenv("CASCADE_PYPLUGIN_DIR")
-    if configured:
-        roots.append(configured)
-    try:
-        roots.extend(plugin_layout(prefix)["python"] for prefix in configured_plugin_prefixes())
-    except Exception as error:
-        log(log_level.WARN, "PLUGIN", f"Cannot read persistent plugin prefixes: {error}")
-    roots.append(_default_python_plugin_root())
-    return unique_paths(roots)
+    return list(PluginPaths.roots("python"))
 
 
 def _default_trust_store(plugin_root):
-    configured = os.getenv("CASCADE_PLUGIN_TRUST_STORE")
-    if configured:
-        return os.path.abspath(configured)
-    prefix = os.path.abspath(plugin_root)
-    for _ in range(3):
-        prefix = os.path.dirname(prefix)
-    return os.path.join(prefix, "share", "cascade", "trusted_keys")
-
-
-def _trusted_key_paths(plugin_root, warn_if_missing=False):
-    trust_store = _default_trust_store(plugin_root)
-    if not os.path.isdir(trust_store):
-        if warn_if_missing:
-            log(log_level.WARN, "PLUGIN", f"Plugin trust store not found: {trust_store}")
-        return []
-    return [
-        os.path.join(trust_store, name)
-        for name in sorted(os.listdir(trust_store))
-        if name.endswith(".pem") and os.path.isfile(os.path.join(trust_store, name))
-    ]
-
-
-def _trusted_key_snapshots(plugin_root, warn_if_missing=False):
-    snapshots = []
-    for path in _trusted_key_paths(plugin_root, warn_if_missing):
-        try:
-            data = _read_regular_bytes(path)
-        except (OSError, RuntimeError) as error:
-            log(log_level.WARN, "PLUGIN", f"Cannot read trusted plugin key {path}: {error}")
-            continue
-        snapshots.append((path, data))
-    return snapshots
-
-
-def _verify_with_trusted_key(manifest_bytes, signature_bytes, keys):
-    for path, key_bytes in keys:
-        if _verify_manifest_bytes(manifest_bytes, signature_bytes, key_bytes):
-            return path, key_bytes
-    return None
-
-
-@contextlib.contextmanager
-def _runtime_package_lock(package_dir):
-    package = os.path.basename(package_dir)
-    prefix = os.path.abspath(package_dir)
-    for _ in range(4):
-        prefix = os.path.dirname(prefix)
-    lock_path = os.path.join(prefix, ".cascade-locks", package + ".lock")
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_path, flags)
-    except FileNotFoundError:
-        yield
-        return
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise RuntimeError(f"Plugin package lock is not a regular file: {lock_path}")
-    lock = os.fdopen(descriptor, "rb")
-    with lock:
-        if os.name == "nt":
-            import msvcrt
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_RLCK, 1)
-            try:
-                yield
-            finally:
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-@contextlib.contextmanager
-def _runtime_root_lock(plugin_root):
-    prefix = os.path.abspath(plugin_root)
-    for _ in range(3):
-        prefix = os.path.dirname(prefix)
-    lock_path = os.path.join(prefix, ".cascade-locks", ".index.lock")
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_path, flags)
-    except FileNotFoundError:
-        yield
-        return
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise RuntimeError(f"Plugin index lock is not a regular file: {lock_path}")
-    lock = os.fdopen(descriptor, "rb")
-    with lock:
-        if os.name == "nt":
-            import msvcrt
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_RLCK, 1)
-            try:
-                yield
-            finally:
-                lock.seek(0)
-                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def _contained_path(root, relative):
-    if not relative or os.path.isabs(relative):
-        return None
-    root = os.path.realpath(root)
-    lexical_candidate = os.path.abspath(os.path.join(root, relative))
-    try:
-        if os.path.commonpath([root, lexical_candidate]) != root:
-            return None
-    except ValueError:
-        return None
-    current = root
-    for component in os.path.relpath(lexical_candidate, root).split(os.sep):
-        current = os.path.join(current, component)
-        try:
-            if stat.S_ISLNK(os.lstat(current).st_mode):
-                return None
-        except OSError:
-            return None
-    candidate = os.path.realpath(lexical_candidate)
-    try:
-        if os.path.commonpath([root, candidate]) != root:
-            return None
-    except ValueError:
-        return None
-    return candidate
+    return PluginPaths.trust_store_for_root(plugin_root)
 
 
 def _import_python_plugin(info):
-    expected_hash = info.get("sha256", "")
     source_bytes = info.get("source_bytes", b"")
-    if not expected_hash or _sha256_bytes(source_bytes) != expected_hash:
-        raise RuntimeError(f"Python plugin changed after verification: {info['path']}")
     module_name = info["module"]
     if module_name in sys.modules:
         return sys.modules[module_name]
@@ -311,56 +64,13 @@ def _import_python_plugin(info):
     return module
 
 
-def _is_base_module(base):
-    if isinstance(base, ast.Name):
-        return base.id == "base_module"
-    if isinstance(base, ast.Attribute):
-        return base.attr == "base_module"
-    return False
-
-
-def _classes_from_bytes(data, path):
-    try:
-        tree = ast.parse(data.decode("utf-8"), filename=path)
-    except Exception:
-        return []
-    return [
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and any(_is_base_module(base) for base in node.bases)
-    ]
-
-
 def _plugin_cache_key(plugin_roots, require_signed=False):
-    tracked = []
-    trust_stores = []
-    for plugin_root in plugin_roots:
-        for root, _, files in os.walk(plugin_root) if os.path.isdir(plugin_root) else []:
-            for name in files:
-                if name.endswith((".py", ".json", ".sig")):
-                    path = os.path.join(root, name)
-                    try:
-                        stat = os.stat(path)
-                    except FileNotFoundError:
-                        continue
-                    tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
-        trust_store = _default_trust_store(plugin_root)
-        trust_stores.append(trust_store)
-        if os.path.isdir(trust_store):
-            for name in os.listdir(trust_store):
-                if name.endswith(".pem"):
-                    path = os.path.join(trust_store, name)
-                    if os.path.isfile(path):
-                        try:
-                            stat = os.stat(path)
-                        except FileNotFoundError:
-                            continue
-                        tracked.append((os.path.realpath(path), stat.st_mtime_ns, stat.st_size))
+    trust_stores = PluginPaths.unique([_default_trust_store(root) for root in plugin_roots])
     return (
         tuple(plugin_roots),
-        tuple(unique_paths(trust_stores)),
+        tuple(trust_stores),
         bool(require_signed),
-        tuple(sorted(tracked)),
+        PluginVerifier.index_fingerprint(plugin_roots, trust_stores),
     )
 
 
@@ -372,104 +82,59 @@ def _load_python_plugin_index(require_signed=False):
         return _PYPLUGIN_CACHE
 
     index = {}
-    package_dirs = []
-    for plugin_root in plugin_roots:
-        with _runtime_root_lock(plugin_root):
-            if not os.path.isdir(plugin_root):
-                continue
-            trusted_keys = _trusted_key_snapshots(plugin_root, warn_if_missing=require_signed)
-            package_dirs.extend(
-                (os.path.join(plugin_root, name), trusted_keys)
-                for name in sorted(os.listdir(plugin_root))
-                if os.path.isdir(os.path.join(plugin_root, name))
-                and not os.path.islink(os.path.join(plugin_root, name))
+    policy = PluginTrustPolicy.RequireSigned if require_signed else PluginTrustPolicy.Verified
+    discovery = PluginVerifier.discover(plugin_roots, policy, "python")
+    for error in discovery.errors:
+        log(log_level.WARN, "PLUGIN", error)
+    for package in discovery.packages:
+        root = os.path.dirname(package.manifest_path)
+        for artifact in package.artifacts:
+            safe_package = "".join(
+                character if character.isalnum() or character == "_" else "_"
+                for character in package.package
             )
-    for root, trusted_keys in package_dirs:
-        manifest_path = os.path.join(root, "plugin_manifest.json")
-        with _runtime_package_lock(root):
-            try:
-                manifest_bytes = _read_regular_bytes(manifest_path)
-                try:
-                    signature_bytes = _read_regular_bytes(manifest_path + ".sig")
-                except FileNotFoundError:
-                    signature_bytes = None
-                trusted_key = (
-                    _verify_with_trusted_key(manifest_bytes, signature_bytes, trusted_keys)
-                    if signature_bytes is not None else None
-                )
-                if require_signed and trusted_key is None:
-                    raise RuntimeError(f"Plugin package requires a trusted signature: {manifest_path}")
-                if signature_bytes is not None and trusted_key is None:
-                    log(log_level.WARN, "PLUGIN", f"Plugin signature is not trusted; loading as verified: {manifest_path}")
-                manifest = json.loads(manifest_bytes.decode("utf-8"))
-                if manifest.get("schema") != 2:
-                    raise RuntimeError(f"Unsupported plugin manifest schema: {manifest_path}")
-                if manifest.get("package") != os.path.basename(root):
-                    raise RuntimeError(f"Plugin package name does not match directory: {manifest_path}")
-            except Exception as e:
-                log(log_level.WARN, "PLUGIN", str(e))
-                continue
-
-            for entry in manifest.get("modules", []):
-                if entry.get("language") != "python":
-                    continue
-                rel_path = entry.get("path", "")
-                path = _contained_path(root, rel_path)
-                if path is None:
-                    log(log_level.WARN, "PLUGIN", f"Ignoring invalid python plugin manifest path: {rel_path}")
-                    continue
-                try:
-                    source_bytes = _read_regular_bytes(path)
-                except (OSError, RuntimeError) as error:
-                    log(log_level.WARN, "PLUGIN", f"Cannot read python plugin file {path}: {error}")
-                    continue
-                if _sha256_bytes(source_bytes) != entry.get("sha256", ""):
-                    log(log_level.WARN, "PLUGIN", f"Python plugin hash mismatch: {path}")
-                    continue
-                safe_package = "".join(character if character.isalnum() or character == "_" else "_" for character in os.path.basename(root))
-                package_token = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:12]
-                source_token = entry.get("sha256", "")[:12]
-                modname = (
-                    f"cascade.pyplugin.{safe_package}_{package_token}."
-                    f"{os.path.splitext(os.path.basename(path))[0]}_{source_token}"
-                )
-                for class_name in entry.get("classes") or _classes_from_bytes(source_bytes, path):
-                    if class_name in index:
-                        previous = index[class_name]
-                        raise RuntimeError(
-                            "Duplicate python plugin module name "
-                            f"{class_name}: {previous['path']} and {path}"
-                        )
-                    index[class_name] = {
-                        "module": modname,
-                        "class": class_name,
-                        "path": path,
-                        "package_dir": root,
-                        "manifest": manifest_path,
-                        "trusted_key": trusted_key[0] if trusted_key else None,
-                        "sha256": entry.get("sha256", ""),
-                        "source_bytes": source_bytes,
-                        "origin": {
-                            "package": os.path.basename(root),
-                            "trust": "Signed" if trusted_key else "Verified",
-                            "manifest_path": os.path.realpath(manifest_path),
-                            "manifest_sha256": _sha256_bytes(manifest_bytes),
-                            "artifact_sha256": entry.get("sha256", ""),
-                            "signer_fingerprint": _sha256_bytes(trusted_key[1]) if trusted_key else None,
-                        },
-                    }
+            package_token = package.manifest_sha256[:12]
+            source_token = artifact.sha256[:12]
+            modname = (
+                f"cascade.pyplugin.{safe_package}_{package_token}."
+                f"{os.path.splitext(os.path.basename(artifact.path))[0]}_{source_token}"
+            )
+            for class_name in artifact.classes:
+                if class_name in index:
+                    previous = index[class_name]
+                    raise RuntimeError(
+                        "Duplicate python plugin module name "
+                        f"{class_name}: {previous['path']} and {artifact.path}"
+                    )
+                index[class_name] = {
+                    "module": modname,
+                    "class": class_name,
+                    "path": artifact.path,
+                    "package_dir": root,
+                    "manifest": package.manifest_path,
+                    "trusted_key": package.trusted_key_path or None,
+                    "sha256": artifact.sha256,
+                    "source_bytes": artifact.source,
+                    "origin": {
+                        "package": package.package,
+                        "trust": _status_text(package.trust),
+                        "manifest_path": package.manifest_path,
+                        "manifest_sha256": package.manifest_sha256,
+                        "artifact_sha256": artifact.sha256,
+                        "signer_fingerprint": package.signer_fingerprint or None,
+                    },
+                }
 
     _PYPLUGIN_CACHE = index
     _PYPLUGIN_CACHE_KEY = cache_key
     return index
 
 
-class _CppModuleHandle:
-    language = "cpp"
-
-    def __init__(self, ctrl, module):
+class _ModuleHandle:
+    def __init__(self, ctrl, module, language):
         self._ctrl = ctrl
         self._module = module
+        self.language = language
 
     def __getattr__(self, name):
         return getattr(self._module, name)
@@ -487,168 +152,21 @@ class _CppModuleHandle:
         return self._module.get_code_hash()
 
     def get_parameters(self):
-        raw = self._module.dump_params_to_json(4)
-        data = json.loads(raw)
-        return {k: v["value"] for k, v in data.items()}
+        if self.language == "python":
+            return self._module.get_parameters()
+        data = json.loads(self._module.dump_params_to_json(4))
+        return {key: value["value"] for key, value in data.items()}
 
     def set_param(self, key, value):
         return self._module.set_param(key, value)
 
     def run(self):
-        return self._ctrl.run_module(self.name())
+        target = self._module if self.language == "python" else self.name()
+        return self._ctrl.run_module(target)
 
     def run_isolated(self):
-        return self._ctrl.run_module_isolated(self.name())
-
-
-class _PythonModuleHandle:
-    language = "python"
-
-    def __init__(self, module):
-        self._module = module
-
-    def __getattr__(self, name):
-        return getattr(self._module, name)
-
-    def name(self):
-        return self._module.name()
-
-    def get_basename(self):
-        return self._module.get_basename()
-
-    def get_status(self):
-        return self._module.get_status()
-
-    def get_code_hash(self):
-        return self._module.get_code_hash()
-
-    def get_parameters(self):
-        return self._module.get_parameters()
-
-    def set_param(self, key, value):
-        return self._module.set_param(key, value)
-
-    def run(self):
-        return self._module.run()
-
-    def run_isolated(self):
-        from cascade.pymodule.base_module import ModulePhase as PythonModulePhase
-        from cascade.pymodule.base_module import ModuleStatus as PythonModuleStatus
-        from cascade.pymodule.base_module import RunResult as PythonRunResult
-
-        module = self._module
-        module.prepare_external_run()
-        try:
-            read_fd, write_fd = os.pipe()
-        except Exception as error:
-            result = PythonRunResult(
-                PythonModuleStatus.FAILED,
-                PythonModulePhase.EXECUTE,
-                str(error),
-                error,
-            )
-            return module.adopt_external_run_result(result)
-
-        try:
-            child = os.fork()
-        except Exception as error:
-            os.close(read_fd)
-            os.close(write_fd)
-            result = PythonRunResult(
-                PythonModuleStatus.FAILED,
-                PythonModulePhase.EXECUTE,
-                str(error),
-                error,
-            )
-            return module.adopt_external_run_result(result)
-
-        if child == 0:
-            os.close(read_fd)
-            try:
-                for fatal_signal in (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGILL, signal.SIGFPE):
-                    signal.signal(fatal_signal, signal.SIG_DFL)
-                result = module.run_prepared_external()
-                payload = json.dumps({
-                    "status": result.status.value,
-                    "phase": result.phase.value,
-                    "message": result.message[:4096],
-                }).encode("utf-8")
-                while payload:
-                    written = os.write(write_fd, payload)
-                    payload = payload[written:]
-                os.close(write_fd)
-                os._exit(0)
-            except BaseException:
-                os.close(write_fd)
-                os._exit(125)
-
-        os.close(write_fd)
-        cancellation_sent = False
-        cancellation_polls = 0
-        child_status = 0
-        while True:
-            waited, child_status = os.waitpid(child, os.WNOHANG)
-            if waited == child:
-                break
-            if module.is_cancellation_requested():
-                if not cancellation_sent:
-                    try:
-                        os.kill(child, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    cancellation_sent = True
-                else:
-                    cancellation_polls += 1
-                    if cancellation_polls >= 50:
-                        try:
-                            os.kill(child, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-            time.sleep(0.01)
-
-        chunks = []
-        while True:
-            chunk = os.read(read_fd, 4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        os.close(read_fd)
-
-        if cancellation_sent:
-            result = PythonRunResult(
-                PythonModuleStatus.INTERRUPTED,
-                PythonModulePhase.EXECUTE,
-                "Isolated module was cancelled",
-            )
-        elif os.WIFSIGNALED(child_status):
-            message = f"Isolated module terminated by signal {os.WTERMSIG(child_status)}"
-            result = PythonRunResult(
-                PythonModuleStatus.FAILED,
-                PythonModulePhase.EXECUTE,
-                message,
-                RuntimeError(message),
-            )
-        else:
-            try:
-                payload = json.loads(b"".join(chunks).decode("utf-8"))
-                status = PythonModuleStatus(payload["status"])
-                phase = PythonModulePhase(payload["phase"])
-                message = str(payload.get("message", ""))
-                result = PythonRunResult(
-                    status,
-                    phase,
-                    message,
-                    RuntimeError(message) if status is PythonModuleStatus.FAILED else None,
-                )
-            except Exception as error:
-                message = f"Isolated module exited without a valid result: {error}"
-                result = PythonRunResult(
-                    PythonModuleStatus.FAILED,
-                    PythonModulePhase.EXECUTE,
-                    message,
-                    RuntimeError(message),
-                )
-        return module.adopt_external_run_result(result)
+        target = self._module if self.language == "python" else self.name()
+        return self._ctrl.run_module_isolated(target)
 
 
 class py_amcm:
@@ -656,8 +174,6 @@ class py_amcm:
         self.require_signed = bool(require_signed)
         policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
         self.ctrl = AMCM(policy)
-        self.modules = {}
-        self.executed_modules = []
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
         init_interrupt()
@@ -674,8 +190,8 @@ class py_amcm:
             raise TypeError("Module must inherit from cascade.pymodule.base_module")
         module_obj.set_name(instance_name)
         module_obj.set_plugin_origin(info["origin"])
-        handle = _PythonModuleHandle(module_obj)
-        self.modules[instance_name] = handle
+        self.ctrl.register_module_handle(module_obj)
+        handle = _ModuleHandle(self.ctrl, module_obj, "python")
         log(log_level.INFO, "CONTROL", f"Module {module_obj.get_basename()} is registered as {instance_name}")
         return handle
 
@@ -685,12 +201,12 @@ class py_amcm:
             while True:
                 count += 1
                 instance_name = f"{class_name}_{count}"
-                if instance_name not in self.modules:
+                if instance_name not in self.ctrl.get_list_registered_modules():
                     break
             self._module_name_counters[class_name] = count
         else:
             instance_name = name
-        if instance_name in self.modules:
+        if instance_name in self.ctrl.get_list_registered_modules():
             raise RuntimeError(f"Module instance already registered: {instance_name}")
         cpp_modules = set(self.ctrl.get_list_available_modules())
         py_modules = set(_load_python_plugin_index(self.require_signed).keys())
@@ -698,13 +214,11 @@ class py_amcm:
             raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
         if class_name in cpp_modules:
             module = self.ctrl.register_module(class_name, instance_name)
-            handle = _CppModuleHandle(self.ctrl, module)
-            self.modules[instance_name] = handle
-            return handle
+            return _ModuleHandle(self.ctrl, module, "cpp")
         return self._register_python_plugin(class_name, instance_name)
 
     def register_python_module(self, name, module_obj):
-        if name in self.modules:
+        if name in self.ctrl.get_list_registered_modules():
             raise RuntimeError(f"Module instance already registered: {name}")
         if not isinstance(module_obj, base_module):
             raise TypeError("Module must inherit from cascade.pymodule.base_module")
@@ -716,36 +230,25 @@ class py_amcm:
             raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
         module_obj.set_name(name)
         module_obj.set_plugin_origin(info["origin"])
-        handle = _PythonModuleHandle(module_obj)
-        self.modules[name] = handle
-        return handle
+        self.ctrl.register_module_handle(module_obj)
+        return _ModuleHandle(self.ctrl, module_obj, "python")
+
+    def _module_handle(self, name):
+        module = self.ctrl.get_module(name)
+        if isinstance(module, base_module):
+            return _ModuleHandle(self.ctrl, module, "python")
+        return _ModuleHandle(self.ctrl, module, "cpp")
 
     def run_module(self, name_or_mod, isolated=False):
         if isinstance(name_or_mod, str):
-            handle = self.modules.get(name_or_mod)
-            if handle is None:
-                raise RuntimeError(f"Module not registered: {name_or_mod}")
-        elif isinstance(name_or_mod, (_CppModuleHandle, _PythonModuleHandle)):
+            handle = self._module_handle(name_or_mod)
+        elif isinstance(name_or_mod, _ModuleHandle):
             handle = name_or_mod
         elif isinstance(name_or_mod, base_module):
             raise RuntimeError("Direct Python module execution is disabled; register a verified cascade.pyplugin module by name.")
         else:
             raise TypeError(f"Unsupported argument type: {type(name_or_mod)}")
-        result = handle.run_isolated() if isolated else handle.run()
-        phase = _status_text(result.phase)
-        status = _status_text(result.status)
-        manifest_path = handle.get_last_provenance_path()
-        self.executed_modules.append({
-            "run_id": handle.get_run_id(),
-            "manifest_path": manifest_path,
-            "name": handle.name(),
-            "module": handle.get_basename(),
-            "language": handle.language,
-            "status": status,
-            "phase": phase,
-            "message": result.message,
-        })
-        return result
+        return handle.run_isolated() if isolated else handle.run()
 
     def run_module_isolated(self, name_or_mod):
         return self.run_module(name_or_mod, isolated=True)
@@ -826,76 +329,37 @@ class py_amcm:
         return metadata
 
     def get_list_registered_modules(self):
-        return list(self.modules.keys())
+        return list(self.ctrl.get_list_registered_modules())
 
     def get_status(self, name):
-        handle = self.modules.get(name)
-        if handle is None:
-            raise RuntimeError(f"Module not registered: {name}")
-        return handle.get_status()
+        return self.ctrl.get_status(name)
 
     def get_all_progress(self):
-        progress = self.ctrl.get_all_progress()
-        for name, handle in self.modules.items():
-            if handle.language == "python":
-                progress[name] = dict(handle._module.get_progress())
-        return progress
+        return self.ctrl.get_all_progress()
 
     def get_module(self, name):
-        return self.modules.get(name, None)
+        try:
+            return self._module_handle(name)
+        except RuntimeError:
+            return None
 
     def get_python_module(self, name):
-        handle = self.modules.get(name)
-        if isinstance(handle, _PythonModuleHandle):
-            return handle._module
-        return None
+        module = self.get_module(name)
+        return module._module if module is not None and module.language == "python" else None
 
     def get_dag(self):
         return self.ctrl.get_dag()
 
     def add_module_to_dag(self, name, dependencies=None, isolated=False):
-        if name not in self.modules:
-            raise RuntimeError(f"Module not registered: {name}")
-        dependencies = list(dependencies or [])
-
-        def run_checked():
-            result = self.run_module(name, isolated=isolated)
-            if not result.allows_dependents():
-                detail = f": {result.message}" if result.message else ""
-                raise RuntimeError(
-                    f"Module {name} finished with status {result.status}{detail}"
-                )
-
-        self.ctrl.get_dag().add_node(name, dependencies, run_checked)
+        self.ctrl.add_module_to_dag(name, list(dependencies or []), bool(isolated))
 
     def link_dag_parameter(self, from_node, from_key, to_node, to_key):
-        source = self.modules.get(from_node)
-        target = self.modules.get(to_node)
-        if source is None:
-            raise RuntimeError(f"Module not registered: {from_node}")
-        if target is None:
-            raise RuntimeError(f"Module not registered: {to_node}")
-        if from_key not in source.get_parameters():
-            raise RuntimeError(
-                f"DAG source parameter is not registered: {from_node}.{from_key}"
-            )
-        if to_key not in target.get_parameters():
-            raise RuntimeError(
-                f"DAG target parameter is not registered: {to_node}.{to_key}"
-            )
-
-        def transfer():
-            value = copy.deepcopy(source.get_parameters()[from_key])
-            target.set_param(to_key, value)
-
-        label = f"{from_key} -> {to_key}"
-        self.ctrl.get_dag().add_data_link(from_node, to_node, label, transfer)
+        self.ctrl.link_dag_module_parameter(from_node, from_key, to_node, to_key)
 
     def run_dag(self, fail_fast=True, provenance_path=None):
-        self.executed_modules.clear()
         result = self.ctrl.run_dag(fail_fast)
         self.last_workflow_provenance_path = self.save_provenance(
-            provenance_path, fail_fast=fail_fast, dag_result=result
+            provenance_path, fail_fast=fail_fast
         )
         return result
 
@@ -904,148 +368,22 @@ class py_amcm:
 
     def run_group(self, group, fail_fast=True):
         if isinstance(group, (list, tuple)):
-            results = []
-            for mod in group:
-                result = self.run_module(mod)
-                results.append(result)
-                if fail_fast and not result.allows_dependents():
-                    break
-            return results
+            names = [item if isinstance(item, str) else item.name() for item in group]
+            return self.ctrl.run_group(names, bool(fail_fast))
         else:
             raise TypeError(f"Unsupported argument type: {type(group)}")
 
     def save_provenance(self, path=None, fail_fast=True, dag_result=None):
-        workflow_id = (
-            f"workflow-{os.getpid()}-{time.time_ns()}-"
-            f"{hashlib.sha256(os.urandom(16)).hexdigest()[:8]}"
+        saved = self.ctrl.save_provenance(
+            os.path.abspath(os.path.expanduser(path)) if path else "",
+            bool(fail_fast),
         )
-        manifests = []
-        latest_by_instance = {}
-        for entry in self.executed_modules:
-            manifest_path = entry.get("manifest_path", "")
-            if not manifest_path or not os.path.isfile(manifest_path):
-                continue
-            with open(manifest_path, "r", encoding="utf-8") as source:
-                manifest = json.load(source)
-            if (
-                manifest.get("schema") != "cascade.module-run"
-                or manifest.get("schema_version") != 1
-            ):
-                raise RuntimeError(
-                    f"Unsupported module provenance manifest: {manifest_path}"
-                )
-            manifests.append(manifest)
-            latest_by_instance[entry["name"]] = manifest
-
-        dag = self.ctrl.get_dag()
-        dag_nodes = list(dag_result.nodes) if dag_result is not None else list(dag.get_node_results())
-        dependencies = dag.get_dependencies()
-        nodes = []
-        if dag_nodes:
-            for result in dag_nodes:
-                module_manifest = latest_by_instance.get(result.name)
-                nodes.append({
-                    "name": result.name,
-                    "status": _status_text(result.status),
-                    "message": result.message,
-                    "dependencies": list(dependencies.get(result.name, [])),
-                    "module_run_id": (
-                        module_manifest.get("run_id") if module_manifest else None
-                    ),
-                    "module_manifest": (
-                        module_manifest.get("manifest_path") if module_manifest else None
-                    ),
-                })
-        else:
-            for entry in self.executed_modules:
-                nodes.append({
-                    "name": entry["name"],
-                    "status": entry["status"],
-                    "message": entry["message"],
-                    "dependencies": [],
-                    "module_run_id": entry["run_id"],
-                    "module_manifest": entry["manifest_path"] or None,
-                })
-
-        data_links = [
-            {
-                "from": link.from_node,
-                "to": link.to_node,
-                "label": link.label,
-            }
-            for link in dag.get_data_links()
-        ]
-        starts = [
-            manifest.get("timing", {}).get("started_at", "")
-            for manifest in manifests
-            if manifest.get("timing", {}).get("started_at")
-        ]
-        finishes = [
-            manifest.get("timing", {}).get("finished_at", "")
-            for manifest in manifests
-            if manifest.get("timing", {}).get("finished_at")
-        ]
-        languages = {
-            manifest.get("runtime", {}).get("language", "")
-            for manifest in manifests
-            if manifest.get("runtime", {}).get("language")
-        }
-        language = "mixed" if len(languages) > 1 else next(iter(languages), "python")
-        abi_tag = getattr(cascade, "get_abi_tag", lambda: "")()
-        root_version = ""
-        for field in abi_tag.split(";"):
-            if field.startswith("root="):
-                root_version = field.partition("=")[2]
-                break
-        succeeded = all(node["status"] in {"Done", "Skipped", "Succeeded"} for node in nodes)
-        target = path
-        if not target:
-            cache_root = os.getenv(
-                "CASCADE_CACHE_DIR",
-                os.path.join(os.path.expanduser("~"), ".cache", "cascade"),
-            )
-            target = os.path.join(
-                cache_root, "provenance", "workflows", f"{workflow_id}.json"
-            )
-        target = os.path.abspath(os.path.expanduser(target))
-        document = {
-            "schema": "cascade.workflow-run",
-            "schema_version": 1,
-            "run_id": workflow_id,
-            "timing": {
-                "started_at": min(starts) if starts else _utc_now(),
-                "finished_at": max(finishes) if finishes else _utc_now(),
-            },
-            "runtime": {
-                "cascade_version": getattr(cascade, "__version__", ""),
-                "plugin_abi_version": int(getattr(cascade, "__abi_version__", 1)),
-                "plugin_abi_tag": abi_tag,
-                "root_version": root_version,
-                "language": language,
-            },
-            "execution": {
-                "fail_fast": bool(fail_fast),
-                "succeeded": succeeded,
-            },
-            "dag": {
-                "nodes": nodes,
-                "data_links": data_links,
-            },
-            "module_manifests": [
-                manifest.get("manifest_path", "")
-                for manifest in manifests
-                if manifest.get("manifest_path")
-            ],
-            "manifest_path": target,
-        }
-        saved = _atomic_write_json(target, document)
         self.last_workflow_provenance_path = saved
-        log(log_level.INFO, "CONTROL", f"Workflow provenance '{saved}' is saved.")
         return saved
 
     def save_run_log_all(self, log_dir=None):
         if log_dir:
-            workflow_id = f"workflow-{os.getpid()}-{time.time_ns()}"
+            workflow_id = cascade.ProvenanceRecorder.make_workflow_run_id()
             return self.save_provenance(
                 os.path.join(log_dir, f"{workflow_id}.json")
             )

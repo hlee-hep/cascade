@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import ctypes
 import importlib.machinery
 import importlib.util
 import io
@@ -8,10 +9,32 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
 from unittest import mock
+
+
+def _load_workspace_extension():
+    build_root = pathlib.Path(__file__).parents[1] / "build"
+    for library in (
+        build_root / "utils" / "libutils.so",
+        build_root / "ParamManager" / "libParamManager.so",
+        build_root / "AnalysisManager" / "libAnalysisManager.so",
+        build_root / "PlotManager" / "libPlotManager.so",
+        build_root / "src" / "libAMCM.so",
+    ):
+        ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+    extension_path = build_root / "main" / "libCascade.so"
+    loader = importlib.machinery.ExtensionFileLoader("cascade._cascade", str(extension_path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    extension = importlib.util.module_from_spec(spec)
+    loader.exec_module(extension)
+    sys.modules["cascade._cascade"] = extension
+
+
+_load_workspace_extension()
 
 
 def _load_cli():
@@ -31,6 +54,49 @@ from cascade_cli import plugin as cli_plugin
 from cascade_cli import parser as cli_parser
 from cascade_cli import provenance as cli_provenance
 from cascade_cli import system as cli_system
+
+
+class _FakeCacheManager:
+    snapshots = []
+
+    @classmethod
+    def reset(cls):
+        cls.snapshots = []
+
+    @classmethod
+    def add_hash(cls, module, snapshot_hash, directory, provenance=""):
+        cls.snapshots.append(types.SimpleNamespace(
+            module=module,
+            hash=snapshot_hash,
+            provenance=provenance,
+            cache_file=str(pathlib.Path(directory) / f"{module}.yaml"),
+        ))
+
+    @classmethod
+    def list_snapshots(cls, directory, module=""):
+        return [entry for entry in cls.snapshots if not module or entry.module == module]
+
+    @classmethod
+    def is_hash_cached(cls, module, snapshot_hash, directory):
+        return any(entry.module == module and entry.hash == snapshot_hash for entry in cls.snapshots)
+
+    @classmethod
+    def find_provenance(cls, module, snapshot_hash, directory):
+        return next(
+            (entry.provenance for entry in cls.snapshots if entry.module == module and entry.hash == snapshot_hash),
+            "",
+        )
+
+    @classmethod
+    def prune(cls, directory, module="", remove_all=False, dry_run=False):
+        removed = [
+            entry for entry in cls.snapshots
+            if (not module or entry.module == module)
+            and (remove_all or bool(entry.provenance and not os.path.isfile(entry.provenance)))
+        ]
+        if not dry_run:
+            cls.snapshots = [entry for entry in cls.snapshots if entry not in removed]
+        return removed
 
 
 class _FakeHandle:
@@ -85,6 +151,11 @@ class _FakeModuleResult:
 class _FakeDag:
     def __init__(self):
         self.dot = None
+        self.validation_error = None
+
+    def validate(self):
+        if self.validation_error:
+            raise self.validation_error
 
     def dump_dot(self, path):
         self.dot = path
@@ -182,22 +253,16 @@ class CliTests(unittest.TestCase):
             root = pathlib.Path(directory)
             existing = root / "run.json"
             existing.write_text("{}", encoding="utf-8")
-            cache_file = root / "analysis.yaml"
-            cache_file.write_text(
-                "schema_version: 1\n"
-                "snapshots:\n"
-                "  - hash: present\n"
-                f"    provenance: {existing}\n"
-                "  - hash: stale\n"
-                f"    provenance: {root / 'missing.json'}\n",
-                encoding="utf-8",
-            )
+            _FakeCacheManager.reset()
+            _FakeCacheManager.add_hash("analysis", "present", str(root), str(existing))
+            _FakeCacheManager.add_hash("analysis", "stale", str(root), str(root / "missing.json"))
 
             listed = types.SimpleNamespace(
                 cache_directory=str(root), module=None, json=True
             )
             output = io.StringIO()
-            with contextlib.redirect_stdout(output):
+            with mock.patch.object(cli_cache, "_cache_manager", return_value=_FakeCacheManager), \
+                    contextlib.redirect_stdout(output):
                 cli_cache.cmd_cache_list(listed)
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["count"], 2)
@@ -210,7 +275,8 @@ class CliTests(unittest.TestCase):
                 cache_directory=str(root), module="analysis", hash="present", json=True
             )
             output = io.StringIO()
-            with contextlib.redirect_stdout(output):
+            with mock.patch.object(cli_cache, "_cache_manager", return_value=_FakeCacheManager), \
+                    contextlib.redirect_stdout(output):
                 cli_cache.cmd_cache_explain(explained)
             self.assertTrue(json.loads(output.getvalue())["cached"])
 
@@ -218,48 +284,43 @@ class CliTests(unittest.TestCase):
                 cache_directory=str(root), module=None, all=False, dry_run=False, json=True
             )
             output = io.StringIO()
-            with contextlib.redirect_stdout(output):
+            with mock.patch.object(cli_cache, "_cache_manager", return_value=_FakeCacheManager), \
+                    contextlib.redirect_stdout(output):
                 cli_cache.cmd_cache_prune(pruned)
             self.assertEqual(json.loads(output.getvalue())["removed_count"], 1)
-            remaining = cli_cache._entries(str(root))
-            self.assertEqual([entry["hash"] for entry in remaining], ["present"])
+            remaining = _FakeCacheManager.list_snapshots(str(root))
+            self.assertEqual([entry.hash for entry in remaining], ["present"])
 
     def test_cache_prune_dry_run_does_not_modify_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             cache_file = root / "analysis.yaml"
-            cache_file.write_text("- first\n- second\n", encoding="utf-8")
-            before = cache_file.read_text(encoding="utf-8")
+            _FakeCacheManager.reset()
+            _FakeCacheManager.add_hash("analysis", "first", str(root), "")
+            before = list(_FakeCacheManager.snapshots)
             args = types.SimpleNamespace(
                 cache_directory=str(root), module="analysis", all=True, dry_run=True, json=True
             )
-            with contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(cli_cache, "_cache_manager", return_value=_FakeCacheManager), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 cli_cache.cmd_cache_prune(args)
-            self.assertEqual(cache_file.read_text(encoding="utf-8"), before)
+            self.assertEqual(_FakeCacheManager.snapshots, before)
 
-    def test_cache_commands_include_python_cache_and_filter_pruning(self):
+    def test_cache_prune_filters_by_module(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            cache_file = root / "python_modules.json"
-            cache_file.write_text(json.dumps({
-                "schema_version": 1,
-                "snapshots": [
-                    {"hash": "one", "provenance": "", "module": "first"},
-                    {"hash": "two", "provenance": "", "module": "second"},
-                ],
-            }), encoding="utf-8")
-
-            entries = cli_cache._entries(str(root), "first")
-            self.assertEqual([(entry["module"], entry["hash"]) for entry in entries], [("first", "one")])
+            _FakeCacheManager.reset()
+            _FakeCacheManager.add_hash("first", "one", str(root), "")
+            _FakeCacheManager.add_hash("second", "two", str(root), "")
 
             args = types.SimpleNamespace(
                 cache_directory=str(root), module="first", all=True, dry_run=False, json=True
             )
-            with contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(cli_cache, "_cache_manager", return_value=_FakeCacheManager), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 cli_cache.cmd_cache_prune(args)
-            document = json.loads(cache_file.read_text(encoding="utf-8"))
             self.assertEqual(
-                [(entry["module"], entry["hash"]) for entry in document["snapshots"]],
+                [(entry.module, entry.hash) for entry in _FakeCacheManager.list_snapshots(str(root))],
                 [("second", "two")],
             )
 
@@ -293,7 +354,7 @@ class CliTests(unittest.TestCase):
                 "_doctor_plugin_package",
                 return_value=(0, []),
             ) as doctor:
-                cli_plugin._doctor_plugin_dir(str(root), "python", False, [])
+                cli_plugin._doctor_plugin_dir(str(root), "python", [])
             visited = [pathlib.Path(call.args[0]).name for call in doctor.call_args_list]
             self.assertEqual(visited, ["one", "two"])
 
@@ -322,25 +383,69 @@ class CliTests(unittest.TestCase):
             (package / "plugin_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
             reports = []
-            with contextlib.redirect_stdout(io.StringIO()):
+            verified_package = types.SimpleNamespace(
+                package=package.name,
+                trust="Verified",
+                trusted_key_path="",
+                artifacts=[types.SimpleNamespace(
+                    name="local_module",
+                    classes=["LocalModule"],
+                )],
+            )
+            with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+                cli_plugin,
+                "_core_verify_package",
+                return_value=verified_package,
+            ):
                 errors, names = cli_plugin._doctor_plugin_package(
-                    str(package), "python", False, [], reports=reports
+                    str(package), "python", [], reports=reports
                 )
             self.assertEqual(errors, 0)
             self.assertEqual(names, ["LocalModule"])
             self.assertEqual(reports[0]["trust"], "VERIFIED")
 
             strict_reports = []
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+                cli_plugin,
+                "_core_verify_package",
+                side_effect=RuntimeError("plugin package requires a trusted signature"),
+            ):
                 strict_errors, _ = cli_plugin._doctor_plugin_package(
                     str(package),
                     "python",
-                    False,
                     [],
                     require_signed=True,
                     reports=strict_reports,
                 )
             self.assertEqual(strict_errors, 1)
+
+    def test_plugin_verifier_does_not_reuse_another_packages_key(self):
+        captured = {}
+
+        class Verifier:
+            @staticmethod
+            def verify_package(*args):
+                captured["trusted_key"] = args[-1]
+                return types.SimpleNamespace()
+
+        extension = types.ModuleType("cascade._cascade")
+        extension.PluginTrustPolicy = types.SimpleNamespace(
+            Verified="verified", RequireSigned="require-signed"
+        )
+        extension.PluginVerifier = Verifier
+        cascade_module = types.ModuleType("cascade")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            sys.modules,
+            {"cascade": cascade_module, "cascade._cascade": extension},
+        ):
+            other_key = str(pathlib.Path(directory) / "0000-other-package.pem")
+            cli_plugin._core_verify_package(
+                str(pathlib.Path(directory) / "target-package"),
+                "python",
+                [other_key],
+                False,
+            )
+        self.assertEqual(captured["trusted_key"], "")
 
     def test_plugin_path_parser_and_commands_persist_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -420,7 +525,11 @@ class CliTests(unittest.TestCase):
             ])
 
             snapshots = cli_plugin._snapshot_trusted_keys(str(target), None)
-            with self.assertRaisesRegex(RuntimeError, "verification failed"):
+            with self.assertRaisesRegex(RuntimeError, "verification failed"), mock.patch.object(
+                cli_plugin,
+                "_core_verify_package",
+                side_effect=RuntimeError("package-bound trusted key is missing"),
+            ):
                 cli_plugin._verify_staged_plugin(
                     str(stage), package_name, True, snapshots, quiet=True
                 )
@@ -691,10 +800,12 @@ class CliTests(unittest.TestCase):
             path = pathlib.Path(directory) / "workflow.json"
             path.write_text(json.dumps(workflow), encoding="utf-8")
             args = types.SimpleNamespace(workflow=str(path), json=False, require_signed=False)
-            with mock.patch.object(cli_execution, "_load_controller") as load_controller, \
-                    self.assertRaisesRegex(ValueError, "dependency cycle"):
+            controller = _FakeController()
+            controller.dag.validation_error = RuntimeError("Cycle detected at DAG node: first")
+            with mock.patch.object(cli_execution, "_load_controller", return_value=controller) as load_controller, \
+                    self.assertRaisesRegex(RuntimeError, "Cycle detected"):
                 cli_execution.cmd_dag_validate(args)
-            load_controller.assert_not_called()
+            load_controller.assert_called_once()
 
     def test_history_discovers_and_sorts_provenance(self):
         with tempfile.TemporaryDirectory() as directory:

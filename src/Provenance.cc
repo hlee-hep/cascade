@@ -37,6 +37,7 @@ struct ActiveRun
     bool Isolated = false;
     std::string CacheSourceManifest;
     std::vector<fs::path> Inputs;
+    std::optional<PluginOrigin> Plugin;
 };
 
 std::mutex g_ProvenanceMutex;
@@ -366,7 +367,7 @@ void ProvenanceRecorder::BeginModuleRun(const std::string &runId, const std::str
                                         const std::string &moduleName, const std::string &language, bool isolated)
 {
     std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
-    g_ActiveRuns[runId] = {instanceName, moduleName, language, NowUTC(), isolated, {}, {}};
+    g_ActiveRuns[runId] = {instanceName, moduleName, language, NowUTC(), isolated, {}, {}, std::nullopt};
 }
 
 void ProvenanceRecorder::TrackInput(const std::string &runId, const fs::path &path)
@@ -386,6 +387,13 @@ void ProvenanceRecorder::SetCacheSource(const std::string &runId, const std::str
     if (iterator != g_ActiveRuns.end()) iterator->second.CacheSourceManifest = manifestPath;
 }
 
+void ProvenanceRecorder::SetPluginOrigin(const std::string &runId, const std::optional<PluginOrigin> &origin)
+{
+    std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+    const auto iterator = g_ActiveRuns.find(runId);
+    if (iterator != g_ActiveRuns.end()) iterator->second.Plugin = origin;
+}
+
 ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     const std::string &runId, const ModuleMetadata &metadata, const std::string &codeHash,
     const std::string &snapshotHash, const std::string &parametersJson, const fs::path &outputDirectory,
@@ -399,7 +407,7 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
         if (iterator != g_ActiveRuns.end())
             active = iterator->second;
         else
-            active = {"", metadata.Name, "cpp", NowUTC(), false, {}, {}};
+            active = {"", metadata.Name, "cpp", NowUTC(), false, {}, {}, std::nullopt};
     }
 
     ModuleRunManifest manifest;
@@ -408,7 +416,7 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     manifest.ModuleName = active.ModuleName.empty() ? metadata.Name : active.ModuleName;
     manifest.Metadata = metadata;
     manifest.Runtime = Runtime(active.Language.empty() ? "cpp" : active.Language);
-    manifest.Plugin = AnalysisModuleRegistry::Get().GetPluginOrigin(manifest.ModuleName);
+    manifest.Plugin = active.Plugin ? active.Plugin : AnalysisModuleRegistry::Get().GetPluginOrigin(manifest.ModuleName);
     manifest.CodeHash = codeHash;
     manifest.SnapshotHash = snapshotHash;
     manifest.ParametersJson = parametersJson;

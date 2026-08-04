@@ -1,11 +1,35 @@
 import importlib.util
+import importlib.machinery
+import ctypes
 import json
 import multiprocessing
 import os
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest import mock
+
+
+def _load_workspace_extension():
+    build_root = pathlib.Path(__file__).parents[1] / "build"
+    for library in (
+        build_root / "utils" / "libutils.so",
+        build_root / "ParamManager" / "libParamManager.so",
+        build_root / "AnalysisManager" / "libAnalysisManager.so",
+        build_root / "PlotManager" / "libPlotManager.so",
+        build_root / "src" / "libAMCM.so",
+    ):
+        ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+    extension_path = build_root / "main" / "libCascade.so"
+    loader = importlib.machinery.ExtensionFileLoader("cascade._cascade", str(extension_path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    extension = importlib.util.module_from_spec(spec)
+    loader.exec_module(extension)
+    sys.modules["cascade._cascade"] = extension
+
+
+_load_workspace_extension()
 
 
 def _load_plugin_paths():

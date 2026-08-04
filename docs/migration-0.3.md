@@ -56,10 +56,10 @@ cascade doctor plugins
 For a signed distribution:
 
 ```bash
-CASCADE_PLUGIN_PACKAGE=my_package \
-CASCADE_PLUGIN_PRIVATE_KEY=/secure/path/private.pem \
-CASCADE_PLUGIN_PUBLIC_KEY=/provisioning/path/public.pem \
-scons install
+cascade --require-signed plugin install . \
+  --package my_package \
+  --private-key /secure/path/private.pem \
+  --public-key /provisioning/path/public.pem
 
 cascade --require-signed doctor plugins
 ```
@@ -151,7 +151,15 @@ self.register_param("threshold", 25.0)
 ```
 
 Unknown names and incompatible types fail instead of silently changing the module
-contract.
+contract. Python parameter registration and snapshot hashing use the same C++
+`ParamManager` and `SnapshotHasher` services as C++ modules, so coercion, cache
+identity, and validation policy do not drift between language frontends.
+
+Python `base_module` is also a thin subclass of the C++ `IAnalysisModule` engine.
+Status transitions, `RunResult`, failure phases, cancellation, output commit,
+cache updates, provenance, DAG execution, and isolated-process supervision all
+follow the same C++ implementation. Python plugins provide only lifecycle
+callbacks such as `init`, `execute`, `finalize`, and `snapshot_state`.
 
 ## 7. Choose an execution mode
 

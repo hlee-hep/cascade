@@ -32,6 +32,129 @@ def _load_controller():
     extension.AMCM = type("AMCM", (), {"__init__": lambda self, *args, **kwargs: None})
     extension.IAnalysisModule = type("IAnalysisModule", (), {})
     extension.PluginTrustPolicy = types.SimpleNamespace(Verified="verified", RequireSigned="require-signed")
+
+    class TestPluginVerifier:
+        @staticmethod
+        def index_fingerprint(plugin_roots, trust_stores):
+            tracked = []
+            for root in [*plugin_roots, *trust_stores]:
+                root_path = pathlib.Path(root)
+                if not root_path.is_dir():
+                    tracked.append((str(root_path), None, None))
+                    continue
+                for path in root_path.rglob("*"):
+                    if path.is_file() and path.suffix in {".py", ".json", ".sig", ".pem", ".so"}:
+                        metadata = path.stat()
+                        tracked.append((str(path.resolve()), metadata.st_mtime_ns, metadata.st_size))
+            return hashlib.sha256(repr(sorted(tracked)).encode("utf-8")).hexdigest()
+
+        @staticmethod
+        def verify_package(package_dir, trust_store, policy, language, trusted_key=""):
+            package_path = pathlib.Path(package_dir)
+            manifest_path = package_path / "plugin_manifest.json"
+            manifest_bytes = manifest_path.read_bytes()
+            document = json.loads(manifest_bytes)
+            signature_path = pathlib.Path(str(manifest_path) + ".sig")
+            key_path = pathlib.Path(trusted_key) if trusted_key else pathlib.Path(trust_store) / f"{package_path.name}.pem"
+            signed = signature_path.is_file()
+            if signed:
+                if not key_path.is_file():
+                    raise RuntimeError("signed plugin requires its package-bound trusted key")
+                result = subprocess.run(
+                    [
+                        "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(key_path),
+                        "-rawin", "-in", str(manifest_path), "-sigfile", str(signature_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if result.returncode:
+                    raise RuntimeError("plugin manifest signature is invalid")
+            elif policy == "require-signed":
+                raise RuntimeError("plugin package requires a trusted signature")
+            artifacts = []
+            for entry in document["modules"]:
+                if entry["language"] != language:
+                    continue
+                artifact_path = package_path / entry["path"]
+                source = artifact_path.read_bytes()
+                if hashlib.sha256(source).hexdigest() != entry["sha256"]:
+                    raise RuntimeError("plugin artifact hash mismatch")
+                artifacts.append(types.SimpleNamespace(
+                    name=entry["name"],
+                    path=str(artifact_path.resolve()),
+                    sha256=entry["sha256"],
+                    classes=entry.get("classes", []),
+                    source=source,
+                ))
+            return types.SimpleNamespace(
+                package=package_path.name,
+                manifest_path=str(manifest_path.resolve()),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                trusted_key_path=str(key_path.resolve()) if signed else "",
+                signer_fingerprint=hashlib.sha256(key_path.read_bytes()).hexdigest() if signed else "",
+                trust="Signed" if signed else "Verified",
+                artifacts=artifacts,
+            )
+
+        @staticmethod
+        def discover(plugin_roots, policy, language):
+            packages = []
+            errors = []
+            for plugin_root in plugin_roots:
+                root_path = pathlib.Path(plugin_root)
+                if not root_path.is_dir():
+                    continue
+                trust_store = TestPluginPaths.trust_store_for_root(str(root_path))
+                for package in sorted(root_path.iterdir()):
+                    if not package.is_dir() or package.is_symlink():
+                        continue
+                    try:
+                        packages.append(TestPluginVerifier.verify_package(
+                            str(package), trust_store, policy, language
+                        ))
+                    except Exception as error:
+                        errors.append(f"{package}: {error}")
+            return types.SimpleNamespace(packages=packages, errors=errors)
+
+    class TestPluginPaths:
+        @staticmethod
+        def roots(language):
+            roots = []
+            configured = os.environ.get("CASCADE_PYPLUGIN_DIR")
+            if configured and language == "python":
+                roots.append(configured)
+            config_path = os.environ.get("CASCADE_CONFIG_FILE")
+            if config_path and pathlib.Path(config_path).is_file():
+                document = json.loads(pathlib.Path(config_path).read_text(encoding="utf-8"))
+                for entry in document.get("plugin_prefixes", []):
+                    if isinstance(entry, str):
+                        prefix, enabled = entry, True
+                    else:
+                        prefix, enabled = entry["path"], entry.get("enabled", True)
+                    if enabled:
+                        leaf = "pyplugin" if language == "python" else "plugin"
+                        roots.append(str(pathlib.Path(prefix) / "lib" / "cascade" / leaf))
+            leaf = "pyplugin" if language == "python" else "plugin"
+            roots.append(str(pathlib.Path(cascade.__file__).parent / leaf))
+            return list(dict.fromkeys(str(pathlib.Path(root).resolve()) for root in roots))
+
+        @staticmethod
+        def trust_store_for_root(plugin_root):
+            configured = os.environ.get("CASCADE_PLUGIN_TRUST_STORE")
+            if configured:
+                return str(pathlib.Path(configured).resolve())
+            prefix = pathlib.Path(plugin_root).resolve()
+            for _ in range(3):
+                prefix = prefix.parent
+            return str(prefix / "share" / "cascade" / "trusted_keys")
+
+        @staticmethod
+        def unique(paths):
+            return list(dict.fromkeys(str(pathlib.Path(path).resolve()) for path in paths))
+
+    extension.PluginVerifier = TestPluginVerifier
+    extension.PluginPaths = TestPluginPaths
     sys.modules["cascade._cascade"] = extension
 
     path = pathlib.Path(__file__).parents[1] / "python" / "py_amcm.py"
@@ -111,6 +234,7 @@ class PluginPackageTests(unittest.TestCase):
             def install_package(package_name, class_name):
                 package = plugin_root / package_name
                 package.mkdir()
+                (trust_store / f"{package_name}.pem").write_bytes(public_key.read_bytes())
                 source = package / "shared_module.py"
                 source.write_text(
                     "from cascade.pymodule import base_module\n"

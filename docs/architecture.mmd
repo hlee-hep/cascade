@@ -16,7 +16,7 @@ flowchart TD
     B2 --> C1["AnalysisModuleRegistry<br/>include/AnalysisModuleRegistry.hh"]
     B2 --> C2["DAGManager<br/>include/DAGManager.hh"]
     B2 --> C3["Plugin Loader<br/>AMCM::LoadPlugins"]
-    B2 --> C4["Workflow provenance<br/>AMCM / py_amcm"]
+    B2 --> C4["Workflow provenance<br/>AMCM::SaveProvenance"]
     C2 --> C5["Node states<br/>Pending / Running / Succeeded / Failed / Blocked"]
     C2 --> C6["Generic data links<br/>mixed-language parameter transfer"]
 
@@ -60,11 +60,13 @@ flowchart TD
     A4 --> H1
 
     %% Plugins (C++)
-    C3 --> J0["Runtime + persistent prefixes<br/>config.json"]
-    J0 --> J1["C++ plugin roots<br/>temporary env override"]
+    C3 --> J0["PluginPaths + PluginVerifier<br/>shared C++ services"]
+    A5 --> J0
+    J0 --> J00["Runtime + persistent prefixes<br/>config.json"]
+    J00 --> J1["C++ plugin roots<br/>temporary env override"]
     J1 --> J2["Package subdirectories"]
     J1 --> J3["Manifest per package<br/>optional signature"]
-    J3 --> J4["Verify hash/boundary<br/>optional publisher trust"]
+    J3 --> J4["Shared package discovery<br/>hash/boundary/trust"]
     J4 --> J5["SHA-256 file checks"]
     J5 --> J6["ABI version + ABI tag check"]
     J6 --> J7["CascadeRegisterPlugin()"]
@@ -73,23 +75,24 @@ flowchart TD
 
     %% Plugins (Python)
     A2 --> K1["Unified module controller<br/>py_amcm.register_module"]
-    J0 --> K2["Python plugin discovery<br/>cascade.pyplugin"]
+    J00 --> K2["Python plugin discovery<br/>cascade.pyplugin"]
     K1 --> K2
-    K2 --> K3["Package-specific manifest<br/>optional signature"]
-    K3 --> K4["Verify hash/boundary<br/>optional publisher trust"]
-    K4 --> K5["SHA-256 file checks"]
-    K5 --> K6["Python class extraction"]
+    K2 --> J4
+    J4 --> K6["Python-only class import"]
     K6 --> K7["Duplicate Python name check"]
     K7 --> K8["Cross-language duplicate check"]
     K8 --> K9["Metadata extraction"]
     C1 --> K8
-    A6 --> K3
+    A6 --> J4
 
     %% Python modules
-    K8 --> L1["Python plugin modules<br/>base_module.py contract"]
-    L1 --> L2["Lifecycle: init/check/execute/finalize/commit"]
-    L1 --> L3["Cache file<br/>~/.cache/cascade/snapshot_cache/python_modules.json"]
+    K8 --> L1["Python callback adapter<br/>base_module.py contract"]
+    L1 --> F1
+    L1 --> F7
+    L1 --> L3["Core cache service<br/>~/.cache/cascade/snapshot_cache/&lt;module&gt;.yaml"]
     L1 --> F5
+    L1 --> H1
+    L1 --> F3
 
     %% C++ cache
     F3 --> M1["C++ cache dir<br/>~/.cache/cascade/snapshot_cache"]

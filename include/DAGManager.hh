@@ -80,6 +80,7 @@ class DAGManager
 
     void AddNode(const std::string &name, const std::vector<std::string> &dependencies, Task task);
     void AddDataLink(const std::string &fromNode, const std::string &toNode, const std::string &label, DataTransfer transfer);
+    void Validate() const;
     DAGRunResult Execute(bool failFast = true);
     void Reset();
     void ResetFailed();

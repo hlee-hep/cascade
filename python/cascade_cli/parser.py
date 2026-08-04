@@ -42,7 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
     plugins.add_argument("--cpp-dir", help="C++ plugin directory")
     plugins.add_argument("--py-dir", help="Python plugin directory")
     plugins.add_argument("--trust-store", help="Directory containing trusted plugin public keys")
-    plugins.add_argument("--no-abi", action="store_true", help="Skip C++ plugin dlopen/ABI checks")
     plugins.add_argument("--json", action="store_true", help="Emit machine-readable verification results")
     plugins.set_defaults(func=cmd_doctor_plugins)
 

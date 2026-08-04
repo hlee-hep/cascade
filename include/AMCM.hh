@@ -20,6 +20,7 @@ class AMCM
 
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base);
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instanceName);
+    std::shared_ptr<IAnalysisModule> RegisterModuleHandle(std::shared_ptr<IAnalysisModule> module);
     std::vector<std::string> ListRegisteredModules() const;
     std::vector<std::string> ListAvailableModules() const;
     std::vector<ModuleMetadata> ListAvailableModuleMetadata() const;

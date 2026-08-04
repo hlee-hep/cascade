@@ -61,60 +61,6 @@ def cmd_module_run(args) -> None:
         raise SystemExit(1)
 
 
-def _validate_dag_structure(modules, links) -> None:
-    names = {item["name"] for item in modules}
-    dependencies = {item["name"]: item["dependencies"] for item in modules}
-    for name, required in dependencies.items():
-        if len(required) != len(set(required)):
-            raise ValueError(f"duplicate dependency for DAG module: {name}")
-        if name in required:
-            raise ValueError(f"DAG module cannot depend on itself: {name}")
-        missing = sorted(set(required) - names)
-        if missing:
-            raise ValueError(f"DAG module '{name}' depends on missing module(s): {', '.join(missing)}")
-
-    state = {}
-    stack = []
-
-    def visit(name):
-        if state.get(name) == "done":
-            return
-        if state.get(name) == "visiting":
-            start = stack.index(name)
-            raise ValueError(f"DAG contains a dependency cycle: {' -> '.join(stack[start:] + [name])}")
-        state[name] = "visiting"
-        stack.append(name)
-        for dependency in dependencies[name]:
-            visit(dependency)
-        stack.pop()
-        state[name] = "done"
-
-    for name in sorted(names):
-        visit(name)
-
-    def depends_on(target, source):
-        pending = list(dependencies[target])
-        seen = set()
-        while pending:
-            candidate = pending.pop()
-            if candidate == source:
-                return True
-            if candidate not in seen:
-                seen.add(candidate)
-                pending.extend(dependencies[candidate])
-        return False
-
-    for index, link in enumerate(links):
-        source = link["source_node"]
-        target = link["target_node"]
-        if source not in names:
-            raise ValueError(f"workflow.links[{index}] references missing source module: {source}")
-        if target not in names:
-            raise ValueError(f"workflow.links[{index}] references missing target module: {target}")
-        if not depends_on(target, source):
-            raise ValueError(f"workflow.links[{index}] source must be a dependency of its target: {source} -> {target}")
-
-
 def _configure_dag_workflow(args):
     workflow_path = os.path.realpath(args.workflow)
     workflow = _load_mapping(workflow_path)
@@ -210,8 +156,6 @@ def _configure_dag_workflow(args):
             "target_node": target_node,
             "target_param": target_param,
         })
-    _validate_dag_structure(configured, configured_links)
-
     controller = _load_controller(args.json, getattr(args, "require_signed", False))
     for item in configured:
         handle = controller.register_module(item["class_name"], item["name"])
@@ -233,6 +177,7 @@ def _configure_dag_workflow(args):
         controller.link_dag_parameter(
             link["source_node"], link["source_param"], link["target_node"], link["target_param"]
         )
+    controller.get_dag().validate()
 
     fail_fast_override = getattr(args, "fail_fast", None)
     fail_fast = workflow_fail_fast if fail_fast_override is None else fail_fast_override

@@ -69,6 +69,12 @@ void DAGManager::AddDataLink(const std::string &fromNode, const std::string &toN
     m_DataLinks.push_back({fromNode, toNode, label, std::move(transfer)});
 }
 
+void DAGManager::Validate() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    Validate_();
+}
+
 DAGRunResult DAGManager::Execute(bool failFast)
 {
     std::vector<std::string> order;

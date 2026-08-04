@@ -100,6 +100,7 @@ class ProvenanceRecorder
                                const std::string &language, bool isolated);
     static void TrackInput(const std::string &runId, const std::filesystem::path &path);
     static void SetCacheSource(const std::string &runId, const std::string &manifestPath);
+    static void SetPluginOrigin(const std::string &runId, const std::optional<PluginOrigin> &origin);
 
     static ModuleRunManifest BuildModuleRun(
         const std::string &runId, const ModuleMetadata &metadata, const std::string &codeHash,

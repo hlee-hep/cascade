@@ -1,5 +1,5 @@
 import ast
-import os, sys, hashlib, json, subprocess, re
+import os, sys, hashlib, json, re
 from pathlib import Path
 from SCons.Script import AlwaysBuild, Environment, Glob
 
@@ -93,19 +93,6 @@ def generate_manifest(target, source, env):
     print(f"[SCons] generated plugin manifest {target[0]}")
     return 0
 
-def sign_manifest(target, source, env):
-    key = os.environ.get("CASCADE_PLUGIN_PRIVATE_KEY", "")
-    if not key:
-        raise RuntimeError("CASCADE_PLUGIN_PRIVATE_KEY is required to sign plugin manifests")
-    subprocess.check_call([
-        "openssl", "pkeyutl", "-sign",
-        "-inkey", key, "-rawin",
-        "-in", str(source[0]),
-        "-out", str(target[0]),
-    ])
-    print(f"[SCons] signed plugin manifest {source[0]}")
-    return 0
-
 def prepare_verified_manifest(target, source, env):
     signature = str(source[0]) + ".sig"
     if os.path.exists(signature):
@@ -135,7 +122,6 @@ plugin_include_dir = os.path.join(
     os.environ.get("CASCADE_PLUGIN_INCLUDE_DIR", os.path.join(plugin_prefix, "include", "cascade", "plugin")),
     package_name,
 )
-trust_store_dir = os.environ.get("CASCADE_PLUGIN_TRUST_STORE", os.path.join(plugin_prefix, "share", "cascade", "trusted_keys"))
 core_inc = os.environ.get("CASCADE_CORE_INCLUDE", os.path.join(prefix, "include", "cascade"))
 core_lib = os.environ.get("CASCADE_CORE_LIB", os.path.join(prefix, "lib"))
 root_config = require_env("ROOT_CONFIG", "root-config")
@@ -161,10 +147,6 @@ env.AppendUnique(CXXFLAGS=["-std=c++17", "-O2", "-fvisibility=default", "-DCASCA
 install_targets = []
 libs = []
 cpp_install = []
-public_key = os.environ.get("CASCADE_PLUGIN_PUBLIC_KEY", "")
-private_key = os.environ.get("CASCADE_PLUGIN_PRIVATE_KEY", "")
-if public_key and not private_key:
-    raise RuntimeError("CASCADE_PLUGIN_PUBLIC_KEY requires CASCADE_PLUGIN_PRIVATE_KEY during plugin installation")
 
 # -------- C++ modules --------
 headers = [str(h) for h in Glob("include/*.hh")]
@@ -267,30 +249,18 @@ if cpp_install:
     cpp_manifest = cpp_manifest_env.Command(os.path.join(plugin_lib_dir, "plugin_manifest.json"), cpp_install, generate_manifest)
     manifest_targets += cpp_manifest
     install_targets += cpp_manifest
-    if private_key:
-        cpp_manifest_sig = env.Command(os.path.join(plugin_lib_dir, "plugin_manifest.json.sig"), cpp_manifest, sign_manifest)
-        manifest_targets += cpp_manifest_sig
-        install_targets += cpp_manifest_sig
-    else:
-        cpp_verified = env.Command("build/cpp_verified_install.stamp", cpp_manifest, prepare_verified_manifest)
-        AlwaysBuild(cpp_verified)
-        install_targets += cpp_verified
+    cpp_verified = env.Command("build/cpp_verified_install.stamp", cpp_manifest, prepare_verified_manifest)
+    AlwaysBuild(cpp_verified)
+    install_targets += cpp_verified
 
 if py_install:
     py_manifest_env = env.Clone(CASCADE_MANIFEST_LANGUAGE="python")
     py_manifest = py_manifest_env.Command(os.path.join(site_packages, "plugin_manifest.json"), py_install + init_py, generate_manifest)
     manifest_targets += py_manifest
     install_targets += py_manifest
-    if private_key:
-        py_manifest_sig = env.Command(os.path.join(site_packages, "plugin_manifest.json.sig"), py_manifest, sign_manifest)
-        manifest_targets += py_manifest_sig
-        install_targets += py_manifest_sig
-    else:
-        py_verified = env.Command("build/python_verified_install.stamp", py_manifest, prepare_verified_manifest)
-        AlwaysBuild(py_verified)
-        install_targets += py_verified
-if public_key:
-    install_targets += env.InstallAs(os.path.join(trust_store_dir, package_name + ".pem"), public_key)
+    py_verified = env.Command("build/python_verified_install.stamp", py_manifest, prepare_verified_manifest)
+    AlwaysBuild(py_verified)
+    install_targets += py_verified
 
 # -------- Alias --------
 Default(libs)

@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
@@ -34,7 +35,8 @@ class IAnalysisModule
         std::lock_guard<std::recursive_mutex> runLock(m_RunMutex);
         if (m_ExternalRunReserved || m_Context.IsActive()) throw std::runtime_error("Module run is already active: " + Name());
         m_Context.BeginRun(Name(), BaseName());
-        ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), "cpp", true);
+        ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), RuntimeLanguage(), true);
+        ConfigureProvenance();
         m_ExternalRunReserved = true;
         SetStatus(ModuleStatus::Initializing);
     }
@@ -63,18 +65,20 @@ class IAnalysisModule
             throw std::runtime_error(externalPrepared ? "Module has no reserved external run: " + Name()
                                                       : "Module is reserved for isolated execution: " + Name());
         if (externalPrepared) m_ExternalRunReserved = false;
+        if (UsesAnalysisManagers())
         {
             std::lock_guard<std::mutex> managerLock(m_ManagerMutex);
             m_Managers.clear();
+            m_Managers["main"] = std::make_unique<AnalysisManager>();
         }
-        RegisterAnalysisManager("main");
         SetStatus(ModuleStatus::Initializing);
         try
         {
             if (!m_Context.IsActive())
             {
                 m_Context.BeginRun(Name(), BaseName());
-                ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), "cpp", false);
+                ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), RuntimeLanguage(), false);
+                ConfigureProvenance();
             }
             Init();
         }
@@ -198,9 +202,13 @@ class IAnalysisModule
     }
 
     void SetName(const std::string &name) { m_Name = name; }
+    void SetBaseName(const std::string &name) { m_Basename = name; }
+    void SetCodeHash(const std::string &hash) { m_CodeVersionHash = hash; }
+    void SetPluginOrigin(std::optional<PluginOrigin> origin) { m_PluginOrigin = std::move(origin); }
     std::string Name() const { return m_Name; }
     std::string BaseName() const { return m_Basename; }
     std::string GetCodeHash() const { return m_CodeVersionHash; }
+    std::string GetRuntimeLanguage() const { return RuntimeLanguage(); }
     ExecutionContext &GetExecutionContext() { return m_Context; }
     const ExecutionContext &GetExecutionContext() const { return m_Context; }
     void SetCacheDirectory(const std::string &path)
@@ -283,6 +291,7 @@ class IAnalysisModule
         return m_LastResult;
     }
     ParamManager &GetParamManager() { return m_Param; }
+    const ParamManager &GetParamManager() const { return m_Param; }
     std::map<std::string, double> GetProgressSnapshot() const
     {
         std::lock_guard<std::mutex> lock(m_ManagerMutex);
@@ -302,6 +311,16 @@ class IAnalysisModule
     virtual void Execute() = 0;
     virtual void Finalize() = 0;
     virtual void OnFailure(ModulePhase, const std::string &) {}
+    virtual bool UsesAnalysisManagers() const { return true; }
+    virtual std::string RuntimeLanguage() const { return "cpp"; }
+    virtual void ConfigureProvenance() { ProvenanceRecorder::SetPluginOrigin(m_Context.RunId(), m_PluginOrigin); }
+    virtual std::string AnalysisSnapshotState() const
+    {
+        std::lock_guard<std::mutex> lock(m_ManagerMutex);
+        std::stringstream state;
+        for (const auto &[name, manager] : m_Managers) state << name << manager->SnapshotState();
+        return state.str();
+    }
 
     void RegisterAnalysisManager(const std::string &name = "main")
     {
@@ -343,6 +362,7 @@ class IAnalysisModule
     RunResult m_LastResult;
     ExecutionContext m_Context;
     bool m_ExternalRunReserved = false;
+    std::optional<PluginOrigin> m_PluginOrigin;
 
     struct CheckDecision
     {
@@ -424,8 +444,8 @@ class IAnalysisModule
 
     std::string ComputeSnapshotHash_() const
     {
-        std::lock_guard<std::mutex> lock(m_ManagerMutex);
-        return SnapshotHasher::Compute(m_Param, m_Managers, m_Basename, m_CodeVersionHash, m_Context.SnapshotState());
+        return SnapshotHasher::ComputeSerialized(m_Param, m_Basename, m_CodeVersionHash,
+                                                 AnalysisSnapshotState(), m_Context.SnapshotState());
     }
 
     CheckDecision RunCheck_()

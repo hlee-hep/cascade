@@ -4,28 +4,19 @@
 #include "InterruptManager.hh"
 #include "Logger.hh"
 #include "PluginABI.hh"
+#include "PluginPaths.hh"
+#include "PluginVerifier.hh"
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
-#include <fcntl.h>
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <mutex>
-#include <nlohmann/json.hpp>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/sha.h>
-#include <sstream>
 #include <set>
 #include <thread>
-#include <sys/file.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
@@ -34,515 +25,11 @@ namespace
 {
 namespace fs = std::filesystem;
 
-struct TrustedKey
-{
-    fs::path Path;
-    EVP_PKEY *Value = nullptr;
-    std::string Fingerprint;
-
-    TrustedKey(fs::path path, EVP_PKEY *value, std::string fingerprint)
-        : Path(std::move(path)), Value(value), Fingerprint(std::move(fingerprint)) {}
-    TrustedKey(const TrustedKey &) = delete;
-    TrustedKey &operator=(const TrustedKey &) = delete;
-    TrustedKey(TrustedKey &&other) noexcept
-        : Path(std::move(other.Path)), Value(other.Value), Fingerprint(std::move(other.Fingerprint))
-    {
-        other.Value = nullptr;
-    }
-    TrustedKey &operator=(TrustedKey &&other) noexcept
-    {
-        if (this == &other) return *this;
-        if (Value) EVP_PKEY_free(Value);
-        Path = std::move(other.Path);
-        Value = other.Value;
-        Fingerprint = std::move(other.Fingerprint);
-        other.Value = nullptr;
-        return *this;
-    }
-    ~TrustedKey()
-    {
-        if (Value) EVP_PKEY_free(Value);
-    }
-};
-
-std::string SafeFilenamePart(std::string value)
-{
-    for (char &character : value)
-        if (!std::isalnum(static_cast<unsigned char>(character)) && character != '-' && character != '_') character = '_';
-    return value.empty() ? "unnamed" : value;
-}
-
-int OpenRegularFile(const fs::path &path)
-{
-    int flags = O_RDONLY;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    const int descriptor = open(path.string().c_str(), flags);
-    if (descriptor < 0) throw std::runtime_error("cannot open regular file " + path.string() + ": " + std::strerror(errno));
-    struct stat metadata{};
-    if (fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode))
-    {
-        close(descriptor);
-        throw std::runtime_error("plugin file is not a regular file: " + path.string());
-    }
-    return descriptor;
-}
-
-std::vector<unsigned char> ReadDescriptor(int descriptor)
-{
-    if (lseek(descriptor, 0, SEEK_SET) < 0) throw std::runtime_error("cannot seek plugin file descriptor");
-    std::vector<unsigned char> data;
-    std::array<unsigned char, 1024 * 1024> buffer{};
-    while (true)
-    {
-        const ssize_t count = read(descriptor, buffer.data(), buffer.size());
-        if (count < 0)
-        {
-            if (errno == EINTR) continue;
-            throw std::runtime_error("cannot read plugin file descriptor");
-        }
-        if (count == 0) break;
-        data.insert(data.end(), buffer.begin(), buffer.begin() + count);
-    }
-    return data;
-}
-
-std::vector<unsigned char> ReadRegularFile(const fs::path &path)
-{
-    const int descriptor = OpenRegularFile(path);
-    try
-    {
-        auto data = ReadDescriptor(descriptor);
-        close(descriptor);
-        return data;
-    }
-    catch (...)
-    {
-        close(descriptor);
-        throw;
-    }
-}
-
-std::string Sha256Data(const std::vector<unsigned char> &data)
-{
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(data.data(), data.size(), hash);
-    std::ostringstream out;
-    for (unsigned char c : hash)
-        out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c);
-    return out.str();
-}
-
-bool VerifySignature(const std::vector<unsigned char> &payload, const std::vector<unsigned char> &sig,
-                     EVP_PKEY *publicKey)
-{
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) return false;
-    int ok = EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, publicKey);
-    if (ok == 1) ok = EVP_DigestVerify(ctx, sig.data(), sig.size(), payload.data(), payload.size());
-    EVP_MD_CTX_free(ctx);
-    return ok == 1;
-}
-
-fs::path DefaultTrustStore(const fs::path &pluginRoot)
-{
-    if (const char *configured = std::getenv("CASCADE_PLUGIN_TRUST_STORE"); configured && *configured) return configured;
-    fs::path prefix = pluginRoot;
-    for (int level = 0; level < 3 && prefix.has_parent_path(); ++level)
-        prefix = prefix.parent_path();
-    return prefix / "share" / "cascade" / "trusted_keys";
-}
-
-fs::path RuntimePrefix()
-{
-    if (const char *configured = std::getenv("CASCADE_PREFIX"); configured && *configured) return configured;
-    Dl_info libraryInfo{};
-    if (dladdr(reinterpret_cast<void *>(&RuntimePrefix), &libraryInfo) != 0 && libraryInfo.dli_fname)
-        return fs::weakly_canonical(libraryInfo.dli_fname).parent_path().parent_path();
-    const char *home = std::getenv("HOME");
-    return home && *home ? fs::path(home) / ".local" : fs::path(".");
-}
-
-fs::path UserConfigPath()
-{
-    if (const char *configured = std::getenv("CASCADE_CONFIG_FILE"); configured && *configured) return configured;
-    if (const char *configHome = std::getenv("XDG_CONFIG_HOME"); configHome && *configHome)
-        return fs::path(configHome) / "cascade" / "config.json";
-    const char *home = std::getenv("HOME");
-    if ((!home || !*home)) home = std::getenv("USERPROFILE");
-    return (home && *home ? fs::path(home) : fs::path(".")) / ".config" / "cascade" / "config.json";
-}
-
-std::vector<fs::path> ConfiguredPluginPrefixes()
-{
-    const fs::path configPath = UserConfigPath();
-    if (!fs::is_regular_file(configPath)) return {};
-    try
-    {
-        std::ifstream input(configPath);
-        nlohmann::json config;
-        input >> config;
-        if (!config.is_object() || config.value("schema", 0) != 1)
-            throw std::runtime_error("unsupported config schema");
-        const auto entries = config.value("plugin_prefixes", nlohmann::json::array());
-        if (!entries.is_array()) throw std::runtime_error("plugin_prefixes must be an array");
-        std::vector<fs::path> prefixes;
-        for (const auto &entry : entries)
-        {
-            std::string path;
-            bool enabled = true;
-            if (entry.is_string())
-                path = entry.get<std::string>();
-            else if (entry.is_object())
-            {
-                path = entry.value("path", "");
-                enabled = entry.value("enabled", true);
-            }
-            else
-                throw std::runtime_error("invalid plugin prefix entry");
-            if (enabled && !path.empty()) prefixes.emplace_back(path);
-        }
-        return prefixes;
-    }
-    catch (const std::exception &error)
-    {
-        LOG_WARN("PLUGIN", "Cannot read Cascade plugin config '" << configPath.string() << "': " << error.what());
-        return {};
-    }
-}
-
 std::vector<fs::path> CppPluginRoots()
 {
-    std::vector<fs::path> candidates;
-    if (const char *configured = std::getenv("CASCADE_PLUGIN_DIR"); configured && *configured)
-        candidates.emplace_back(configured);
-    for (const auto &prefix : ConfiguredPluginPrefixes())
-        candidates.push_back(prefix / "lib" / "cascade" / "plugin");
-    candidates.push_back(RuntimePrefix() / "lib" / "cascade" / "plugin");
-
     std::vector<fs::path> roots;
-    std::set<std::string> seen;
-    for (const auto &candidate : candidates)
-    {
-        const std::string normalized = fs::absolute(candidate).lexically_normal().string();
-        if (seen.insert(normalized).second) roots.emplace_back(normalized);
-    }
+    for (const auto &root : PluginPaths::Roots("cpp")) roots.emplace_back(root);
     return roots;
-}
-
-std::vector<TrustedKey> LoadTrustedKeys(const fs::path &trustStore, bool warnIfMissing)
-{
-    std::vector<TrustedKey> keys;
-    if (!fs::is_directory(trustStore))
-    {
-        if (warnIfMissing) LOG_WARN("PLUGIN", "Plugin trust store not found: " << trustStore.string());
-        return keys;
-    }
-    std::vector<fs::path> paths;
-    for (const auto &entry : fs::directory_iterator(trustStore))
-        if (entry.symlink_status().type() == fs::file_type::regular && entry.path().extension() == ".pem")
-            paths.push_back(entry.path());
-    std::sort(paths.begin(), paths.end());
-
-    for (const auto &path : paths)
-    {
-        std::vector<unsigned char> keyData;
-        try
-        {
-            keyData = ReadRegularFile(path);
-        }
-        catch (const std::exception &error)
-        {
-            LOG_WARN("PLUGIN", "Cannot open trusted plugin key " << path.string() << ": " << error.what());
-            continue;
-        }
-        BIO *bio = BIO_new_mem_buf(keyData.data(), static_cast<int>(keyData.size()));
-        EVP_PKEY *key = bio ? PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr) : nullptr;
-        if (bio) BIO_free(bio);
-        if (!key)
-        {
-            LOG_WARN("PLUGIN", "Cannot parse trusted plugin key: " << path.string());
-            continue;
-        }
-        keys.emplace_back(path, key, Sha256Data(keyData));
-    }
-    return keys;
-}
-
-const TrustedKey *VerifyWithTrustedKey(const std::vector<unsigned char> &manifest,
-                                       const std::vector<unsigned char> &signature,
-                                       const std::vector<TrustedKey> &keys)
-{
-    for (const auto &key : keys)
-        if (VerifySignature(manifest, signature, key.Value)) return &key;
-    return nullptr;
-}
-
-bool IsContainedPath(const fs::path &root, const fs::path &candidate)
-{
-    const fs::path canonicalRoot = fs::weakly_canonical(root);
-    const fs::path canonicalCandidate = fs::weakly_canonical(candidate);
-    const fs::path relative = canonicalCandidate.lexically_relative(canonicalRoot);
-    return !relative.empty() && *relative.begin() != "..";
-}
-
-bool HasSymlinkComponent(const fs::path &root, const fs::path &candidate)
-{
-    std::error_code error;
-    if (fs::is_symlink(fs::symlink_status(root, error)) || error) return true;
-    fs::path current = root;
-    const fs::path relative = candidate.lexically_relative(root);
-    if (relative.empty() || *relative.begin() == "..") return true;
-    for (const auto &component : relative)
-    {
-        current /= component;
-        error.clear();
-        if (fs::is_symlink(fs::symlink_status(current, error)) || error) return true;
-    }
-    return false;
-}
-
-std::vector<fs::path> PackageDirectories(const fs::path &pluginRoot)
-{
-    std::vector<fs::path> packages;
-    if (!fs::is_directory(pluginRoot)) return packages;
-    for (const auto &entry : fs::directory_iterator(pluginRoot))
-        if (entry.symlink_status().type() == fs::file_type::directory) packages.push_back(entry.path());
-    std::sort(packages.begin(), packages.end());
-    return packages;
-}
-
-class PackageReadLock
-{
-  public:
-    explicit PackageReadLock(const fs::path &packageDir)
-    {
-        fs::path prefix = packageDir;
-        for (int level = 0; level < 4 && prefix.has_parent_path(); ++level) prefix = prefix.parent_path();
-        const fs::path lockPath = prefix / ".cascade-locks" / (packageDir.filename().string() + ".lock");
-        m_Descriptor = open(lockPath.string().c_str(), O_RDONLY
-#ifdef O_CLOEXEC
-                            | O_CLOEXEC
-#endif
-#ifdef O_NOFOLLOW
-                            | O_NOFOLLOW
-#endif
-        );
-        if (m_Descriptor < 0)
-        {
-            if (errno != ENOENT) throw std::runtime_error("cannot safely open plugin package lock " + lockPath.string());
-            return;
-        }
-        struct stat metadata{};
-        if (fstat(m_Descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode))
-        {
-            close(m_Descriptor);
-            m_Descriptor = -1;
-            throw std::runtime_error("plugin package lock is not a regular file " + lockPath.string());
-        }
-        while (flock(m_Descriptor, LOCK_SH) != 0)
-        {
-            if (errno == EINTR) continue;
-            close(m_Descriptor);
-            m_Descriptor = -1;
-            throw std::runtime_error("cannot acquire plugin package lock " + lockPath.string());
-        }
-    }
-
-    PackageReadLock(const PackageReadLock &) = delete;
-    PackageReadLock &operator=(const PackageReadLock &) = delete;
-    ~PackageReadLock()
-    {
-        if (m_Descriptor >= 0)
-        {
-            flock(m_Descriptor, LOCK_UN);
-            close(m_Descriptor);
-        }
-    }
-
-  private:
-    int m_Descriptor = -1;
-};
-
-class PluginIndexReadLock
-{
-  public:
-    explicit PluginIndexReadLock(const fs::path &pluginRoot)
-    {
-        fs::path prefix = pluginRoot;
-        for (int level = 0; level < 3 && prefix.has_parent_path(); ++level) prefix = prefix.parent_path();
-        const fs::path lockPath = prefix / ".cascade-locks" / ".index.lock";
-        m_Descriptor = open(lockPath.string().c_str(), O_RDONLY
-#ifdef O_CLOEXEC
-                            | O_CLOEXEC
-#endif
-#ifdef O_NOFOLLOW
-                            | O_NOFOLLOW
-#endif
-        );
-        if (m_Descriptor < 0)
-        {
-            if (errno != ENOENT) throw std::runtime_error("cannot safely open plugin index lock " + lockPath.string());
-            return;
-        }
-        struct stat metadata{};
-        if (fstat(m_Descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode))
-        {
-            close(m_Descriptor);
-            m_Descriptor = -1;
-            throw std::runtime_error("plugin index lock is not a regular file " + lockPath.string());
-        }
-        while (flock(m_Descriptor, LOCK_SH) != 0)
-        {
-            if (errno == EINTR) continue;
-            close(m_Descriptor);
-            m_Descriptor = -1;
-            throw std::runtime_error("cannot acquire plugin index lock " + lockPath.string());
-        }
-    }
-    PluginIndexReadLock(const PluginIndexReadLock &) = delete;
-    PluginIndexReadLock &operator=(const PluginIndexReadLock &) = delete;
-    ~PluginIndexReadLock()
-    {
-        if (m_Descriptor >= 0)
-        {
-            flock(m_Descriptor, LOCK_UN);
-            close(m_Descriptor);
-        }
-    }
-
-  private:
-    int m_Descriptor = -1;
-};
-
-struct VerifiedCppPlugin
-{
-    fs::path Path;
-    PluginOrigin Origin;
-    int Descriptor = -1;
-
-    VerifiedCppPlugin(fs::path path, PluginOrigin origin, int descriptor)
-        : Path(std::move(path)), Origin(std::move(origin)), Descriptor(descriptor) {}
-    VerifiedCppPlugin(const VerifiedCppPlugin &) = delete;
-    VerifiedCppPlugin &operator=(const VerifiedCppPlugin &) = delete;
-    VerifiedCppPlugin(VerifiedCppPlugin &&other) noexcept
-        : Path(std::move(other.Path)), Origin(std::move(other.Origin)), Descriptor(other.Descriptor)
-    {
-        other.Descriptor = -1;
-    }
-    VerifiedCppPlugin &operator=(VerifiedCppPlugin &&other) noexcept
-    {
-        if (this == &other) return *this;
-        if (Descriptor >= 0) close(Descriptor);
-        Path = std::move(other.Path);
-        Origin = std::move(other.Origin);
-        Descriptor = other.Descriptor;
-        other.Descriptor = -1;
-        return *this;
-    }
-    ~VerifiedCppPlugin()
-    {
-        if (Descriptor >= 0) close(Descriptor);
-    }
-};
-
-std::vector<VerifiedCppPlugin> VerifiedCppPluginPaths(const fs::path &packageDir, const std::vector<TrustedKey> &keys,
-                                                       PluginTrustPolicy policy)
-{
-    fs::path manifestPath = packageDir / "plugin_manifest.json";
-    fs::path sigPath = packageDir / "plugin_manifest.json.sig";
-    if (!fs::is_regular_file(manifestPath))
-    {
-        LOG_WARN("PLUGIN", "Plugin manifest missing in package " << packageDir.string());
-        return {};
-    }
-
-    try
-    {
-        const bool hasSignature = fs::is_regular_file(sigPath);
-        const auto manifestData = ReadRegularFile(manifestPath);
-        const auto signatureData = hasSignature ? ReadRegularFile(sigPath) : std::vector<unsigned char>{};
-        const TrustedKey *trustedKey = hasSignature ? VerifyWithTrustedKey(manifestData, signatureData, keys) : nullptr;
-        if (policy == PluginTrustPolicy::RequireSigned && !trustedKey)
-        {
-            LOG_WARN("PLUGIN", "Plugin package requires a trusted signature: " << manifestPath.string());
-            return {};
-        }
-        if (hasSignature && !trustedKey)
-            LOG_WARN("PLUGIN", "Plugin signature is not trusted; loading as verified: " << manifestPath.string());
-
-        const nlohmann::json manifest = nlohmann::json::parse(manifestData.begin(), manifestData.end());
-        if (manifest.value("schema", 0) != 2)
-            throw std::runtime_error("unsupported manifest schema");
-        if (manifest.value("package", "") != packageDir.filename().string())
-            throw std::runtime_error("manifest package name does not match its directory");
-
-        PluginOrigin packageOrigin;
-        packageOrigin.Package = packageDir.filename().string();
-        packageOrigin.ManifestPath = fs::weakly_canonical(manifestPath).string();
-        packageOrigin.ManifestSha256 = Sha256Data(manifestData);
-        packageOrigin.Trust = trustedKey ? PluginTrustStatus::Signed : PluginTrustStatus::Verified;
-        if (trustedKey) packageOrigin.SignerFingerprint = trustedKey->Fingerprint;
-        LOG_DEBUG("PLUGIN", ToString(packageOrigin.Trust) << " package " << packageOrigin.Package);
-        std::vector<VerifiedCppPlugin> result;
-        for (const auto &entry : manifest.value("modules", nlohmann::json::array()))
-        {
-            if (entry.value("language", "") != "cpp") continue;
-            fs::path rel = entry.value("path", "");
-            if (rel.empty() || rel.is_absolute())
-            {
-                LOG_WARN("PLUGIN", "Ignoring invalid manifest path in " << manifestPath.string() << ": " << rel.string());
-                continue;
-            }
-            fs::path full = packageDir / rel;
-            if (!fs::is_regular_file(full) || !IsContainedPath(packageDir, full) || HasSymlinkComponent(packageDir, full))
-            {
-                LOG_WARN("PLUGIN", "Manifest plugin path is missing or escapes its package: " << full.string());
-                continue;
-            }
-            std::string filename = full.filename().string();
-            if (filename.size() < 9 || filename.rfind("Module.so") != filename.size() - 9)
-            {
-                LOG_WARN("PLUGIN", "Ignoring C++ plugin whose filename does not end with Module.so: " << full.string());
-                continue;
-            }
-            int descriptor = -1;
-            std::vector<unsigned char> artifactData;
-            try
-            {
-                descriptor = OpenRegularFile(full);
-                artifactData = ReadDescriptor(descriptor);
-            }
-            catch (...)
-            {
-                if (descriptor >= 0) close(descriptor);
-                throw;
-            }
-            std::string expected = entry.value("sha256", "");
-            std::string actual = Sha256Data(artifactData);
-            if (expected.empty() || actual != expected)
-            {
-                close(descriptor);
-                LOG_WARN("PLUGIN", "Plugin hash mismatch: " << full.string());
-                continue;
-            }
-            auto origin = packageOrigin;
-            origin.ArtifactSha256 = actual;
-            result.emplace_back(full, std::move(origin), descriptor);
-        }
-        std::sort(result.begin(), result.end(),
-                  [](const VerifiedCppPlugin &left, const VerifiedCppPlugin &right) { return left.Path < right.Path; });
-        return result;
-    }
-    catch (const std::exception &e)
-    {
-        LOG_WARN("PLUGIN", "Failed to verify plugin manifest " << manifestPath.string() << ": " << e.what());
-        return {};
-    }
 }
 
 struct IsolatedRunHeader
@@ -669,6 +156,19 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base)
     return RegisterModule(base, autoName);
 }
 
+std::shared_ptr<IAnalysisModule> AMCM::RegisterModuleHandle(std::shared_ptr<IAnalysisModule> module)
+{
+    if (!module) throw std::invalid_argument("Cannot register a null module");
+    if (module->Name().empty()) throw std::invalid_argument("Module instance name cannot be empty");
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
+    std::lock_guard<std::mutex> controlLock(m_ControlMutex);
+    if (m_Modules.count(module->Name()))
+        throw std::runtime_error("Module instance already registered: " + module->Name());
+    m_Modules[module->Name()] = module;
+    LOG_INFO("CONTROL", "Module " << module->BaseName() << " is registered as " << module->Name());
+    return module;
+}
+
 std::vector<std::string> AMCM::ListRegisteredModules() const
 {
     std::vector<std::string> names = {};
@@ -734,7 +234,13 @@ void AMCM::RecordRun_(const std::shared_ptr<IAnalysisModule> &module, const RunR
 
 RunResult AMCM::RunAModuleIsolated(const std::string &name)
 {
-    auto module = RegisteredModule_(name);
+    return RunAModuleIsolated(RegisteredModule_(name));
+}
+
+RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
+{
+    module = ValidateModuleHandle_(module);
+    const std::string name = module->Name();
 
     LOG_INFO("CONTROL", "Running module " << name << " in a subprocess");
     module->PrepareExternalRun();
@@ -862,12 +368,6 @@ RunResult AMCM::RunAModuleIsolated(const std::string &name)
     return result;
 }
 
-RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
-{
-    module = ValidateModuleHandle_(module);
-    return RunAModuleIsolated(module->Name());
-}
-
 std::vector<RunResult> AMCM::SequentialRun(bool failFast)
 {
     LOG_INFO("CONTROL", "Sequential Run is starting.");
@@ -965,9 +465,9 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
     std::lock_guard<std::mutex> lock(m_ControlMutex);
     WorkflowRunManifest workflow;
     workflow.RunId = ProvenanceRecorder::MakeWorkflowRunId();
-    workflow.Runtime = ProvenanceRecorder::Runtime("cpp");
     workflow.FailFast = failFast;
     workflow.Succeeded = true;
+    std::set<std::string> languages;
 
     std::map<std::string, ModuleRunManifest> manifestsByInstance;
     for (const auto &entry : m_ExecutedModules)
@@ -977,6 +477,7 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
             manifest = ProvenanceRecorder::LoadModuleRun(entry.ManifestPath);
         if (manifest)
         {
+            if (!manifest->Runtime.Language.empty()) languages.insert(manifest->Runtime.Language);
             manifestsByInstance[entry.InstanceName] = *manifest;
             workflow.ModuleManifestPaths.push_back(manifest->ManifestPath);
             if (workflow.StartedAt.empty() || manifest->StartedAt < workflow.StartedAt) workflow.StartedAt = manifest->StartedAt;
@@ -1027,6 +528,8 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
 
     if (workflow.StartedAt.empty()) workflow.StartedAt = ProvenanceRecorder::NowUTC();
     if (workflow.FinishedAt.empty()) workflow.FinishedAt = ProvenanceRecorder::NowUTC();
+    workflow.Runtime = ProvenanceRecorder::Runtime(
+        languages.size() > 1 ? "mixed" : (languages.empty() ? "cpp" : *languages.begin()));
     const std::string saved = ProvenanceRecorder::WriteWorkflowRun(workflow, path);
     LOG_INFO("CONTROL", "Workflow provenance '" << saved << "' is saved.");
     return saved;
@@ -1043,23 +546,21 @@ void AMCM::LoadPlugins(const std::string &path)
     static std::mutex pluginLoadMutex;
     static std::set<std::string> loadedPlugins;
     const fs::path pluginRoot(path);
-    PluginIndexReadLock indexLock(pluginRoot);
     if (!fs::is_directory(pluginRoot))
     {
         LOG_WARN("CONTROL", "Plugin directory not found: " << path);
         return;
     }
-    const fs::path trustStore = DefaultTrustStore(pluginRoot);
-
-    for (const auto &packageDir : PackageDirectories(pluginRoot))
+    auto discovery = PluginVerifier::Discover({pluginRoot.string()}, m_TrustPolicy, "cpp");
+    for (const auto &error : discovery.Errors) LOG_WARN("PLUGIN", error);
+    for (const auto &package : discovery.Packages)
     {
-        PackageReadLock packageLock(packageDir);
-        const auto trustedKeys = LoadTrustedKeys(trustStore, m_TrustPolicy == PluginTrustPolicy::RequireSigned);
-        for (const auto &plugin : VerifiedCppPluginPaths(packageDir, trustedKeys, m_TrustPolicy))
+        LOG_DEBUG("PLUGIN", ToString(package.Trust) << " package " << package.Package);
+        for (const auto &plugin : package.Artifacts)
         {
             std::lock_guard<std::mutex> loadLock(pluginLoadMutex);
-            const auto &pluginFile = plugin.Path;
-            const std::string canonicalPlugin = fs::weakly_canonical(pluginFile).string();
+            const fs::path pluginFile(plugin.Path);
+            const std::string canonicalPlugin = plugin.Path;
             if (loadedPlugins.count(canonicalPlugin))
             {
                 for (const auto &name : AnalysisModuleRegistry::Get().ListModules())
@@ -1080,11 +581,11 @@ void AMCM::LoadPlugins(const std::string &path)
             };
             fs::path loadPath = pluginFile;
 #if defined(__linux__)
-            const fs::path descriptorPath = fs::path("/proc/self/fd") / std::to_string(plugin.Descriptor);
-            if (plugin.Descriptor >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            const fs::path descriptorPath = fs::path("/proc/self/fd") / std::to_string(plugin.Descriptor());
+            if (plugin.Descriptor() >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
 #elif defined(__APPLE__)
-            const fs::path descriptorPath = fs::path("/dev/fd") / std::to_string(plugin.Descriptor);
-            if (plugin.Descriptor >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            const fs::path descriptorPath = fs::path("/dev/fd") / std::to_string(plugin.Descriptor());
+            if (plugin.Descriptor() >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
 #endif
             void *handle = dlopen(loadPath.c_str(), RTLD_NOW);
             if (!handle) LOG_WARN("PLUGIN", "dlopen failed for '" << pluginFile.string() << "': " << dlerror());

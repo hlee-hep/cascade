@@ -1,6 +1,4 @@
-import ctypes
 import contextlib
-import hashlib
 import importlib.util
 import json
 import os
@@ -48,47 +46,23 @@ except ImportError:
     unique_paths = _PLUGIN_PATHS_MODULE.unique_paths
 
 
+def _status_text(value: Any) -> str:
+    return getattr(value, "name", str(value).rsplit(".", 1)[-1])
+
+
 def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    from cascade._cascade import PluginVerifier
+    return PluginVerifier.hash_file(path)
 
 
-def _verify_manifest_signature(manifest: str, pubkey: str) -> bool:
-    sig = manifest + ".sig"
-    try:
-        result = subprocess.run(
-            ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", pubkey, "-rawin", "-in", manifest, "-sigfile", sig],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        return False
-    return result.returncode == 0
+def _sha256_bytes(data: bytes) -> str:
+    from cascade._cascade import PluginVerifier
+    return PluginVerifier.hash_bytes(data)
 
 
 def _read_regular_file(path: str) -> bytes:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_BINARY"):
-        flags |= os.O_BINARY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"Expected a regular file: {path}")
-        chunks = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+    from cascade._cascade import PluginVerifier
+    return PluginVerifier.read_file(path)
 
 
 def _snapshot_trusted_keys(target_prefix: str, public_key: Optional[str]) -> List[Dict[str, Any]]:
@@ -106,13 +80,13 @@ def _snapshot_trusted_keys(target_prefix: str, public_key: Optional[str]) -> Lis
             snapshots.append({
                 "name": name,
                 "data": data,
-                "fingerprint": hashlib.sha256(data).hexdigest(),
+                "fingerprint": _sha256_bytes(data),
                 "operator_supplied": False,
             })
     if public_key:
         path = os.path.realpath(os.path.abspath(os.path.expanduser(public_key)))
         data = _read_regular_file(path)
-        fingerprint = hashlib.sha256(data).hexdigest()
+        fingerprint = _sha256_bytes(data)
         snapshots = [entry for entry in snapshots if entry["fingerprint"] != fingerprint]
         snapshots.append({
             "name": os.path.basename(path),
@@ -129,7 +103,9 @@ def _materialized_trusted_keys(snapshots: List[Dict[str, Any]]):
         paths = []
         snapshot_by_path = {}
         for index, snapshot in enumerate(snapshots):
-            path = os.path.join(directory, f"{index:04d}.pem")
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", snapshot.get("name", "key.pem"))
+            marker = "operator-" if snapshot.get("operator_supplied") else ""
+            path = os.path.join(directory, f"{marker}{index:04d}-{safe_name}")
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "wb") as output:
                 output.write(snapshot["data"])
@@ -138,38 +114,50 @@ def _materialized_trusted_keys(snapshots: List[Dict[str, Any]]):
         yield paths, snapshot_by_path
 
 
+def _core_verify_package(
+    path: str,
+    language: str,
+    trusted_keys: List[str],
+    require_signed: bool,
+):
+    from cascade._cascade import PluginTrustPolicy, PluginVerifier
+
+    package = os.path.basename(os.path.abspath(path))
+    package_key = next(
+        (
+            key
+            for key in trusted_keys
+            if re.sub(r"^\d{4}-", "", os.path.basename(key)) == package + ".pem"
+        ),
+        "",
+    )
+    operator_key = next(
+        (
+            key
+            for key in trusted_keys
+            if package_key == "" and os.path.basename(key).startswith("operator-")
+        ),
+        "",
+    )
+    policy = PluginTrustPolicy.RequireSigned if require_signed else PluginTrustPolicy.Verified
+    trust_store = os.path.dirname(package_key or operator_key) if (package_key or operator_key) else ""
+    return PluginVerifier.verify_package(
+        path,
+        trust_store,
+        policy,
+        language,
+        package_key or operator_key,
+    )
+
+
 def _ensure_real_directory_tree(path: str, allow_missing_leaf: bool = False) -> None:
-    absolute = os.path.abspath(path)
-    parts = absolute.split(os.sep)
-    current = os.sep if absolute.startswith(os.sep) else parts.pop(0)
-    for index, part in enumerate(parts):
-        if not part:
-            continue
-        current = os.path.join(current, part)
-        try:
-            metadata = os.lstat(current)
-        except FileNotFoundError:
-            if allow_missing_leaf:
-                return
-            raise
-        if stat.S_ISLNK(metadata.st_mode):
-            raise RuntimeError(f"Symbolic links are not allowed in plugin paths: {current}")
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeError(f"Plugin path component is not a directory: {current}")
+    from cascade._cascade import PluginVerifier
+    PluginVerifier.validate_directory_tree(path, allow_missing_leaf)
 
 
 def _validate_staged_tree(package_dir: str) -> None:
-    metadata = os.lstat(package_dir)
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-        raise RuntimeError(f"Staged plugin package must be a real directory: {package_dir}")
-    for root, directories, files in os.walk(package_dir, followlinks=False):
-        for name in directories + files:
-            path = os.path.join(root, name)
-            item = os.lstat(path)
-            if stat.S_ISLNK(item.st_mode):
-                raise RuntimeError(f"Staged plugin contains a symbolic link: {path}")
-            if name in files and not stat.S_ISREG(item.st_mode):
-                raise RuntimeError(f"Staged plugin contains a non-regular file: {path}")
+    from cascade._cascade import PluginVerifier
+    PluginVerifier.validate_staged_tree(package_dir)
 
 
 @contextlib.contextmanager
@@ -233,108 +221,23 @@ def _default_plugin_dirs() -> Tuple[str, str]:
 
 
 def _runtime_plugin_layouts() -> List[Dict[str, str]]:
-    layouts = []
-    trust_override = os.environ.get("CASCADE_PLUGIN_TRUST_STORE")
-    cpp_override = os.environ.get("CASCADE_PLUGIN_DIR")
-    python_override = os.environ.get("CASCADE_PYPLUGIN_DIR")
-    if cpp_override or python_override:
-        layouts.append({
-            "prefix": "environment",
-            "cpp": os.path.realpath(cpp_override) if cpp_override else "",
-            "python": os.path.realpath(python_override) if python_override else "",
-            "trust_store": os.path.realpath(
-                trust_override or os.path.join(_CLI_PREFIX, "share", "cascade", "trusted_keys")
-            ),
-            "source": "environment",
-        })
-    for prefix in configured_plugin_prefixes():
-        layout = plugin_layout(prefix)
-        layout["source"] = "config"
-        if trust_override:
-            layout["trust_store"] = os.path.realpath(trust_override)
-        layouts.append(layout)
-    default_layout = plugin_layout(_CLI_PREFIX)
-    default_layout["source"] = "cascade"
-    if trust_override:
-        default_layout["trust_store"] = os.path.realpath(trust_override)
-    layouts.append(default_layout)
-
-    result = []
-    seen = set()
-    for layout in layouts:
-        key = (layout["cpp"], layout["python"], layout["trust_store"])
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(layout)
-    return result
-
-
-def _manifest_classes(path: str) -> List[str]:
-    try:
-        import ast
-        with open(path, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=path)
-    except Exception:
-        return []
-
-    def is_base_module(base) -> bool:
-        if isinstance(base, ast.Name):
-            return base.id == "base_module"
-        if isinstance(base, ast.Attribute):
-            return base.attr == "base_module"
-        return False
-
-    classes = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and any(is_base_module(base) for base in node.bases):
-            classes.append(node.name)
-    return classes
-
-
-def _check_cpp_abi(path: str) -> Tuple[str, Optional[str]]:
-    try:
-        import cascade
-        expected = int(getattr(cascade, "__abi_version__"))
-        expected_tag = str(getattr(cascade, "__abi_tag__"))
-    except Exception as e:
-        return "WARN", f"cannot import cascade ABI version: {e}"
-
-    try:
-        lib = ctypes.CDLL(path)
-    except OSError as e:
-        return "ERROR", f"dlopen failed: {e}"
-
-    try:
-        fn = lib.CascadePluginAbiVersion
-    except AttributeError:
-        return "ERROR", "missing CascadePluginAbiVersion"
-    fn.restype = ctypes.c_int
-    try:
-        actual = int(fn())
-    except Exception as e:
-        return "ERROR", f"CascadePluginAbiVersion failed: {e}"
-    if actual != expected:
-        return "ERROR", f"ABI mismatch: plugin={actual} cascade={expected}"
-    try:
-        tag_fn = lib.CascadePluginAbiTag
-    except AttributeError:
-        return "ERROR", "missing CascadePluginAbiTag"
-    tag_fn.restype = ctypes.c_char_p
-    try:
-        raw_tag = tag_fn()
-        actual_tag = raw_tag.decode("utf-8") if raw_tag else ""
-    except Exception as e:
-        return "ERROR", f"CascadePluginAbiTag failed: {e}"
-    if actual_tag != expected_tag:
-        return "ERROR", f"ABI tag mismatch: plugin={actual_tag!r} cascade={expected_tag!r}"
-    return "OK", f"ABI {actual}, tag {actual_tag}"
+    from cascade._cascade import PluginPaths
+    return [
+        {
+            "prefix": layout.prefix,
+            "cpp": layout.cpp,
+            "python": layout.python,
+            "include": layout.include,
+            "trust_store": layout.trust_store,
+            "source": layout.source,
+        }
+        for layout in PluginPaths.runtime_layouts()
+    ]
 
 
 def _doctor_plugin_package(
     path: str,
     language: str,
-    check_abi: bool,
     trusted_keys: List[str],
     require_signed: bool = False,
     reports: Optional[List[Dict[str, Any]]] = None,
@@ -370,139 +273,25 @@ def _doctor_plugin_package(
         warnings += 1
         return finish()
 
-    manifest = os.path.join(path, "plugin_manifest.json")
-    manifest_sig = manifest + ".sig"
-    if not os.path.isfile(manifest):
-        emit("ERROR", f"[{language}] missing plugin_manifest.json")
-        errors += 1
-        return finish()
-
-    has_signature = os.path.isfile(manifest_sig)
-    verified_key = next(
-        (key for key in trusted_keys if has_signature and _verify_manifest_signature(manifest, key)),
-        None,
-    )
-    if verified_key:
-        trust = "SIGNED"
-        emit("INFO", f"[{language}] manifest signature: OK ({os.path.basename(verified_key)})")
-    elif require_signed:
-        emit("ERROR", f"[{language}] package requires a trusted manifest signature")
-        errors += 1
-        return finish()
-    elif has_signature:
-        emit("WARN", f"[{language}] manifest signature is not trusted; package is only verified")
-        warnings += 1
-    else:
-        emit("INFO", f"[{language}] unsigned manifest: verified policy")
-
     try:
-        with open(manifest, "r", encoding="utf-8") as source:
-            data = json.load(source)
+        package = _core_verify_package(path, language, trusted_keys, require_signed)
     except Exception as error:
-        emit("ERROR", f"[{language}] cannot parse plugin_manifest.json: {error}")
+        emit("ERROR", f"[{language}] {error}")
         errors += 1
         return finish()
 
-    if data.get("schema") != 2:
-        emit("ERROR", f"[{language}] unsupported manifest schema")
-        errors += 1
-        return finish()
-    if data.get("package") != os.path.basename(os.path.abspath(path)):
-        emit("ERROR", f"[{language}] manifest package does not match directory name")
-        errors += 1
-        return finish()
-
-    listed = set()
-    modules = data.get("modules", [])
-    if not isinstance(modules, list):
-        emit("ERROR", f"[{language}] manifest field 'modules' must be a list")
-        errors += 1
-        return finish()
-
-    for entry in modules:
-        if not isinstance(entry, dict):
-            emit("ERROR", f"[{language}] invalid manifest module entry: {entry!r}")
-            errors += 1
-            continue
-        if entry.get("language") != language:
-            continue
-        relative = entry.get("path", "")
-        name = entry.get("name", relative)
-        identities = entry.get("classes", []) if language == "python" else [name]
-        if not isinstance(identities, list) or not all(isinstance(identity, str) and identity for identity in identities):
-            emit("ERROR", f"[{language}] {name}: module identities must be non-empty strings")
-            errors += 1
-            identities = []
-        for identity in identities:
-            if identity in names:
-                emit("ERROR", f"[{language}] duplicate module identity in manifest: {identity}")
-                errors += 1
-            names.append(identity)
-        if not relative or os.path.isabs(relative):
-            emit("ERROR", f"[{language}] {name}: invalid relative path {relative!r}")
-            errors += 1
-            continue
-        listed.add(relative)
-        full = os.path.realpath(os.path.join(path, relative))
-        if os.path.commonpath([os.path.realpath(path), full]) != os.path.realpath(path):
-            emit("ERROR", f"[{language}] {name}: path escapes package directory")
-            errors += 1
-            continue
-        if not os.path.isfile(full):
-            emit("ERROR", f"[{language}] {name}: listed file missing: {relative}")
-            errors += 1
-            continue
-        expected = entry.get("sha256", "")
-        actual = _sha256_file(full)
-        if actual != expected:
-            emit("ERROR", f"[{language}] {name}: hash mismatch")
-            errors += 1
-            continue
-        if language == "cpp":
-            if not os.path.basename(full).endswith("Module.so"):
-                emit("WARN", f"[{language}] {name}: filename does not end with Module.so")
-                warnings += 1
-            elif check_abi:
-                level, message = _check_cpp_abi(full)
-                emit(level, f"[{language}] {name}: {message}")
-                if level == "ERROR":
-                    errors += 1
-                elif level == "WARN":
-                    warnings += 1
-            else:
-                emit("INFO", f"[{language}] {name}: hash OK")
-        elif language == "python":
-            if os.path.basename(full) != "__init__.py" and not os.path.basename(full).endswith("module.py"):
-                emit("WARN", f"[{language}] {name}: filename does not end with module.py")
-                warnings += 1
-            declared = entry.get("classes", [])
-            discovered = _manifest_classes(full)
-            missing = [class_name for class_name in declared if class_name not in discovered]
-            if missing:
-                emit("ERROR", f"[{language}] {name}: classes missing from source: {missing}")
-                errors += 1
-            else:
-                emit("INFO", f"[{language}] {name}: hash OK, classes={declared or discovered}")
-
-    expected_suffix = "Module.so" if language == "cpp" else "module.py"
-    ignored = []
-    for filename in sorted(os.listdir(path)):
-        if filename in {"plugin_manifest.json", "plugin_manifest.json.sig", "__init__.py"}:
-            continue
-        if filename.endswith(expected_suffix) and filename not in listed:
-            ignored.append(filename)
-    if ignored:
-        emit("WARN", f"[{language}] files ignored because they are not in manifest: {', '.join(ignored)}")
-        warnings += 1
-
-    emit(trust, f"[{language}] {os.path.basename(path)} modules={len(listed)} errors={errors} warnings={warnings}")
+    trust = _status_text(package.trust).upper()
+    verified_key = package.trusted_key_path or None
+    for artifact in package.artifacts:
+        identities = list(artifact.classes) if language == "python" else [artifact.name]
+        names.extend(identities)
+        emit("INFO", f"[{language}] {artifact.name}: hash OK")
+    emit(trust, f"[{language}] {package.package} modules={len(package.artifacts)} errors=0 warnings=0")
     return finish()
-
 
 def _doctor_plugin_dir(
     path: str,
     language: str,
-    check_abi: bool,
     trusted_keys: List[str],
     require_signed: bool = False,
     reports: Optional[List[Dict[str, Any]]] = None,
@@ -525,7 +314,6 @@ def _doctor_plugin_dir(
         package_errors, package_names = _doctor_plugin_package(
             package_dir,
             language,
-            check_abi,
             trusted_keys,
             require_signed=require_signed,
             reports=reports,
@@ -579,11 +367,11 @@ def cmd_doctor_plugins(args) -> None:
         py_errors, layout_py_names = (0, [])
         if layout["cpp"]:
             cpp_errors, layout_cpp_names = _doctor_plugin_dir(
-                layout["cpp"], "cpp", not args.no_abi, trusted_keys, require_signed, reports, quiet
+                layout["cpp"], "cpp", trusted_keys, require_signed, reports, quiet
             )
         if layout["python"]:
             py_errors, layout_py_names = _doctor_plugin_dir(
-                layout["python"], "python", False, trusted_keys, require_signed, reports, quiet
+                layout["python"], "python", trusted_keys, require_signed, reports, quiet
             )
         for report in reports[report_start:]:
             report["prefix"] = layout["prefix"]
@@ -824,9 +612,9 @@ def _verify_staged_plugin(
     errors = 0
     found = False
     with _materialized_trusted_keys(trusted_key_snapshots) as (trusted_keys, snapshot_by_path):
-        for language, root, check_abi in (
-            ("cpp", layout["cpp"], True),
-            ("python", layout["python"], False),
+        for language, root in (
+            ("cpp", layout["cpp"]),
+            ("python", layout["python"]),
         ):
             package_dir = os.path.join(root, package)
             if not os.path.lexists(package_dir):
@@ -837,7 +625,6 @@ def _verify_staged_plugin(
             package_errors, _ = _doctor_plugin_package(
                 package_dir,
                 language,
-                check_abi,
                 trusted_keys,
                 require_signed=require_signed,
                 reports=reports,
@@ -854,6 +641,35 @@ def _verify_staged_plugin(
     if errors:
         raise RuntimeError(f"Staged plugin verification failed with {errors} error(s)")
     return {"packages": reports, "trust_store": layout["trust_store"]}
+
+
+def _sign_staged_manifests(stage_prefix: str, package: str, private_key: str) -> None:
+    layout = plugin_layout(stage_prefix)
+    key = os.path.realpath(os.path.abspath(os.path.expanduser(private_key)))
+    _read_regular_file(key)
+    manifests = [
+        os.path.join(layout[language], package, "plugin_manifest.json")
+        for language in ("cpp", "python")
+        if os.path.isfile(os.path.join(layout[language], package, "plugin_manifest.json"))
+    ]
+    for manifest in manifests:
+        subprocess.run(
+            [
+                "openssl",
+                "pkeyutl",
+                "-sign",
+                "-inkey",
+                key,
+                "-rawin",
+                "-in",
+                manifest,
+                "-out",
+                manifest + ".sig",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def _other_prefix_package_locations(package: str, target_prefix: str) -> List[str]:
@@ -950,6 +766,8 @@ def cmd_plugin_install(args) -> None:
     package = args.package or os.path.basename(source)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", package):
         raise ValueError("Plugin package must contain only letters, digits, '.', '_', or '-'")
+    if bool(args.private_key) != bool(args.public_key):
+        raise ValueError("--private-key and --public-key must be provided together")
     target_prefix = canonical_prefix(args.prefix)
     os.makedirs(target_prefix, exist_ok=True)
     _ensure_real_directory_tree(target_prefix)
@@ -973,10 +791,6 @@ def cmd_plugin_install(args) -> None:
         })
         environment.pop("CASCADE_PLUGIN_PRIVATE_KEY", None)
         environment.pop("CASCADE_PLUGIN_PUBLIC_KEY", None)
-        if args.private_key:
-            environment["CASCADE_PLUGIN_PRIVATE_KEY"] = os.path.realpath(os.path.expanduser(args.private_key))
-        if args.public_key:
-            environment["CASCADE_PLUGIN_PUBLIC_KEY"] = os.path.realpath(os.path.expanduser(args.public_key))
 
         command = [args.scons, "install", f"-j{args.jobs}"]
         if not args.json:
@@ -992,6 +806,9 @@ def cmd_plugin_install(args) -> None:
             if args.json and completed.stderr:
                 _log("ERROR", completed.stderr.rstrip())
             raise RuntimeError(f"Plugin build failed with exit code {completed.returncode}")
+
+        if args.private_key:
+            _sign_staged_manifests(stage_prefix, package, args.private_key)
 
         verification = _verify_staged_plugin(
             stage_prefix,
