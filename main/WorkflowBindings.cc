@@ -35,7 +35,8 @@ void BindWorkflow(py::module_ &m)
              {
                  py::gil_scoped_release release;
                  return self.RegisterModuleHandle(std::move(module));
-             })
+             },
+             py::keep_alive<1, 2>())
         .def("get_list_available_modules", &AMCM::ListAvailableModules)
         .def("get_list_available_module_metadata", &AMCM::ListAvailableModuleMetadata)
         .def("get_plugin_origin", &AMCM::GetPluginOrigin)

@@ -2,7 +2,6 @@ from cascade.pymodule import base_module
 from cascade._cascade import AMCM, IAnalysisModule, PluginPaths, PluginTrustPolicy, PluginVerifier
 from cascade import init_interrupt, is_interrupted, log, log_level
 import cascade
-import ast
 import importlib
 import json
 import os
@@ -155,23 +154,33 @@ def _load_python_plugin_index(require_signed=False):
         return _PYPLUGIN_CACHE
 
     index = {}
-    policy = PluginTrustPolicy.RequireSigned if require_signed else PluginTrustPolicy.Verified
-    discovery = PluginVerifier.discover(plugin_roots, policy, "python")
+    discovery = PluginVerifier.index_manifests(plugin_roots, "python")
     for error in discovery.errors:
         log(log_level.WARN, "PLUGIN", error)
-    for package in discovery.packages:
-        root = os.path.dirname(package.manifest_path)
-        for artifact in package.artifacts:
-            for class_name, entry in _python_artifact_entries(
-                package, artifact, root
-            ).items():
-                if class_name in index:
-                    previous = index[class_name]
-                    raise RuntimeError(
-                        "Duplicate python plugin module name "
-                        f"{class_name}: {previous['path']} and {artifact.path}"
-                    )
-                index[class_name] = entry
+    for candidate in discovery.entries:
+        if require_signed and not candidate.has_signature:
+            continue
+        class_name = candidate.identity
+        entry = {
+            "class": class_name,
+            "path": candidate.artifact_path,
+            "package_dir": os.path.dirname(candidate.manifest_path),
+            "manifest": candidate.manifest_path,
+            "sha256": candidate.declared_sha256,
+            "metadata": {
+                "name": candidate.metadata.name,
+                "version": candidate.metadata.version,
+                "summary": candidate.metadata.summary,
+                "tags": list(candidate.metadata.tags),
+            },
+        }
+        if class_name in index:
+            previous = index[class_name]
+            raise RuntimeError(
+                "Duplicate python plugin module name "
+                f"{class_name}: {previous['path']} and {candidate.artifact_path}"
+            )
+        index[class_name] = entry
 
     _PYPLUGIN_CACHE = index
     _PYPLUGIN_CACHE_KEY = cache_key
@@ -220,14 +229,17 @@ class _ModuleHandle:
 class py_amcm:
     def __init__(self, require_signed=False, discover_plugins=True):
         self.require_signed = bool(require_signed)
+        self._discover_plugins = bool(discover_plugins)
         policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
-        self.ctrl = AMCM(policy, bool(discover_plugins))
+        self.ctrl = AMCM(policy, self._discover_plugins)
         self._python_index_cache = None
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
         init_interrupt()
 
     def _python_index(self):
+        if not self._discover_plugins:
+            return {}
         if self._python_index_cache is None:
             self._python_index_cache = _load_python_plugin_index(self.require_signed)
         return self._python_index_cache
@@ -279,14 +291,16 @@ class py_amcm:
         module_obj.set_plugin_origin(info["origin"])
         self.ctrl.register_module_handle(module_obj)
         handle = _ModuleHandle(self.ctrl, module_obj, "python")
-        log(log_level.INFO, "CONTROL", f"Module {module_obj.get_basename()} is registered as {instance_name}")
         return handle
 
     def _register_python_plugin(self, class_name, instance_name):
         index = self._python_index()
-        info = index.get(class_name)
-        if not info:
+        candidate = index.get(class_name)
+        if not candidate:
             raise RuntimeError(f"Module not found: {class_name}")
+        info = _load_targeted_python_plugin_info(
+            candidate["manifest"], class_name, self.require_signed
+        )
         return self._register_python_plugin_info(info, instance_name)
 
     def register_module(self, class_name, name=None):
@@ -319,8 +333,13 @@ class py_amcm:
         modname = module_obj.__class__.__module__
         if not modname.startswith("cascade.pyplugin."):
             raise RuntimeError(f"Python module {modname} is not a verified cascade.pyplugin module; refusing to register it.")
-        info = self._python_index().get(module_obj.__class__.__name__)
-        if not info or os.path.realpath(info["path"]) != os.path.realpath(sys.modules[modname].__file__):
+        candidate = self._python_index().get(module_obj.__class__.__name__)
+        if not candidate:
+            raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
+        info = _load_targeted_python_plugin_info(
+            candidate["manifest"], module_obj.__class__.__name__, self.require_signed
+        )
+        if os.path.realpath(info["path"]) != os.path.realpath(sys.modules[modname].__file__):
             raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
         _assign_verified_identity(module_obj, info)
         module_obj.set_name(name)
@@ -373,57 +392,25 @@ class py_amcm:
         for class_name, info in self._python_index().items():
             if class_name in cpp_names:
                 raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
-            plugin_info = None
-            static_fields = {}
-            try:
-                tree = ast.parse(info.get("source_bytes", b""), filename=info["path"])
-                class_node = next(
-                    node
-                    for node in tree.body
-                    if isinstance(node, ast.ClassDef) and node.name == class_name
-                )
-                for statement in class_node.body:
-                    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                        continue
-                    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-                    value = statement.value
-                    for target in targets:
-                        if not isinstance(target, ast.Name) or target.id not in {"METADATA", "VERSION", "SUMMARY", "TAGS"}:
-                            continue
-                        static_fields[target.id] = ast.literal_eval(value)
-                plugin_info = static_fields.get("METADATA")
-            except (StopIteration, SyntaxError, ValueError, TypeError):
-                plugin_info = None
-            if isinstance(plugin_info, dict):
-                metadata.append({
-                    "name": plugin_info.get("name", class_name),
-                    "version": plugin_info.get("version", ""),
-                    "summary": plugin_info.get("summary", ""),
-                    "tags": list(plugin_info.get("tags", [])),
-                    "language": "python",
-                })
-            elif instantiate_python:
+            plugin_info = info.get("metadata", {})
+            if instantiate_python and not any(
+                plugin_info.get(field) for field in ("version", "summary", "tags")
+            ):
                 try:
-                    obj = getattr(_import_python_plugin(info), class_name)
+                    verified = _load_targeted_python_plugin_info(
+                        info["manifest"], class_name, self.require_signed
+                    )
+                    obj = getattr(_import_python_plugin(verified), class_name)
                     plugin_info = obj().get_metadata()
                 except Exception:
-                    plugin_info = None
-                if isinstance(plugin_info, dict):
-                    metadata.append({
-                        "name": plugin_info.get("name", class_name),
-                        "version": plugin_info.get("version", ""),
-                        "summary": plugin_info.get("summary", ""),
-                        "tags": list(plugin_info.get("tags", [])),
-                        "language": "python",
-                    })
-            else:
-                metadata.append({
-                    "name": class_name,
-                    "version": static_fields.get("VERSION", getattr(cascade, "__version__", "")),
-                    "summary": static_fields.get("SUMMARY", ""),
-                    "tags": list(static_fields.get("TAGS", [])),
-                    "language": "python",
-                })
+                    plugin_info = info.get("metadata", {})
+            metadata.append({
+                "name": plugin_info.get("name", class_name),
+                "version": plugin_info.get("version", ""),
+                "summary": plugin_info.get("summary", ""),
+                "tags": list(plugin_info.get("tags", [])),
+                "language": "python",
+            })
         return metadata
 
     def get_list_registered_modules(self):

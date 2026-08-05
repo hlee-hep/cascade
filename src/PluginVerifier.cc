@@ -263,25 +263,34 @@ void AppendTrackedFiles(std::ostringstream &snapshot, const fs::path &root, bool
     }
 
     std::vector<fs::path> paths;
-    fs::recursive_directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error);
-    const fs::recursive_directory_iterator end;
-    while (!error && iterator != end)
+    if (!trustStore)
     {
-        const fs::directory_entry entry = *iterator;
-        if (entry.is_symlink(error))
+        for (fs::directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error), end;
+             !error && iterator != end; iterator.increment(error))
         {
-            if (entry.is_directory(error)) iterator.disable_recursion_pending();
+            const auto status = iterator->symlink_status(error);
+            if (!error && status.type() == fs::file_type::directory)
+            {
+                for (const char *name : {"plugin_manifest.json", "plugin_manifest.json.sig"})
+                {
+                    const fs::path candidate = iterator->path() / name;
+                    std::error_code candidateError;
+                    if (fs::is_regular_file(candidate, candidateError) && !candidateError) paths.push_back(candidate);
+                }
+            }
+            error.clear();
         }
-        else if (entry.is_regular_file(error))
+    }
+    else
+    {
+        for (fs::directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error), end;
+             !error && iterator != end; iterator.increment(error))
         {
-            const std::string name = entry.path().filename().string();
-            const bool tracked = trustStore ? entry.path().extension() == ".pem"
-                                            : name == "plugin_manifest.json" || name == "plugin_manifest.json.sig" ||
-                                                  entry.path().extension() == ".py" || entry.path().extension() == ".so";
-            if (tracked) paths.push_back(entry.path());
+            const auto status = iterator->symlink_status(error);
+            if (!error && status.type() == fs::file_type::regular && iterator->path().extension() == ".pem")
+                paths.push_back(iterator->path());
+            error.clear();
         }
-        error.clear();
-        iterator.increment(error);
     }
 
     std::sort(paths.begin(), paths.end());
@@ -347,6 +356,56 @@ std::string RequiredString(const nlohmann::json &value, const char *field)
         throw std::runtime_error(std::string("manifest field '") + field + "' must be a non-empty string");
     return value.at(field).get<std::string>();
 }
+
+ModuleMetadata ManifestMetadata(const nlohmann::json &entry, const std::string &identity)
+{
+    ModuleMetadata metadata;
+    metadata.Name = identity;
+    const nlohmann::json *valuePointer = nullptr;
+    if (entry.contains("class_metadata"))
+    {
+        const auto &classMetadata = entry.at("class_metadata");
+        if (!classMetadata.is_object())
+            throw std::runtime_error("manifest class_metadata must be an object: " + identity);
+        if (classMetadata.contains(identity)) valuePointer = &classMetadata.at(identity);
+    }
+    if (!valuePointer && entry.contains("metadata")) valuePointer = &entry.at("metadata");
+    if (!valuePointer) return metadata;
+    const auto &value = *valuePointer;
+    if (!value.is_object()) throw std::runtime_error("manifest module metadata must be an object: " + identity);
+    if (value.contains("name"))
+    {
+        if (!value.at("name").is_string() || value.at("name").get<std::string>().empty())
+            throw std::runtime_error("manifest module metadata name must be a non-empty string: " + identity);
+        metadata.Name = value.at("name").get<std::string>();
+    }
+    if (metadata.Name != identity)
+        throw std::runtime_error("manifest module metadata name must match its module identity: " + identity);
+    if (value.contains("version"))
+    {
+        if (!value.at("version").is_string())
+            throw std::runtime_error("manifest module metadata version must be a string: " + identity);
+        metadata.Version = value.at("version").get<std::string>();
+    }
+    if (value.contains("summary"))
+    {
+        if (!value.at("summary").is_string())
+            throw std::runtime_error("manifest module metadata summary must be a string: " + identity);
+        metadata.Summary = value.at("summary").get<std::string>();
+    }
+    if (value.contains("tags"))
+    {
+        if (!value.at("tags").is_array())
+            throw std::runtime_error("manifest module metadata tags must be an array: " + identity);
+        for (const auto &tag : value.at("tags"))
+        {
+            if (!tag.is_string() || tag.get<std::string>().empty())
+                throw std::runtime_error("manifest module metadata tags must be non-empty strings: " + identity);
+            metadata.Tags.push_back(tag.get<std::string>());
+        }
+    }
+    return metadata;
+}
 } // namespace
 
 VerifiedPluginArtifact::VerifiedPluginArtifact(const VerifiedPluginArtifact &other)
@@ -402,6 +461,110 @@ std::string PluginVerifier::IndexFingerprint(const std::vector<std::string> &plu
     return Sha256(snapshot.str());
 }
 
+PluginManifestIndexResult PluginVerifier::IndexManifests(const std::vector<std::string> &pluginRoots,
+                                                         const std::string &language)
+{
+    PluginManifestIndexResult result;
+    static const std::regex packagePattern("[A-Za-z0-9][A-Za-z0-9_.-]*");
+    static const std::regex hashPattern("[0-9a-f]{64}");
+    for (const std::string &rootValue : pluginRoots)
+    {
+        const fs::path root(rootValue);
+        IndexReadLock indexLock(root);
+        std::error_code error;
+        if (!fs::is_directory(root, error) || error) continue;
+        std::vector<fs::path> manifests;
+        for (fs::directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error), end;
+             !error && iterator != end; iterator.increment(error))
+        {
+            const auto status = iterator->symlink_status(error);
+            if (!error && status.type() == fs::file_type::directory)
+            {
+                const fs::path manifest = iterator->path() / "plugin_manifest.json";
+                std::error_code manifestError;
+                if (fs::is_regular_file(manifest, manifestError) && !manifestError) manifests.push_back(manifest);
+            }
+            error.clear();
+        }
+        std::sort(manifests.begin(), manifests.end());
+        for (const auto &manifestPath : manifests)
+        {
+            try
+            {
+                const fs::path packageDir = manifestPath.parent_path();
+                const std::string packageName = packageDir.filename().string();
+                if (!std::regex_match(packageName, packagePattern))
+                    throw std::runtime_error("invalid plugin package name");
+                const auto manifestBytes = ReadRegularFile(manifestPath, kMaxManifestBytes);
+                const nlohmann::json manifest = nlohmann::json::parse(manifestBytes.begin(), manifestBytes.end());
+                if (!manifest.is_object() || !manifest.contains("schema") || !manifest.at("schema").is_number_integer() ||
+                    manifest.at("schema").get<int>() != 2)
+                    throw std::runtime_error("unsupported plugin manifest schema");
+                if (RequiredString(manifest, "package") != packageName)
+                    throw std::runtime_error("manifest package name does not match its directory");
+                if (!manifest.contains("modules") || !manifest.at("modules").is_array())
+                    throw std::runtime_error("manifest field 'modules' must be an array");
+                const std::string canonicalManifest = fs::canonical(manifestPath).string();
+                const bool hasSignature = fs::is_regular_file(fs::path(canonicalManifest + ".sig"));
+                for (const auto &entry : manifest.at("modules"))
+                {
+                    if (!entry.is_object()) throw std::runtime_error("manifest module entry must be an object");
+                    const std::string entryLanguage = RequiredString(entry, "language");
+                    if (entryLanguage != "cpp" && entryLanguage != "python")
+                        throw std::runtime_error("manifest module language must be 'cpp' or 'python'");
+                    const std::string name = RequiredString(entry, "name");
+                    const std::string relativeText = RequiredString(entry, "path");
+                    const std::string expectedHash = RequiredString(entry, "sha256");
+                    if (!std::regex_match(expectedHash, hashPattern))
+                        throw std::runtime_error("invalid artifact sha256: " + name);
+                    const fs::path relative(relativeText);
+                    if (relative.is_absolute() || relative.has_root_path() || relativeText.find('\\') != std::string::npos)
+                        throw std::runtime_error("invalid plugin artifact path: " + relativeText);
+                    for (const auto &component : relative)
+                        if (component == "." || component == "..")
+                            throw std::runtime_error("plugin artifact path must be normalized: " + relativeText);
+                    std::vector<std::string> identities;
+                    if (entryLanguage == "python")
+                    {
+                        if (!entry.contains("classes") || !entry.at("classes").is_array())
+                            throw std::runtime_error("python manifest entry requires a classes array: " + name);
+                        for (const auto &classValue : entry.at("classes"))
+                        {
+                            if (!classValue.is_string() || classValue.get<std::string>().empty())
+                                throw std::runtime_error("python module classes must be non-empty strings: " + name);
+                            identities.push_back(classValue.get<std::string>());
+                        }
+                    }
+                    else
+                    {
+                        identities.push_back(name);
+                    }
+                    if (!language.empty() && entryLanguage != language) continue;
+                    for (const auto &identity : identities)
+                    {
+                        PluginManifestEntry candidate;
+                        candidate.Package = packageName;
+                        candidate.ManifestPath = canonicalManifest;
+                        candidate.Language = entryLanguage;
+                        candidate.Name = name;
+                        candidate.Identity = identity;
+                        candidate.ArtifactPath = (packageDir / relative).lexically_normal().string();
+                        candidate.DeclaredSha256 = expectedHash;
+                        candidate.Metadata = ManifestMetadata(entry, identity);
+                        candidate.HasSignature = hasSignature;
+                        result.Entries.push_back(std::move(candidate));
+                    }
+                }
+            }
+            catch (const std::exception &failure)
+            {
+                result.Errors.push_back(manifestPath.string() + ": " + failure.what());
+            }
+        }
+    }
+    return result;
+}
+
 PluginDiscoveryResult PluginVerifier::Discover(const std::vector<std::string> &pluginRoots,
                                                PluginTrustPolicy policy, const std::string &language)
 {
@@ -416,6 +579,11 @@ PluginDiscoveryResult PluginVerifier::Discover(const std::vector<std::string> &p
         for (fs::directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error), end;
              !error && iterator != end; iterator.increment(error))
         {
+            if (iterator->path().filename() == "__pycache__")
+            {
+                error.clear();
+                continue;
+            }
             if (iterator->symlink_status(error).type() == fs::file_type::directory) packages.push_back(iterator->path());
             error.clear();
         }
@@ -589,6 +757,8 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
                 throw std::runtime_error("duplicate plugin module identity: " + name);
             identities.push_back(name);
         }
+        for (const auto &identity : (entryLanguage == "python" ? classes : std::vector<std::string>{name}))
+            (void)ManifestMetadata(entry, identity);
 
         const bool selected = moduleIdentity.empty() ||
                               (entryLanguage == "python"

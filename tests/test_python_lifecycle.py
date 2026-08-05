@@ -1,6 +1,7 @@
 import importlib.util
 import importlib.machinery
 import ctypes
+import gc
 import json
 import os
 import pathlib
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+import weakref
 
 from tests.module_isolation import restore_package_modules, snapshot_package_modules
 
@@ -391,6 +393,19 @@ class LifecycleTests(unittest.TestCase):
         controller.register_module_handle(module)
         with self.assertRaisesRegex(RuntimeError, "verified plugin"):
             controller.run_module_isolated(module)
+
+    def test_controller_keeps_python_module_alive(self):
+        module = Module()
+        module.set_name("retained-python-module")
+        reference = weakref.ref(module)
+        controller = test_extension.AMCM()
+        controller.register_module_handle(module)
+
+        del module
+        gc.collect()
+
+        self.assertIsNotNone(reference())
+        self.assertTrue(controller.run_module("retained-python-module").succeeded())
 
     @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
     def test_parent_recovers_output_after_isolated_crash(self):

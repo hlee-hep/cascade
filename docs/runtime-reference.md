@@ -258,7 +258,7 @@ and large output files may require higher values.
 
 Distinguish these costs in measurements:
 
-- plugin discovery and signature/artifact verification at controller startup;
+- manifest indexing at controller startup and targeted plugin verification at registration;
 - tracked-input capture during snapshot construction;
 - user `Init`/`Execute`/`Finalize` time;
 - output hashing and directory enumeration during commit;

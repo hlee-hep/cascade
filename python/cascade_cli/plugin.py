@@ -1,4 +1,5 @@
 import contextlib
+import ast
 import importlib.util
 import json
 import os
@@ -783,6 +784,24 @@ def _source_file_stems(directory: str, suffix: str) -> List[str]:
     )
 
 
+def _python_plugin_classes(path: str) -> List[str]:
+    with open(path, "r", encoding="utf-8") as source:
+        tree = ast.parse(source.read(), filename=path)
+
+    def is_base_module(base) -> bool:
+        return (
+            isinstance(base, ast.Name) and base.id == "base_module"
+        ) or (
+            isinstance(base, ast.Attribute) and base.attr == "base_module"
+        )
+
+    return [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and any(is_base_module(base) for base in node.bases)
+    ]
+
+
 def _reject_removed_placeholders(source: str) -> None:
     removed = ("@BASENAME@", "@VERSION_HASH@")
     for directory, suffix in (("include", ".hh"), ("src", ".cc"), ("python", ".py")):
@@ -811,7 +830,7 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
     if len(config_paths) > 1:
         raise ValueError("Plugin source contains multiple cascade-plugin configuration files")
     config = _load_mapping(config_paths[0]) if config_paths else {}
-    _validate_keys(config, {"schema_version", "root_modules", "class_map"}, "plugin configuration")
+    _validate_keys(config, {"schema_version", "root_modules", "class_map", "metadata"}, "plugin configuration")
     if config_paths and config.get("schema_version") != 1:
         raise ValueError("Plugin configuration requires schema_version: 1")
     _reject_removed_placeholders(source)
@@ -875,10 +894,35 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
             "plugin configuration class_map contains invalid C++ class names: " + ", ".join(invalid_classes)
         )
 
+    metadata = config.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise TypeError("plugin configuration metadata must map module names to metadata objects")
+    known_cpp_identities = set(class_map.get(name, name) for name in headers)
+    known_python_identities = {
+        class_name
+        for stem in python_sources
+        for class_name in _python_plugin_classes(os.path.join(source, "python", stem + ".py"))
+    }
+    known_identities = known_cpp_identities | known_python_identities
+    for module_name, value in metadata.items():
+        if not isinstance(module_name, str) or not module_name or not isinstance(value, dict):
+            raise TypeError("plugin configuration metadata must map module names to metadata objects")
+        _validate_keys(value, {"name", "version", "summary", "tags"}, f"plugin metadata {module_name}")
+        if module_name not in known_identities:
+            raise ValueError(f"plugin configuration metadata names unknown module: {module_name}")
+        if value.get("name", module_name) != module_name:
+            raise ValueError(f"plugin metadata name must match its module identity: {module_name}")
+        if any(key in value and not isinstance(value[key], str) for key in ("name", "version", "summary")):
+            raise TypeError(f"plugin metadata text fields must be strings: {module_name}")
+        tags = value.get("tags", [])
+        if not isinstance(tags, list) or any(not isinstance(tag, str) or not tag for tag in tags):
+            raise TypeError(f"plugin metadata tags must be non-empty strings: {module_name}")
+
     return {
         "template": _plugin_build_template(),
         "root_modules": root_modules,
         "class_map": class_map,
+        "metadata": metadata,
     }
 
 
@@ -923,6 +967,9 @@ def cmd_plugin_install(args) -> None:
         environment["CASCADE_PLUGIN_ROOT_MODULES"] = ",".join(convention_build["root_modules"])
         environment["CASCADE_PLUGIN_CLASS_MAP"] = json.dumps(
             convention_build["class_map"], sort_keys=True
+        )
+        environment["CASCADE_PLUGIN_METADATA"] = json.dumps(
+            convention_build["metadata"], sort_keys=True
         )
         command = [args.scons, "-f", convention_build["template"], "install", f"-j{args.jobs}"]
         if not args.json:

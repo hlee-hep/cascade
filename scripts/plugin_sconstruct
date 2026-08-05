@@ -39,6 +39,36 @@ def python_plugin_classes(path):
             classes.append(node.name)
     return classes
 
+def python_plugin_metadata(path):
+    try:
+        tree = ast.parse(Path(path).read_text(), filename=str(path))
+    except Exception:
+        return {}
+    result = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        values = {}
+        for statement in node.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            for target in targets:
+                if not isinstance(target, ast.Name) or target.id not in {"METADATA", "VERSION", "SUMMARY", "TAGS"}:
+                    continue
+                try:
+                    values[target.id] = ast.literal_eval(statement.value)
+                except Exception:
+                    pass
+        metadata = values.get("METADATA") if isinstance(values.get("METADATA"), dict) else {}
+        metadata = dict(metadata)
+        metadata.setdefault("name", node.name)
+        metadata.setdefault("version", values.get("VERSION", ""))
+        metadata.setdefault("summary", values.get("SUMMARY", ""))
+        metadata.setdefault("tags", values.get("TAGS", []))
+        result[node.name] = metadata
+    return result
+
 def generate_manifest(target, source, env):
     language = env["CASCADE_MANIFEST_LANGUAGE"]
     entries = []
@@ -56,8 +86,16 @@ def generate_manifest(target, source, env):
             if name.startswith("lib"):
                 name = name[3:]
             entry["name"] = class_map.get(name, name)
+            if entry["name"] in module_metadata:
+                entry["metadata"] = module_metadata[entry["name"]]
         elif language == "python":
             entry["classes"] = python_plugin_classes(path)
+            metadata = python_plugin_metadata(path)
+            for class_name in entry["classes"]:
+                if class_name in module_metadata:
+                    metadata[class_name] = module_metadata[class_name]
+            if metadata:
+                entry["class_metadata"] = metadata
         entries.append(entry)
 
     manifest = {
@@ -115,6 +153,13 @@ if class_map_raw:
         class_map = json.loads(class_map_raw)
     except Exception as e:
         raise RuntimeError(f"Invalid CASCADE_PLUGIN_CLASS_MAP JSON: {e}")
+module_metadata = {}
+module_metadata_raw = os.environ.get("CASCADE_PLUGIN_METADATA", "")
+if module_metadata_raw:
+    try:
+        module_metadata = json.loads(module_metadata_raw)
+    except Exception as e:
+        raise RuntimeError(f"Invalid CASCADE_PLUGIN_METADATA JSON: {e}")
 
 env = Environment(ENV=os.environ, CASCADE_PLUGIN_PACKAGE=package_name)
 

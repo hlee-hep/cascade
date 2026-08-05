@@ -1,15 +1,15 @@
 # Plugin development and distribution
 
-Cascade core contains no analysis modules. C++ and Python modules are discovered
-from verified plugin packages. Publisher signatures are optional and can be
-required for distributed or managed installations.
+Cascade core contains no analysis modules. C++ and Python module candidates are
+indexed from package manifests, then the selected package is fully verified when
+a module is registered. Publisher signatures are optional and can be required for
+distributed or managed installations.
 
 Plugin root discovery, persistent prefix configuration, filesystem validation,
-hashing, manifest verification, trust decisions, and index locking are implemented
+manifest indexing, hashing, verification, trust decisions, and index locking are implemented
 once in the C++ core. The Python API and CLI keep their existing function names but
 delegate these operations to the same services. Python retains only the language
-boundary needed to compile/import a verified Python artifact and inspect its class
-metadata.
+boundary needed to compile/import a selected, verified Python artifact.
 
 ## Source layout
 
@@ -47,6 +47,11 @@ root_modules:
   - RootEventModule
 class_map:
   EventModule: experiment::EventModule
+metadata:
+  experiment::EventModule:
+    version: 1.0.0
+    summary: Produces the experiment event sample.
+    tags: [generator, root]
 ```
 
 Omitting `root_modules` keeps every C++ module ROOT-free. Use `['*']` only when
@@ -54,6 +59,12 @@ every module in the package needs ROOT. List only modules that include ROOT or
 use `AnalysisManager`/`PlotManager`. The build template reads the installed
 `CascadeBuildConfig.hh`, applies the same C++ language mode as Cascade, and rejects
 a different ROOT version or C++ mode for ROOT-using modules.
+
+`metadata` is copied into the installed manifest. It lets `cascade module list`
+show C++ versions, summaries, and tags without loading a shared library. Python
+`VERSION`, `SUMMARY`, `TAGS`, or literal `METADATA` class attributes are extracted
+into the manifest automatically; an explicit configuration entry can override
+them.
 
 ## Verified module identity
 
@@ -84,18 +95,18 @@ CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin()
 }
 ```
 
-Provide the function yourself only when custom registration or static metadata is
-needed. All three entry points are required:
+Provide the function yourself only when custom registration is needed. All three
+entry points are required:
 
 - `CascadePluginAbiVersion`;
 - `CascadePluginAbiTag`;
 - `CascadeRegisterPlugin`.
 
-`CASCADE_REGISTER_MODULE` exposes default discovery metadata containing the class
-name and Cascade version. Use `CASCADE_REGISTER_MODULE_WITH_METADATA` in a custom
-entry point to add a module version, summary, and tags. Do not use static
-registration in a plugin: registration must happen only after the loader verifies
-the package manifest, artifact hash, ABI, and ABI tag.
+Runtime metadata returned by `GetMetadata()` remains available after registration.
+For metadata listing before registration, declare the same public description in
+`cascade-plugin.yaml`. Do not use static registration in a plugin: registration
+must happen only after the loader verifies the package manifest, artifact hash,
+ABI, and ABI tag.
 
 If the file stem and class differ:
 
@@ -120,9 +131,10 @@ class SummaryModule(base_module):
     TAGS = ["summary"]
 ```
 
-Static class attributes allow metadata listing without constructing the module.
-The package loader imports verified files into a private `cascade.pyplugin`
-namespace.
+The installer copies these static class attributes into the package manifest.
+Metadata listing therefore does not parse or import installed Python source. The
+package loader imports only a selected, verified file into a private
+`cascade.pyplugin` namespace.
 
 Direct unindexed Python module registration is rejected. Both verified and signed
 Python packages are imported through the private namespace.
@@ -180,10 +192,12 @@ artifact, ABI, and signature validation. The configuration is not a trusted
 module cache. `CASCADE_PLUGIN_DIR`, `CASCADE_PYPLUGIN_DIR`, and
 `CASCADE_PLUGIN_TRUST_STORE` remain temporary compatibility overrides.
 
-Normal controller startup performs this full discovery. An isolated worker receives
-the already selected manifest path and identity, then revalidates only that package
-and requested artifact before loading it. Isolation therefore keeps the trust check
-without paying a full-prefix scan for every node.
+Normal controller startup reads bounded `plugin_manifest.json` files only. It does
+not hash artifacts, verify signatures, import Python, or `dlopen` C++ libraries.
+`register_module()` resolves the requested identity through that lightweight index,
+then verifies only its package and selected artifact before loading it. An isolated
+worker receives the selected manifest path and identity and repeats that targeted
+verification before execution.
 
 Unsigned packages accepted by the default `Verified` policy must be owned by the
 current user or root and their plugin root, package directory, manifest, and selected
@@ -191,10 +205,10 @@ artifact must not be group/world writable. Signed packages derive trust from the
 verified manifest signature. Runtime reads are bounded to 4 MiB for manifests,
 1 MiB for public keys/signatures, and 64 MiB for Python source artifacts.
 
-Python discovery caches a verified index per controller. Metadata listing parses
-literal `METADATA`, `VERSION`, `SUMMARY`, and `TAGS` class constants without
-executing plugin source; pass the explicit instantiation option only when dynamic
-metadata is required.
+Python discovery caches a manifest index per controller. Metadata listing reads
+the metadata embedded by the installer. The legacy explicit instantiation option
+may verify and construct a selected Python module when an older manifest lacks
+metadata, but normal CLI listing never needs it.
 
 Install or remove packages before constructing a long-lived controller. Its Python
 index remains stable for the controller lifetime, so a newly published

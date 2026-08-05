@@ -203,6 +203,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
 {
     static std::mutex pluginLoadMutex;
     static std::map<std::string, std::string> loadedPlugins;
+    static std::vector<int> loadedDescriptors;
     for (const auto &package : packages)
     {
         LOG_DEBUG("PLUGIN", ToString(package.Trust) << " package " << package.Package);
@@ -239,21 +240,35 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                     if (!moduleSetBeforeLoad.count(module)) AnalysisModuleRegistry::Get().Unregister(module);
             };
             fs::path loadPath = pluginFile;
+            int retainedDescriptor = -1;
 #if defined(__linux__)
-            const fs::path descriptorPath = fs::path("/proc/self/fd") / std::to_string(plugin.Descriptor());
-            if (plugin.Descriptor() >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            if (plugin.Descriptor() >= 0)
+            {
+                retainedDescriptor = dup(plugin.Descriptor());
+                const fs::path descriptorPath = fs::path("/proc/self/fd") / std::to_string(retainedDescriptor);
+                if (retainedDescriptor >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            }
 #elif defined(__APPLE__)
-            const fs::path descriptorPath = fs::path("/dev/fd") / std::to_string(plugin.Descriptor());
-            if (plugin.Descriptor() >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            if (plugin.Descriptor() >= 0)
+            {
+                retainedDescriptor = dup(plugin.Descriptor());
+                const fs::path descriptorPath = fs::path("/dev/fd") / std::to_string(retainedDescriptor);
+                if (retainedDescriptor >= 0 && fs::exists(descriptorPath)) loadPath = descriptorPath;
+            }
 #endif
             void *handle = dlopen(loadPath.c_str(), RTLD_NOW);
             if (!handle) LOG_WARN("PLUGIN", "dlopen failed for '" << pluginFile.string() << "': " << dlerror());
-            if (!handle) continue;
+            if (!handle)
+            {
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
+                continue;
+            }
             if (AnalysisModuleRegistry::Get().ListModules() != modulesBeforeLoad)
             {
                 LOG_ERROR("PLUGIN", "Plugin performed static module registration before ABI validation: " << pluginFile.string());
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
                 continue;
             }
             dlerror();
@@ -277,6 +292,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                 LOG_ERROR("PLUGIN", "Plugin is missing required ABI or registration entry points: " << pluginFile.string());
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
                 continue;
             }
 
@@ -286,6 +302,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                 LOG_ERROR("PLUGIN", "Plugin ABI mismatch for '" << pluginFile.string() << "': " << abi << " != " << CASCADE_PLUGIN_ABI_VERSION);
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
                 continue;
             }
             const char *rawTag = abiTagFn();
@@ -294,6 +311,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                 LOG_ERROR("PLUGIN", "Plugin ABI tag mismatch for '" << pluginFile.string() << "'");
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
                 continue;
             }
 
@@ -309,6 +327,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                                              plugin.Name);
                 AnalysisModuleRegistry::Get().SetPluginOrigin(plugin.Name, plugin.Origin);
                 loadedPlugins.emplace(canonicalPlugin, plugin.Sha256);
+                if (retainedDescriptor >= 0) loadedDescriptors.push_back(retainedDescriptor);
                 LOG_INFO("PLUGIN", "Loaded " << ToString(plugin.Origin.Trust) << " plugin " << pluginFile.string());
             }
             catch (const std::exception &error)
@@ -316,12 +335,14 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                 LOG_ERROR("PLUGIN", "Plugin registration failed for '" << pluginFile.string() << "': " << error.what());
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
             }
             catch (...)
             {
                 LOG_ERROR("PLUGIN", "Plugin registration failed for '" << pluginFile.string() << "' with an unknown exception");
                 rollbackRegistrations();
                 dlclose(handle);
+                if (retainedDescriptor >= 0) close(retainedDescriptor);
             }
         }
     }
@@ -332,18 +353,23 @@ AMCM::AMCM() : AMCM(PluginTrustPolicy::Verified) {}
 
 AMCM::AMCM(PluginTrustPolicy trustPolicy) : AMCM(trustPolicy, true) {}
 
-AMCM::AMCM(PluginTrustPolicy trustPolicy, bool discoverPlugins) : m_TrustPolicy(trustPolicy)
+AMCM::AMCM(PluginTrustPolicy trustPolicy, bool discoverPlugins)
+    : m_TrustPolicy(trustPolicy), m_IndexPlugins(discoverPlugins)
 {
     InterruptManager::Init();
     m_Dag = std::make_unique<DAGManager>();
-    if (discoverPlugins)
-        for (const auto &pluginRoot : CppPluginRoots())
-            LoadPlugins(pluginRoot.string());
+    if (m_IndexPlugins) RefreshPluginIndex_();
 }
 
 std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, const std::string &instanceName)
 {
     if (instanceName.empty()) throw std::invalid_argument("Module instance name cannot be empty");
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
+    {
+        std::lock_guard<std::mutex> lock(m_ControlMutex);
+        if (m_Modules.count(instanceName)) throw std::runtime_error("Module instance already registered: " + instanceName);
+    }
+    EnsureCppPluginLoaded_(base);
     const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(base);
     if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && origin && origin->Trust != PluginTrustStatus::Signed)
         throw std::runtime_error("Module requires a signed plugin under the active trust policy: " + base);
@@ -356,11 +382,6 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
     mod->SetPluginOrigin(origin);
     mod->SetName(instanceName);
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
-    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
-    {
-        std::lock_guard<std::mutex> lock(m_ControlMutex);
-        if (m_Modules.count(instanceName)) throw std::runtime_error("Module instance already registered: " + instanceName);
-    }
     {
         std::lock_guard<std::mutex> lock(m_ControlMutex);
         m_Modules[instanceName] = ptr;
@@ -371,29 +392,53 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
 
 std::vector<std::string> AMCM::ListAvailableModules() const
 {
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     auto modules = AnalysisModuleRegistry::Get().ListModules();
-    if (m_TrustPolicy != PluginTrustPolicy::RequireSigned) return modules;
-    modules.erase(std::remove_if(modules.begin(), modules.end(),
-                                 [](const std::string &name)
-                                 {
-                                     const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(name);
-                                     return origin && origin->Trust != PluginTrustStatus::Signed;
-                                 }),
-                  modules.end());
+    if (m_TrustPolicy == PluginTrustPolicy::RequireSigned)
+        modules.erase(std::remove_if(modules.begin(), modules.end(),
+                                     [](const std::string &name)
+                                     {
+                                         const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(name);
+                                         return origin && origin->Trust != PluginTrustStatus::Signed;
+                                     }),
+                      modules.end());
+    std::set<std::string> available(modules.begin(), modules.end());
+    std::set<std::string> indexed;
+    for (const auto &candidate : m_CppPluginIndex)
+    {
+        if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && !candidate.HasSignature) continue;
+        if (!indexed.insert(candidate.Identity).second)
+            throw std::runtime_error("Duplicate C++ plugin module name in manifest index: " + candidate.Identity);
+        available.insert(candidate.Identity);
+    }
+    modules.assign(available.begin(), available.end());
     return modules;
 }
 
 std::vector<ModuleMetadata> AMCM::ListAvailableModuleMetadata() const
 {
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     auto metadata = AnalysisModuleRegistry::Get().ListModuleMetadata();
-    if (m_TrustPolicy != PluginTrustPolicy::RequireSigned) return metadata;
-    metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
-                                  [](const ModuleMetadata &item)
-                                  {
-                                      const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(item.Name);
-                                      return origin && origin->Trust != PluginTrustStatus::Signed;
-                                  }),
-                   metadata.end());
+    if (m_TrustPolicy == PluginTrustPolicy::RequireSigned)
+        metadata.erase(std::remove_if(metadata.begin(), metadata.end(),
+                                      [](const ModuleMetadata &item)
+                                      {
+                                          const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(item.Name);
+                                          return origin && origin->Trust != PluginTrustStatus::Signed;
+                                      }),
+                       metadata.end());
+    std::map<std::string, ModuleMetadata> available;
+    for (auto &item : metadata) available[item.Name] = std::move(item);
+    std::set<std::string> indexed;
+    for (const auto &candidate : m_CppPluginIndex)
+    {
+        if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && !candidate.HasSignature) continue;
+        if (!indexed.insert(candidate.Identity).second)
+            throw std::runtime_error("Duplicate C++ plugin module name in manifest index: " + candidate.Identity);
+        if (!available.count(candidate.Identity)) available[candidate.Identity] = candidate.Metadata;
+    }
+    metadata.clear();
+    for (auto &[_, item] : available) metadata.push_back(std::move(item));
     return metadata;
 }
 
@@ -864,6 +909,7 @@ void AMCM::SaveRunLog() const
 
 void AMCM::LoadPlugins(const std::string &path)
 {
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     const fs::path pluginRoot(path);
     if (!fs::is_directory(pluginRoot))
     {
@@ -877,6 +923,7 @@ void AMCM::LoadPlugins(const std::string &path)
 
 void AMCM::LoadPluginPackage(const std::string &manifestPath, const std::string &moduleName)
 {
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     const fs::path manifest = fs::canonical(manifestPath);
     if (manifest.filename() != "plugin_manifest.json")
         throw std::runtime_error("Targeted plugin load requires a plugin_manifest.json path");
@@ -893,12 +940,54 @@ void AMCM::LoadPluginPackage(const std::string &manifestPath, const std::string 
 std::vector<std::string> AMCM::RefreshPlugins()
 {
     if (m_Dag->IsExecuting()) throw std::runtime_error("Cannot refresh plugins while the DAG is executing");
+    std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
     auto before = ListAvailableModules();
-    for (const auto &pluginRoot : CppPluginRoots()) LoadPlugins(pluginRoot.string());
+    RefreshPluginIndex_();
     auto after = ListAvailableModules();
     std::sort(before.begin(), before.end());
     std::sort(after.begin(), after.end());
     std::vector<std::string> added;
     std::set_difference(after.begin(), after.end(), before.begin(), before.end(), std::back_inserter(added));
     return added;
+}
+
+void AMCM::RefreshPluginIndex_()
+{
+    if (!m_IndexPlugins)
+    {
+        m_CppPluginIndex.clear();
+        return;
+    }
+    std::vector<std::string> roots;
+    for (const auto &root : CppPluginRoots()) roots.push_back(root.string());
+    auto index = PluginVerifier::IndexManifests(roots, "cpp");
+    for (const auto &error : index.Errors) LOG_WARN("PLUGIN", error);
+    for (const auto &candidate : index.Entries)
+    {
+        const auto origin = AnalysisModuleRegistry::Get().GetPluginOrigin(candidate.Identity);
+        if (origin && origin->Package == candidate.Package &&
+            origin->ArtifactSha256 != candidate.DeclaredSha256)
+            throw std::runtime_error("Installed C++ plugin changed and requires a new process: " +
+                                     candidate.Identity);
+    }
+    m_CppPluginIndex = std::move(index.Entries);
+}
+
+void AMCM::EnsureCppPluginLoaded_(const std::string &base)
+{
+    const auto loaded = AnalysisModuleRegistry::Get().ListModules();
+    if (std::find(loaded.begin(), loaded.end(), base) != loaded.end()) return;
+    if (!m_IndexPlugins) throw std::runtime_error("Module not found: " + base);
+    std::vector<const PluginManifestEntry *> matches;
+    for (const auto &candidate : m_CppPluginIndex)
+        if (candidate.Identity == base) matches.push_back(&candidate);
+    if (matches.empty()) throw std::runtime_error("Module not found: " + base);
+    if (matches.size() != 1)
+        throw std::runtime_error("Duplicate C++ plugin module name in manifest index: " + base);
+    if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && !matches.front()->HasSignature)
+        throw std::runtime_error("Module requires a signed plugin under the active trust policy: " + base);
+    LoadPluginPackage(matches.front()->ManifestPath, base);
+    const auto after = AnalysisModuleRegistry::Get().ListModules();
+    if (std::find(after.begin(), after.end(), base) == after.end())
+        throw std::runtime_error("Plugin failed to register module: " + base);
 }

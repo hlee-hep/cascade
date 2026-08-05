@@ -714,7 +714,15 @@ void TestControllerContracts()
     if (std::find(registeredClasses.begin(), registeredClasses.end(), className) == registeredClasses.end())
         AnalysisModuleRegistry::Get().Register(className, []() { return std::make_unique<LifecycleModule>(); });
 
+    const auto loadedBeforeController = AnalysisModuleRegistry::Get().ListModules();
+    assert(std::find(loadedBeforeController.begin(), loadedBeforeController.end(), "WorkerTestModule") ==
+           loadedBeforeController.end());
     AMCM controller;
+    const auto indexedModules = controller.ListAvailableModules();
+    assert(std::find(indexedModules.begin(), indexedModules.end(), "WorkerTestModule") != indexedModules.end());
+    const auto loadedBeforeRegistration = AnalysisModuleRegistry::Get().ListModules();
+    assert(std::find(loadedBeforeRegistration.begin(), loadedBeforeRegistration.end(), "WorkerTestModule") ==
+           loadedBeforeRegistration.end());
     controller.RegisterModule(className, "instance");
     bool duplicateRejected = false;
     try
@@ -1520,6 +1528,10 @@ void TestPluginVerifierService()
            {"language", "python"},
            {"path", "example_module.py"},
            {"sha256", "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"},
+           {"class_metadata", {{"ExampleModule", {{"name", "ExampleModule"},
+                                                     {"version", "1.0"},
+                                                     {"summary", "Indexed without importing"},
+                                                     {"tags", {"test", "lazy"}}}}}},
            {"classes", {"ExampleModule"}}}}},
     };
     {
@@ -1538,6 +1550,12 @@ void TestPluginVerifierService()
            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     assert(PluginVerifier::ReadFile((package / "example_module.py").string()) == "hello");
     PluginVerifier::ValidateStagedTree(package.string());
+    fs::create_directories(root / "pyplugin" / "__pycache__");
+    const auto index = PluginVerifier::IndexManifests({(root / "pyplugin").string()}, "python");
+    assert(index.Errors.empty());
+    assert(index.Entries.size() == 1);
+    assert(index.Entries.front().Identity == "ExampleModule");
+    assert(index.Entries.front().Metadata.Summary == "Indexed without importing");
     const auto discovery = PluginVerifier::Discover({(root / "pyplugin").string()},
                                                      PluginTrustPolicy::Verified, "python");
     assert(discovery.Errors.empty());
@@ -1614,6 +1632,9 @@ void TestPluginVerifierService()
         std::ofstream output(package / "plugin_manifest.json");
         output << manifest.dump(2) << '\n';
     }
+    const auto invalidArtifactIndex = PluginVerifier::IndexManifests({(root / "pyplugin").string()}, "python");
+    assert(invalidArtifactIndex.Errors.empty());
+    assert(invalidArtifactIndex.Entries.size() == 1);
     bool hashRejected = false;
     try
     {

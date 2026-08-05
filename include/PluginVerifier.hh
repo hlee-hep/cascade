@@ -1,8 +1,28 @@
 #pragma once
 
+#include "ModuleMetadata.hh"
 #include "PluginTrust.hh"
 #include <string>
 #include <vector>
+
+struct PluginManifestEntry
+{
+    std::string Package;
+    std::string ManifestPath;
+    std::string Language;
+    std::string Name;
+    std::string Identity;
+    std::string ArtifactPath;
+    std::string DeclaredSha256;
+    ModuleMetadata Metadata;
+    bool HasSignature = false;
+};
+
+struct PluginManifestIndexResult
+{
+    std::vector<PluginManifestEntry> Entries;
+    std::vector<std::string> Errors;
+};
 
 struct VerifiedPluginArtifact
 {
@@ -52,6 +72,10 @@ class PluginVerifier
     // can invalidate discovery caches without duplicating filesystem traversal.
     static std::string IndexFingerprint(const std::vector<std::string> &pluginRoots,
                                         const std::vector<std::string> &trustStores);
+    // Reads bounded manifest metadata only. Artifacts and signatures are not
+    // opened until VerifyPackage() is called for a selected module.
+    static PluginManifestIndexResult IndexManifests(const std::vector<std::string> &pluginRoots,
+                                                    const std::string &language = "");
     static PluginDiscoveryResult Discover(const std::vector<std::string> &pluginRoots,
                                           PluginTrustPolicy policy = PluginTrustPolicy::Verified,
                                           const std::string &language = "");

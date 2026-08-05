@@ -223,6 +223,14 @@ def generate_test_plugin_manifest(target, source, env):
                 "path": os.path.basename(artifact),
                 "sha256": digest.hexdigest(),
                 "classes": ["WorkerTestPythonModule"],
+                "class_metadata": {
+                    "WorkerTestPythonModule": {
+                        "name": "WorkerTestPythonModule",
+                        "version": "1",
+                        "summary": "Python exec-worker integration fixture",
+                        "tags": ["test"],
+                    },
+                },
             })
         else:
             modules.append({
@@ -230,6 +238,12 @@ def generate_test_plugin_manifest(target, source, env):
                 "language": "cpp",
                 "path": os.path.basename(artifact),
                 "sha256": digest.hexdigest(),
+                "metadata": {
+                    "name": "WorkerTestModule",
+                    "version": "1",
+                    "summary": "C++ exec-worker integration fixture",
+                    "tags": ["test"],
+                },
             })
     document = {
         "schema": 2,

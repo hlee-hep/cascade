@@ -46,13 +46,56 @@ def _load_controller(test_case):
                     tracked.append((str(root_path), None, None))
                     continue
                 for path in root_path.rglob("*"):
-                    if path.is_file() and path.suffix in {".py", ".json", ".sig", ".pem", ".so"}:
+                    if path.is_file() and (path.name in {"plugin_manifest.json", "plugin_manifest.json.sig"} or path.suffix == ".pem"):
                         metadata = path.stat()
                         tracked.append((str(path.resolve()), metadata.st_mtime_ns, metadata.st_size))
             return hashlib.sha256(repr(sorted(tracked)).encode("utf-8")).hexdigest()
 
         @staticmethod
-        def verify_package(package_dir, trust_store, policy, language, trusted_key=""):
+        def index_manifests(plugin_roots, language=""):
+            entries = []
+            errors = []
+            for plugin_root in plugin_roots:
+                root_path = pathlib.Path(plugin_root)
+                if not root_path.is_dir():
+                    continue
+                for package in sorted(root_path.iterdir()):
+                    manifest_path = package / "plugin_manifest.json"
+                    if not package.is_dir() or package.is_symlink() or not manifest_path.is_file():
+                        continue
+                    try:
+                        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        if document.get("schema") != 2 or document.get("package") != package.name:
+                            raise RuntimeError("invalid plugin manifest")
+                        for item in document.get("modules", []):
+                            item_language = item["language"]
+                            if language and item_language != language:
+                                continue
+                            identities = item.get("classes", []) if item_language == "python" else [item["name"]]
+                            for identity in identities:
+                                metadata = item.get("class_metadata", {}).get(identity, item.get("metadata", {}))
+                                entries.append(types.SimpleNamespace(
+                                    package=package.name,
+                                    manifest_path=str(manifest_path.resolve()),
+                                    language=item_language,
+                                    name=item["name"],
+                                    identity=identity,
+                                    artifact_path=str((package / item["path"]).resolve()),
+                                    declared_sha256=item["sha256"],
+                                    metadata=types.SimpleNamespace(
+                                        name=metadata.get("name", identity),
+                                        version=metadata.get("version", ""),
+                                        summary=metadata.get("summary", ""),
+                                        tags=metadata.get("tags", []),
+                                    ),
+                                    has_signature=pathlib.Path(str(manifest_path) + ".sig").is_file(),
+                                ))
+                    except Exception as error:
+                        errors.append(f"{manifest_path}: {error}")
+            return types.SimpleNamespace(entries=entries, errors=errors)
+
+        @staticmethod
+        def verify_package(package_dir, trust_store, policy, language, trusted_key="", module_identity=""):
             package_path = pathlib.Path(package_dir)
             manifest_path = package_path / "plugin_manifest.json"
             manifest_bytes = manifest_path.read_bytes()
@@ -78,6 +121,9 @@ def _load_controller(test_case):
             artifacts = []
             for entry in document["modules"]:
                 if entry["language"] != language:
+                    continue
+                identities = entry.get("classes", []) if language == "python" else [entry["name"]]
+                if module_identity and module_identity not in identities:
                     continue
                 artifact_path = package_path / entry["path"]
                 source = artifact_path.read_bytes()
@@ -224,7 +270,7 @@ class PluginPackageTests(unittest.TestCase):
                 controller._PYPLUGIN_CACHE_KEY = None
                 index = controller._load_python_plugin_index()
             self.assertEqual(set(index), {"PersistentModule"})
-            self.assertEqual(index["PersistentModule"]["origin"]["trust"], "Verified")
+            self.assertEqual(index["PersistentModule"]["manifest"], str((package / "plugin_manifest.json").resolve()))
 
     def test_multiple_signed_packages_coexist(self):
         controller = _load_controller(self)
@@ -298,9 +344,16 @@ class PluginPackageTests(unittest.TestCase):
                 controller._PYPLUGIN_CACHE_KEY = None
                 index = controller._load_python_plugin_index()
                 self.assertEqual(set(index), {"FirstModule", "SecondModule"})
-                self.assertTrue(all(info["origin"]["trust"] == "Signed" for info in index.values()))
-                first = controller._import_python_plugin(index["FirstModule"])
-                second = controller._import_python_plugin(index["SecondModule"])
+                first_info = controller._load_targeted_python_plugin_info(
+                    index["FirstModule"]["manifest"], "FirstModule"
+                )
+                second_info = controller._load_targeted_python_plugin_info(
+                    index["SecondModule"]["manifest"], "SecondModule"
+                )
+                self.assertEqual(first_info["origin"]["trust"], "Signed")
+                self.assertEqual(second_info["origin"]["trust"], "Signed")
+                first = controller._import_python_plugin(first_info)
+                second = controller._import_python_plugin(second_info)
                 self.assertTrue(hasattr(first, "FirstModule"))
                 self.assertTrue(hasattr(second, "SecondModule"))
                 self.assertNotEqual(first.__name__, second.__name__)
@@ -360,7 +413,10 @@ class PluginPackageTests(unittest.TestCase):
                 controller._PYPLUGIN_CACHE_KEY = None
                 verified = controller._load_python_plugin_index()
                 self.assertEqual(set(verified), {"LocalModule"})
-                self.assertEqual(verified["LocalModule"]["origin"]["trust"], "Verified")
+                info = controller._load_targeted_python_plugin_info(
+                    verified["LocalModule"]["manifest"], "LocalModule"
+                )
+                self.assertEqual(info["origin"]["trust"], "Verified")
 
                 strict = controller._load_python_plugin_index(require_signed=True)
                 self.assertEqual(strict, {})
@@ -408,8 +464,15 @@ class PluginPackageTests(unittest.TestCase):
                 controller._PYPLUGIN_CACHE = None
                 controller._PYPLUGIN_CACHE_KEY = None
                 index = controller._load_python_plugin_index()
+                info = controller._load_targeted_python_plugin_info(
+                    index["ImmutableModule"]["manifest"], "ImmutableModule"
+                )
                 source.write_text("raise RuntimeError('replacement executed')\n", encoding="utf-8")
-                loaded = controller._import_python_plugin(index["ImmutableModule"])
+                loaded = controller._import_python_plugin(info)
+                with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+                    controller._load_targeted_python_plugin_info(
+                        index["ImmutableModule"]["manifest"], "ImmutableModule"
+                    )
             self.assertEqual(loaded.VALUE, "verified")
 
 

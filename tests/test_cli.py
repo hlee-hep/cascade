@@ -777,6 +777,7 @@ class CliTests(unittest.TestCase):
                 "template": "/sdk/plugin_sconstruct",
                 "root_modules": ["EventModule"],
                 "class_map": {"EventModule": "experiment::EventModule"},
+                "metadata": {},
             })
 
     def test_convention_plugin_rejects_unmatched_cpp_sources(self):

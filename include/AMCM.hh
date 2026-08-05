@@ -4,6 +4,7 @@
 #include "DAGManager.hh"
 #include "IAnalysisModule.hh"
 #include "ModuleRun.hh"
+#include "PluginVerifier.hh"
 #include "PluginTrust.hh"
 #include <iostream>
 #include <map>
@@ -66,11 +67,15 @@ class AMCM
     std::vector<RunLogEntry> m_ExecutedModules;
 
     std::map<std::string, int> m_ModuleNameCounter;
+    std::vector<PluginManifestEntry> m_CppPluginIndex;
+    bool m_IndexPlugins = true;
 
-    std::recursive_mutex m_RegistrationMutex;
+    mutable std::recursive_mutex m_RegistrationMutex;
     mutable std::mutex m_ControlMutex;
 
     void RecordRun_(const std::shared_ptr<IAnalysisModule> &module, const RunResult &result);
+    void RefreshPluginIndex_();
+    void EnsureCppPluginLoaded_(const std::string &base);
     std::shared_ptr<IAnalysisModule> RegisteredModule_(const std::string &name) const;
     std::shared_ptr<IAnalysisModule> ValidateModuleHandle_(const std::shared_ptr<IAnalysisModule> &module) const;
 };

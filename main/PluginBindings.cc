@@ -41,6 +41,19 @@ void BindPlugins(py::module_ &m)
     py::class_<PluginDiscoveryResult>(m, "PluginDiscoveryResult")
         .def_readonly("packages", &PluginDiscoveryResult::Packages)
         .def_readonly("errors", &PluginDiscoveryResult::Errors);
+    py::class_<PluginManifestEntry>(m, "PluginManifestEntry")
+        .def_readonly("package", &PluginManifestEntry::Package)
+        .def_readonly("manifest_path", &PluginManifestEntry::ManifestPath)
+        .def_readonly("language", &PluginManifestEntry::Language)
+        .def_readonly("name", &PluginManifestEntry::Name)
+        .def_readonly("identity", &PluginManifestEntry::Identity)
+        .def_readonly("artifact_path", &PluginManifestEntry::ArtifactPath)
+        .def_readonly("declared_sha256", &PluginManifestEntry::DeclaredSha256)
+        .def_readonly("metadata", &PluginManifestEntry::Metadata)
+        .def_readonly("has_signature", &PluginManifestEntry::HasSignature);
+    py::class_<PluginManifestIndexResult>(m, "PluginManifestIndexResult")
+        .def_readonly("entries", &PluginManifestIndexResult::Entries)
+        .def_readonly("errors", &PluginManifestIndexResult::Errors);
     py::class_<PluginVerifier>(m, "PluginVerifier")
         .def_static("index_fingerprint",
                     [](const std::vector<std::string> &pluginRoots, const std::vector<std::string> &trustStores)
@@ -49,6 +62,13 @@ void BindPlugins(py::module_ &m)
                         return PluginVerifier::IndexFingerprint(pluginRoots, trustStores);
                     },
                     py::arg("plugin_roots"), py::arg("trust_stores"))
+        .def_static("index_manifests",
+                    [](const std::vector<std::string> &pluginRoots, const std::string &language)
+                    {
+                        py::gil_scoped_release release;
+                        return PluginVerifier::IndexManifests(pluginRoots, language);
+                    },
+                    py::arg("plugin_roots"), py::arg("language") = "")
         .def_static("discover",
                     [](const std::vector<std::string> &pluginRoots, PluginTrustPolicy policy,
                        const std::string &language)

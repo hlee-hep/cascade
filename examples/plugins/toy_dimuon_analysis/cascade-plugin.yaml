@@ -4,3 +4,17 @@ root_modules:
   - ToyDimuonSourceModule
   - DimuonSpectrumModule
   - ResonanceFitModule
+
+metadata:
+  ToyDimuonSourceModule:
+    version: 1.0.0
+    summary: Generates a self-contained toy dimuon ROOT tree.
+    tags: [example, dimuon, generator, root]
+  DimuonSpectrumModule:
+    version: 1.0.0
+    summary: Selects toy dimuon events and writes the mass spectrum.
+    tags: [example, dimuon, rdf, selection, root]
+  ResonanceFitModule:
+    version: 1.0.0
+    summary: Performs a binned-likelihood resonance mass fit and produces a pull plot.
+    tags: [example, dimuon, fit, voigt, root]
