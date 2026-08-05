@@ -10,7 +10,7 @@ import sys
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from .common import _CLI_PREFIX, _emit, _log
+from .common import _CLI_PREFIX, _emit, _load_mapping, _log, _validate_keys
 
 try:
     from cascade.plugin_paths import (
@@ -251,7 +251,7 @@ def _doctor_plugin_package(
 
     def emit(level: str, message: str) -> None:
         if not quiet:
-            _log(level, message)
+            _log(level, message, "PLUGIN")
 
     def finish() -> Tuple[int, List[str]]:
         if reports is not None:
@@ -298,10 +298,10 @@ def _doctor_plugin_dir(
     quiet: bool = False,
 ) -> Tuple[int, List[str]]:
     if not quiet:
-        _log("INFO", f"[{language}] package root: {path}")
+        _log("INFO", f"[{language}] package root: {path}", "PLUGIN")
     if not os.path.isdir(path):
         if not quiet:
-            _log("WARN", f"[{language}] package root not found")
+            _log("WARNING", f"[{language}] package root not found", "PLUGIN")
         return 0, []
     errors = 0
     names = []
@@ -360,7 +360,7 @@ def cmd_doctor_plugins(args) -> None:
                 if entry.endswith(".pem") and os.path.isfile(os.path.join(trust_store, entry))
             ]
         if require_signed and not trusted_keys and not quiet:
-            _log("WARN", f"no trusted plugin keys found in {trust_store}")
+            _log("WARNING", f"no trusted plugin keys found in {trust_store}", "PLUGIN")
 
         report_start = len(reports)
         cpp_errors, layout_cpp_names = (0, [])
@@ -390,7 +390,7 @@ def cmd_doctor_plugins(args) -> None:
     }
     if any(duplicates.values()):
         if not quiet:
-            _log("ERROR", f"duplicate plugin module names: {duplicates}")
+            _log("ERROR", f"duplicate plugin module names: {duplicates}", "PLUGIN")
         errors += 1
     if quiet:
         _emit({
@@ -757,12 +757,140 @@ def _reject_prospective_duplicates(stage_prefix: str, target_prefix: str, packag
         raise RuntimeError("Duplicate plugin module names in prospective installation: " + "; ".join(details))
 
 
+_PLUGIN_CONFIG_NAMES = ("cascade-plugin.yaml", "cascade-plugin.yml", "cascade-plugin.json")
+
+
+def _plugin_build_template() -> str:
+    candidates = (
+        os.path.join(_CLI_PREFIX, "share", "cascade", "scripts", "plugin_sconstruct"),
+        os.path.join(_CLI_PREFIX, "scripts", "plugin_sconstruct"),
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return os.path.realpath(candidate)
+    raise FileNotFoundError(
+        "Cascade plugin build template is missing; reinstall Cascade before building convention plugins"
+    )
+
+
+def _source_file_stems(directory: str, suffix: str) -> List[str]:
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        os.path.splitext(name)[0]
+        for name in os.listdir(directory)
+        if name.endswith(suffix) and os.path.isfile(os.path.join(directory, name))
+    )
+
+
+def _reject_removed_placeholders(source: str) -> None:
+    removed = ("@BASENAME@", "@VERSION_HASH@")
+    for directory, suffix in (("include", ".hh"), ("src", ".cc"), ("python", ".py")):
+        root = os.path.join(source, directory)
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            path = os.path.join(root, name)
+            if not name.endswith(suffix) or not os.path.isfile(path):
+                continue
+            with open(path, "r", encoding="utf-8") as plugin_source:
+                content = plugin_source.read()
+            tokens = [token for token in removed if token in content]
+            if tokens:
+                raise ValueError(
+                    f"Plugin source uses removed build placeholders in {path}: {', '.join(tokens)}"
+                )
+
+
+def _load_convention_build(source: str) -> Dict[str, Any]:
+    config_paths = [
+        os.path.join(source, name)
+        for name in _PLUGIN_CONFIG_NAMES
+        if os.path.isfile(os.path.join(source, name))
+    ]
+    if len(config_paths) > 1:
+        raise ValueError("Plugin source contains multiple cascade-plugin configuration files")
+    config = _load_mapping(config_paths[0]) if config_paths else {}
+    _validate_keys(config, {"schema_version", "root_modules", "class_map"}, "plugin configuration")
+    if config_paths and config.get("schema_version") != 1:
+        raise ValueError("Plugin configuration requires schema_version: 1")
+    _reject_removed_placeholders(source)
+
+    headers = _source_file_stems(os.path.join(source, "include"), ".hh")
+    sources = _source_file_stems(os.path.join(source, "src"), ".cc")
+    python_sources = [
+        stem
+        for stem in _source_file_stems(os.path.join(source, "python"), ".py")
+        if stem != "__init__"
+    ]
+    if headers != sources:
+        missing_sources = sorted(set(headers) - set(sources))
+        missing_headers = sorted(set(sources) - set(headers))
+        details = []
+        if missing_sources:
+            details.append("missing src/*.cc for " + ", ".join(missing_sources))
+        if missing_headers:
+            details.append("missing include/*.hh for " + ", ".join(missing_headers))
+        raise ValueError("Invalid convention plugin layout: " + "; ".join(details))
+    if not headers and not python_sources:
+        raise ValueError(
+            "Convention plugin source must contain matching include/*.hh and src/*.cc files or python/*.py files"
+        )
+    invalid_cpp_names = [name for name in headers if not name.endswith("Module")]
+    if invalid_cpp_names:
+        raise ValueError("C++ plugin source stems must end in Module: " + ", ".join(invalid_cpp_names))
+
+    root_modules = config.get("root_modules", [])
+    if not isinstance(root_modules, list) or any(
+        not isinstance(name, str) or not name for name in root_modules
+    ):
+        raise TypeError("plugin configuration root_modules must be a list of non-empty strings")
+    if len(root_modules) != len(set(root_modules)):
+        raise ValueError("plugin configuration root_modules contains duplicates")
+    if "*" in root_modules and len(root_modules) != 1:
+        raise ValueError("plugin configuration root_modules '*' must be the only entry")
+    unknown_root_modules = sorted(set(root_modules) - set(headers) - {"*"})
+    if unknown_root_modules:
+        raise ValueError(
+            "plugin configuration names unknown ROOT modules: " + ", ".join(unknown_root_modules)
+        )
+
+    class_map = config.get("class_map", {})
+    if not isinstance(class_map, dict) or any(
+        not isinstance(stem, str) or not isinstance(class_name, str) or not class_name
+        for stem, class_name in class_map.items()
+    ):
+        raise TypeError(
+            "plugin configuration class_map must map source stems to non-empty class names"
+        )
+    unknown_class_map = sorted(set(class_map) - set(headers))
+    if unknown_class_map:
+        raise ValueError(
+            "plugin configuration class_map names unknown modules: " + ", ".join(unknown_class_map)
+        )
+    class_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
+    invalid_classes = sorted(name for name in class_map.values() if not class_pattern.fullmatch(name))
+    if invalid_classes:
+        raise ValueError(
+            "plugin configuration class_map contains invalid C++ class names: " + ", ".join(invalid_classes)
+        )
+
+    return {
+        "template": _plugin_build_template(),
+        "root_modules": root_modules,
+        "class_map": class_map,
+    }
+
+
 def cmd_plugin_install(args) -> None:
     source = os.path.realpath(os.path.abspath(os.path.expanduser(args.source)))
     if not os.path.isdir(source):
         raise FileNotFoundError(f"Plugin source directory not found: {source}")
-    if not os.path.isfile(os.path.join(source, "SConstruct")):
-        raise FileNotFoundError(f"Plugin source does not contain SConstruct: {source}")
+    if os.path.lexists(os.path.join(source, "SConstruct")):
+        raise ValueError(
+            "Package-owned SConstruct files are no longer supported; remove it and use cascade-plugin.yaml"
+        )
+    convention_build = _load_convention_build(source)
     package = args.package or os.path.basename(source)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", package):
         raise ValueError("Plugin package must contain only letters, digits, '.', '_', or '-'")
@@ -792,9 +920,13 @@ def cmd_plugin_install(args) -> None:
         environment.pop("CASCADE_PLUGIN_PRIVATE_KEY", None)
         environment.pop("CASCADE_PLUGIN_PUBLIC_KEY", None)
 
-        command = [args.scons, "install", f"-j{args.jobs}"]
+        environment["CASCADE_PLUGIN_ROOT_MODULES"] = ",".join(convention_build["root_modules"])
+        environment["CASCADE_PLUGIN_CLASS_MAP"] = json.dumps(
+            convention_build["class_map"], sort_keys=True
+        )
+        command = [args.scons, "-f", convention_build["template"], "install", f"-j{args.jobs}"]
         if not args.json:
-            _log("INFO", f"Building plugin {package} in {source}")
+            _log("INFO", f"Building plugin {package} in {source}", "PLUGIN")
         completed = subprocess.run(
             command,
             cwd=source,
@@ -804,7 +936,7 @@ def cmd_plugin_install(args) -> None:
         )
         if completed.returncode != 0:
             if args.json and completed.stderr:
-                _log("ERROR", completed.stderr.rstrip())
+                _log("ERROR", completed.stderr.rstrip(), "PLUGIN")
             raise RuntimeError(f"Plugin build failed with exit code {completed.returncode}")
 
         if args.private_key:
@@ -878,7 +1010,7 @@ def cmd_plugin_install(args) -> None:
             and bool(os.listdir(rollback_root))
         )
         if recovery_data:
-            _log("ERROR", f"Plugin recovery data preserved at {rollback_root}")
+            _log("ERROR", f"Plugin recovery data preserved at {rollback_root}", "PLUGIN")
         else:
             try:
                 shutil.rmtree(stage_prefix)
@@ -887,4 +1019,4 @@ def cmd_plugin_install(args) -> None:
             except OSError as cleanup_error:
                 if sys.exc_info()[0] is None:
                     raise
-                _log("WARN", f"Cannot remove plugin staging directory {stage_prefix}: {cleanup_error}")
+                _log("WARNING", f"Cannot remove plugin staging directory {stage_prefix}: {cleanup_error}", "PLUGIN")

@@ -179,9 +179,9 @@ force_run    -> execute even if hash is present
 dry_run      -> Skipped before execution
 ```
 
-Use a stable code hash supplied by the plugin build. Make external dataset and
-calibration identifiers explicit parameters. Otherwise the cache cannot recognize
-that an input changed.
+The verified loader uses the plugin artifact SHA-256 as the stable code hash.
+Make external dataset and calibration identifiers explicit parameters. Otherwise
+the cache cannot recognize that an input changed.
 
 Cache files are locked for concurrent access and replaced atomically. Final output
 paths use hierarchical inter-process locks from promotion through cache recording

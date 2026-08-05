@@ -17,7 +17,7 @@ def _load_base_module():
     cascade.__version__ = "test"
     cascade.is_interrupted = lambda: False
     cascade.log = lambda *args, **kwargs: None
-    cascade.log_level = types.SimpleNamespace(INFO=1, WARN=2, ERROR=3)
+    cascade.log_level = types.SimpleNamespace(DEBUG=0, INFO=1, WARN=2, WARNING=2, ERROR=3)
     sys.modules["cascade"] = cascade
 
     extension_path = pathlib.Path(__file__).parents[1] / "build" / "main" / "libCascade.so"
@@ -126,6 +126,24 @@ class LifecycleTests(unittest.TestCase):
         else:
             os.environ["CASCADE_CACHE_DIR"] = self.old_cache
         self.tempdir.cleanup()
+
+    def test_logging_helpers_use_the_core_logger(self):
+        runtime = sys.modules["cascade"]
+        original_log = runtime.log
+        records = []
+        runtime.log = lambda level, component, message: records.append((level, component, message))
+        try:
+            module = Module()
+            module.log_debug("debug")
+            module.log_info("info")
+            module.log_warning("warning")
+            module.log_error("error")
+            module.print_description()
+        finally:
+            runtime.log = original_log
+
+        self.assertEqual([record[1] for record in records], ["Module"] * 5)
+        self.assertEqual([record[2] for record in records[:4]], ["debug", "info", "warning", "error"])
 
     def test_success(self):
         module = Module()

@@ -10,8 +10,6 @@
 
 RootEventModule::RootEventModule()
 {
-    SetBaseName("@BASENAME@");
-    SetCodeHash("@VERSION_HASH@");
     Parameters().Register<std::string>("output", "events.root", "ROOT output path relative to the execution output directory");
     Parameters().Register<std::string>("manifest", "events_manifest.json", "Portable metadata consumed when PyROOT is unavailable");
     Parameters().Register<int>("events", 100, "Number of generated events");

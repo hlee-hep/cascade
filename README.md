@@ -147,8 +147,6 @@ class EventCountModule final : public IAnalysisModule
   public:
     EventCountModule()
     {
-        SetBaseName("EventCountModule");
-        SetCodeHash("replace-at-build-time");
         Parameters().Register<std::string>("output", "count.txt");
         Parameters().Register<int>("count", 10);
     }
@@ -184,13 +182,8 @@ class EventCountPythonModule(base_module):
 
     def __init__(self):
         super().__init__()
-        self.basename = "EventCountPythonModule"
-        self.code_version_hash = "replace-at-build-time"
         self.register_param("output", "count.json")
         self.register_param("count", 10)
-
-    def print_description(self):
-        print(self.SUMMARY)
 
     def init(self):
         if self.get_param("count") < 0:
@@ -323,8 +316,8 @@ See [Plugin development and distribution](docs/plugins.md) and
 
 - Files written directly to final paths are outside the output transaction.
 - Subprocess isolation contains plugin crashes; it is not a security sandbox.
-- Snapshot caching assumes a module's parameters, manager state, code hash, and
-  output root describe its deterministic inputs.
+- Snapshot caching assumes a module's parameters, manager state, verified artifact
+  hash, and output root describe its deterministic inputs.
 - Python plugin discovery accepts only verified manifest entries ending in
   `module.py`.
 - C++ plugins must be rebuilt whenever the plugin ABI or fingerprint changes;

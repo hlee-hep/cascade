@@ -196,8 +196,10 @@ class plt_plot_manager:
         return fig, ax, rax
 
     def save_all(self, prefix: str = "plot"):
+        from cascade import log, log_level
+
         for i, fig in enumerate(self.figures):
             fname = os.path.join(self.outdir, f"{prefix}_{i}.{self.ext}")
             fig.tight_layout()
             fig.savefig(fname)
-            print(f"[plt_plot_manager] Saved {fname}")
+            log(log_level.INFO, "PlotManager", f"Saved {fname}")

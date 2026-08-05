@@ -75,7 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     plugin = sub.add_parser("plugin", help="Install plugins and manage persistent plugin prefixes")
     plugin_sub = plugin.add_subparsers(dest="plugin_command", required=True)
     plugin_install = plugin_sub.add_parser("install", help="Build, verify, publish, and register a plugin")
-    plugin_install.add_argument("source", help="Plugin source directory containing SConstruct")
+    plugin_install.add_argument(
+        "source",
+        help="Plugin source directory using the standard layout",
+    )
     plugin_install.add_argument(
         "--prefix",
         default=os.path.expanduser("~/.local"),

@@ -89,7 +89,7 @@ def cmd_doctor_env(args) -> None:
         _emit({"checks": checks}, True)
     else:
         for item in checks:
-            _log(item["status"], f"{item['name']}: {item['detail']}")
+            _log(item["status"], f"{item['name']}: {item['detail']}", "DOCTOR")
     if any(item["status"] == "ERROR" for item in checks):
         raise SystemExit(1)
 
@@ -208,7 +208,7 @@ def cmd_doctor_runtime(args) -> None:
             else:
                 print(f"{key}: {value}")
         for item in checks:
-            _log(item["status"], f"{item['name']}: {item['detail']}")
+            _log(item["status"], f"{item['name']}: {item['detail']}", "DOCTOR")
     if any(item["status"] == "ERROR" for item in checks):
         raise SystemExit(1)
 
@@ -227,10 +227,10 @@ def _root_invoke(macro: str,
     arglist.extend(extra_args or [])
     quoted_with_dq = ",".join(json.dumps(str(a), ensure_ascii=False) for a in arglist)
     cmd = [root_exe, "-l", "-q", f'{macro_spec}({quoted_with_dq})']
-    _log("INFO", "[ROOT] " + " ".join(shlex.quote(c) for c in cmd))
+    _log("INFO", " ".join(shlex.quote(c) for c in cmd), "ROOT")
     completed = subprocess.run(cmd)
     if completed.returncode != 0:
-        _log("ERROR", f"ROOT macro exited with code {completed.returncode}")
+        _log("ERROR", f"ROOT macro exited with code {completed.returncode}", "ROOT")
         raise SystemExit(completed.returncode)
 
 
@@ -248,7 +248,7 @@ def cmd_macro_run(args) -> None:
         os.close(fd)
         with open(json_path, "w", encoding="utf-8") as jf:
             json.dump(params, jf, ensure_ascii=False, indent=2)
-        _log("DEBUG", f"Wrote temporary params JSON: {json_path}")
+        _log("DEBUG", f"Wrote temporary params JSON: {json_path}", "ROOT")
     try:
         _root_invoke(
             macro=args.macro,
@@ -260,4 +260,4 @@ def cmd_macro_run(args) -> None:
     finally:
         if json_path and os.path.exists(json_path):
             os.remove(json_path)
-            _log("DEBUG", f"Removed temporary file: {json_path}")
+            _log("DEBUG", f"Removed temporary file: {json_path}", "ROOT")

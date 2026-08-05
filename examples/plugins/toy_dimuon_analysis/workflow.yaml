@@ -1,0 +1,43 @@
+schema_version: 1
+
+output_directory: analysis-output
+cache_directory: analysis-output/.cache
+dot: analysis-output/toy-dimuon-analysis.dot
+provenance: analysis-output/toy-dimuon-provenance.json
+fail_fast: true
+
+modules:
+  - module: ToyDimuonSourceModule
+    name: generate
+    params:
+      events: 30000
+      random_seed: 42
+      resonance_mass: 91.1876
+      resonance_width: 2.4952
+      signal_fraction: 0.65
+
+  - module: DimuonSpectrumModule
+    name: spectrum
+    dependencies: [generate]
+    params:
+      pt_min: 20.0
+      eta_max: 2.4
+      mass_min: 60.0
+      mass_max: 120.0
+      mass_bins: 120
+
+  - module: ResonanceFitModule
+    name: fit
+    dependencies: [spectrum]
+    params:
+      fit_min: 70.0
+      fit_max: 110.0
+      mass_seed: 91.1876
+      natural_width: 2.4952
+      float_natural_width: false
+
+  - module: MassReportModule
+    name: report
+    dependencies: [fit]
+
+links: []

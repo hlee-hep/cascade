@@ -23,6 +23,11 @@ def _status_text(value):
     return text.title() if text.isupper() else text
 
 
+def _assign_verified_identity(module_obj, info):
+    module_obj.basename = info["class"]
+    module_obj.code_version_hash = f"artifact-sha256:{info['sha256']}"
+
+
 def _python_plugin_roots():
     return list(PluginPaths.roots("python"))
 
@@ -269,6 +274,7 @@ class py_amcm:
         module_obj = cls()
         if not isinstance(module_obj, base_module):
             raise TypeError("Module must inherit from cascade.pymodule.base_module")
+        _assign_verified_identity(module_obj, info)
         module_obj.set_name(instance_name)
         module_obj.set_plugin_origin(info["origin"])
         self.ctrl.register_module_handle(module_obj)
@@ -316,6 +322,7 @@ class py_amcm:
         info = self._python_index().get(module_obj.__class__.__name__)
         if not info or os.path.realpath(info["path"]) != os.path.realpath(sys.modules[modname].__file__):
             raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
+        _assign_verified_identity(module_obj, info)
         module_obj.set_name(name)
         module_obj.set_plugin_origin(info["origin"])
         self.ctrl.register_module_handle(module_obj)

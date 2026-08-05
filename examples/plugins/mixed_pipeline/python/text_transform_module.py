@@ -9,15 +9,10 @@ class TextTransformModule(base_module):
 
     def __init__(self):
         super().__init__()
-        self.basename = "@BASENAME@"
-        self.code_version_hash = "@VERSION_HASH@"
         self.summary = self.SUMMARY
         self.tags = list(self.TAGS)
         self.register_param("input", "message.json", "Input path relative to the output directory")
         self.register_param("output", "message_upper.json", "Transactional output path")
-
-    def print_description(self):
-        print(self.SUMMARY)
 
     def init(self):
         if self.final_output(self.get_param("input")) == self.final_output(self.get_param("output")):

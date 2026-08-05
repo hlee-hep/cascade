@@ -21,7 +21,7 @@ def _load_controller():
     cascade.init_interrupt = lambda: None
     cascade.is_interrupted = lambda: False
     cascade.log = lambda *args, **kwargs: None
-    cascade.log_level = types.SimpleNamespace(INFO=1, WARN=2, ERROR=3)
+    cascade.log_level = types.SimpleNamespace(DEBUG=0, INFO=1, WARN=2, WARNING=2, ERROR=3)
     sys.modules["cascade"] = cascade
 
     pymodule = types.ModuleType("cascade.pymodule")

@@ -9,6 +9,7 @@ from .common import (
     _emit,
     _load_controller,
     _load_mapping,
+    _log,
     _parse_kv,
     _redirect_stdout_to_stderr,
     _resolve_config_path,
@@ -270,7 +271,7 @@ def _run_dag_with_progress(controller, fail_fast, provenance_path):
                 state = (status, detail, percent)
                 if previous.get(node.name) != state:
                     suffix = f" - {detail}" if detail else ""
-                    print(f"[{completed}/{total}] {node.name}: {status}{suffix}", file=sys.stderr, flush=True)
+                    _log("INFO", f"[{completed}/{total}] {node.name}: {status}{suffix}", "DAG")
                     previous[node.name] = state
             time.sleep(0.2)
     except KeyboardInterrupt:

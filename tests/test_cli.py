@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import ctypes
+import importlib
 import importlib.machinery
 import importlib.util
 import io
@@ -54,6 +55,8 @@ from cascade_cli import plugin as cli_plugin
 from cascade_cli import parser as cli_parser
 from cascade_cli import provenance as cli_provenance
 from cascade_cli import system as cli_system
+
+cli_main = importlib.import_module("cascade_cli.main")
 
 
 class _FakeCacheManager:
@@ -242,8 +245,41 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             cli_common._parse_kv("=missing")
 
+    def test_logging_uses_standard_stderr_format_for_every_line(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            cli_common._log("WARN", "first\nsecond", "PLUGIN")
+            cli_common._log("OK", "runtime ready", "DOCTOR")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            stderr.getvalue(),
+            "[WARNING] [PLUGIN] first\n"
+            "[WARNING] [PLUGIN] second\n"
+            "[INFO] [DOCTOR] OK: runtime ready\n",
+        )
+
     def test_entrypoint_exports_main(self):
         self.assertTrue(callable(cli.main))
+
+    def test_banner_is_limited_to_top_level_tty_usage(self):
+        with mock.patch.object(sys.stdout, "isatty", return_value=True):
+            self.assertTrue(cli_main._show_banner([]))
+            self.assertTrue(cli_main._show_banner(["--help"]))
+            self.assertFalse(cli_main._show_banner(["--version"]))
+            self.assertFalse(cli_main._show_banner(["module", "list"]))
+        with mock.patch.object(sys.stdout, "isatty", return_value=False):
+            self.assertFalse(cli_main._show_banner([]))
+
+    def test_no_argument_entrypoint_prints_banner_and_help_without_running_a_command(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch.object(output, "isatty", return_value=True), \
+             mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=False):
+            cli_main.main([])
+        rendered = output.getvalue()
+        self.assertIn("Composable Analysis with Secure Caching And DAG Execution", rendered)
+        self.assertIn("usage: cascade", rendered)
+        self.assertNotIn("\033[", rendered)
 
     def test_signed_policy_is_a_global_strengthening_option(self):
         args = cli_parser.build_parser().parse_args(["--require-signed", "module", "list"])
@@ -679,7 +715,10 @@ class CliTests(unittest.TestCase):
             config = root / "config.json"
             source.mkdir()
             target.mkdir()
-            (source / "SConstruct").write_text("", encoding="utf-8")
+            (source / "python").mkdir()
+            (source / "python" / "example_module.py").write_text(
+                "class ExampleModule:\n    pass\n", encoding="utf-8"
+            )
             staged_package = stage / "lib" / "cascade" / "pyplugin" / source.name
             staged_package.mkdir(parents=True)
             (staged_package / "module.py").write_text("installed", encoding="utf-8")
@@ -711,6 +750,61 @@ class CliTests(unittest.TestCase):
             )
             build_environment = run.call_args.kwargs["env"]
             self.assertEqual(build_environment["CASCADE_PYPLUGIN_DIR"], str(stage / "lib" / "cascade" / "pyplugin"))
+            command = run.call_args.args[0]
+            self.assertEqual(command[0], "scons")
+            self.assertEqual(command[1], "-f")
+            self.assertTrue(command[2].endswith("scripts/plugin_sconstruct"))
+            self.assertEqual(build_environment["CASCADE_PLUGIN_ROOT_MODULES"], "")
+            self.assertEqual(json.loads(build_environment["CASCADE_PLUGIN_CLASS_MAP"]), {})
+
+    def test_convention_plugin_configuration_declares_root_modules_and_class_map(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            (source / "include").mkdir()
+            (source / "src").mkdir()
+            (source / "include" / "EventModule.hh").write_text("", encoding="utf-8")
+            (source / "src" / "EventModule.cc").write_text("", encoding="utf-8")
+            (source / "cascade-plugin.json").write_text(json.dumps({
+                "schema_version": 1,
+                "root_modules": ["EventModule"],
+                "class_map": {"EventModule": "experiment::EventModule"},
+            }), encoding="utf-8")
+
+            with mock.patch.object(cli_plugin, "_plugin_build_template", return_value="/sdk/plugin_sconstruct"):
+                build = cli_plugin._load_convention_build(str(source))
+
+            self.assertEqual(build, {
+                "template": "/sdk/plugin_sconstruct",
+                "root_modules": ["EventModule"],
+                "class_map": {"EventModule": "experiment::EventModule"},
+            })
+
+    def test_convention_plugin_rejects_unmatched_cpp_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            (source / "include").mkdir()
+            (source / "include" / "EventModule.hh").write_text("", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "missing src/\\*\\.cc for EventModule"):
+                cli_plugin._load_convention_build(str(source))
+
+    def test_convention_plugin_rejects_removed_placeholders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            (source / "python").mkdir()
+            (source / "python" / "example_module.py").write_text(
+                'code_version_hash = "@VERSION_HASH@"\n', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "removed build placeholders"):
+                cli_plugin._load_convention_build(str(source))
+
+    def test_plugin_install_rejects_package_owned_sconstruct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "legacy-plugin"
+            source.mkdir()
+            (source / "SConstruct").write_text("", encoding="utf-8")
+            args = types.SimpleNamespace(source=str(source))
+            with self.assertRaisesRegex(ValueError, "SConstruct files are no longer supported"):
+                cli_plugin.cmd_plugin_install(args)
 
     def test_plugin_install_restores_previous_package_if_config_update_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -720,7 +814,10 @@ class CliTests(unittest.TestCase):
             stage = target / ".cascade-plugin-stage-test"
             source.mkdir()
             target.mkdir()
-            (source / "SConstruct").write_text("", encoding="utf-8")
+            (source / "python").mkdir()
+            (source / "python" / "rollback_module.py").write_text(
+                "class RollbackModule:\n    pass\n", encoding="utf-8"
+            )
             staged_package = stage / "lib" / "cascade" / "pyplugin" / source.name
             installed_package = target / "lib" / "cascade" / "pyplugin" / source.name
             staged_package.mkdir(parents=True)

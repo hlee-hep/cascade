@@ -194,23 +194,19 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
     std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
     if (level < m_Level) return;
 
-    std::string raw = "[" + ToString_(level) + "] [" + module + "] " + msg;
-
-    // stdout
-    if (m_IsTerminal)
+    const std::string component = module.empty() ? "CASCADE" : module;
+    std::istringstream input(msg);
+    std::string line;
+    bool emitted = false;
+    do
     {
-        std::cout << ApplyColor_(level, module, msg) << std::endl;
-    }
-    else
-    {
-        std::cout << raw << std::endl;
-    }
-
-    // file
-    if (m_LogFileOut && m_LogFileOut->is_open())
-    {
-        *m_LogFileOut << "[" << GetCurrentTime() << "] " << raw << std::endl;
-    }
+        if (!std::getline(input, line) && emitted) break;
+        emitted = true;
+        const std::string raw = "[" + ToString_(level) + "] [" + component + "] " + line;
+        std::cerr << (m_IsTerminal ? ApplyColor_(level, component, line) : raw) << std::endl;
+        if (m_LogFileOut && m_LogFileOut->is_open())
+            *m_LogFileOut << "[" << GetCurrentTime() << "] " << raw << std::endl;
+    } while (input.good());
 }
 
 void Logger::PrintProgressBar(const std::string &name, double progress, double elapsed, double eta)
@@ -219,7 +215,8 @@ void Logger::PrintProgressBar(const std::string &name, double progress, double e
     if (!m_IsTerminal)
     {
         if (progress >= 1.0)
-            std::cout << "[INFO] [" << name << "] Progress 100.0% | " << std::fixed << std::setprecision(1) << elapsed << "s" << std::endl;
+            std::cerr << "[INFO] [" << (name.empty() ? "CASCADE" : name) << "] Progress 100.0% | " << std::fixed
+                      << std::setprecision(1) << elapsed << "s" << std::endl;
         return;
     }
     const int barWidth = 40;
@@ -246,9 +243,9 @@ void Logger::PrintProgressBar(const std::string &name, double progress, double e
     if (elapsed >= 0) oss << " | " << std::fixed << std::setprecision(1) << elapsed << "s";
     if (eta >= 0) oss << " | ETA: " << std::fixed << std::setprecision(1) << eta << "s";
 
-    std::cout << oss.str() << std::flush;
+    std::cerr << oss.str() << std::flush;
 
-    if (progress >= 1.0) std::cout << std::endl;
+    if (progress >= 1.0) std::cerr << std::endl;
 }
 
 std::string Logger::GetCurrentTime()

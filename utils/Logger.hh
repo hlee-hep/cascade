@@ -44,7 +44,7 @@ class Logger
     LogLevel m_Level = LogLevel::INFO;
     std::recursive_mutex m_LogMutex;
     std::unique_ptr<std::ofstream> m_LogFileOut;
-    bool m_IsTerminal = isatty(fileno(stdout));
+    bool m_IsTerminal = isatty(fileno(stderr));
 
     std::string LevelToColor_(LogLevel level);
     std::string ToString_(LogLevel level);

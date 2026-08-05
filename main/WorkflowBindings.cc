@@ -139,6 +139,7 @@ void BindWorkflow(py::module_ &m)
         .value("DEBUG", logger::LogLevel::DEBUG)
         .value("INFO", logger::LogLevel::INFO)
         .value("WARN", logger::LogLevel::WARN)
+        .value("WARNING", logger::LogLevel::WARN)
         .value("ERROR", logger::LogLevel::ERROR)
         .value("NONE", logger::LogLevel::NONE);
     m.def("set_log_level", [](logger::LogLevel level) { logger::Logger::Get().SetLogLevel(level); });

@@ -4,6 +4,7 @@
 #include "AnalysisModuleRegistry.hh"
 #include "CacheManager.hh"
 #include "DAGManager.hh"
+#include "Logger.hh"
 #include "ParamManager.hh"
 #include "PlotManager.hh"
 #include "PluginVerifier.hh"
@@ -24,7 +25,9 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <sys/stat.h>
@@ -740,6 +743,10 @@ void TestControllerContracts()
     std::filesystem::remove_all(isolatedOutput);
     std::filesystem::remove_all(isolatedCache);
     auto workerModule = controller.RegisterModule("WorkerTestModule", "worker-instance");
+    const auto workerOrigin = workerModule->GetPluginOrigin();
+    assert(workerOrigin.has_value());
+    assert(workerModule->BaseName() == "WorkerTestModule");
+    assert(workerModule->GetCodeHash() == "artifact-sha256:" + workerOrigin->ArtifactSha256);
     workerModule->SetOutputDirectory(isolatedOutput.string());
     workerModule->SetCacheDirectory(isolatedCache.string());
     const auto workerResult = controller.RunAModuleIsolated(workerModule);
@@ -1619,6 +1626,26 @@ void TestPluginVerifierService()
     assert(hashRejected);
     fs::remove_all(root);
 }
+
+void TestLoggerContract()
+{
+    std::ostringstream captured;
+    std::ostringstream standardOutput;
+    auto *original = std::cerr.rdbuf(captured.rdbuf());
+    auto *originalOutput = std::cout.rdbuf(standardOutput.rdbuf());
+    logger::Logger::Get().SetLogLevel(logger::LogLevel::DEBUG);
+    logger::Logger::Get().Log(logger::LogLevel::INFO, "", "ready");
+    logger::Logger::Get().Log(logger::LogLevel::WARN, "PLUGIN", "first\nsecond");
+    std::cerr.rdbuf(original);
+    std::cout.rdbuf(originalOutput);
+    logger::Logger::Get().SetLogLevel(logger::LogLevel::INFO);
+
+    const std::string plain = std::regex_replace(captured.str(), std::regex("\\x1B\\[[0-9;]*m"), "");
+    assert(standardOutput.str().empty());
+    assert(plain == "[INFO] [CASCADE] ready\n"
+                    "[WARNING] [PLUGIN] first\n"
+                    "[WARNING] [PLUGIN] second\n");
+}
 } // namespace
 
 int main()
@@ -1637,6 +1664,7 @@ int main()
     TestControllerContracts();
     TestPluginTrustPolicy();
     TestPluginVerifierService();
+    TestLoggerContract();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();
     TestBorrowedRootObjectsRemainAlive();

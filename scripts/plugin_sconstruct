@@ -3,35 +3,12 @@ import os, sys, hashlib, json, re, shlex, subprocess
 from pathlib import Path
 from SCons.Script import AlwaysBuild, Environment, Glob
 
-def hash_file(path):
-    if not os.path.exists(path):
-        return ""
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()[:12]
-
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-def hash_tree(paths):
-    h = hashlib.sha256()
-    for p in sorted(paths):
-        if os.path.exists(p):
-            h.update(hash_file(p).encode())
-            h.update(p.encode())
-    return h.hexdigest()[:12]
-
-def patch_file(input_path, output_path, substitutions):
-    if not os.path.exists(input_path):
-        return
-    content = Path(input_path).read_text()
-    for k, v in substitutions.items():
-        content = content.replace(k, v)
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(output_path).write_text(content)
 
 def read_text(path):
     try:
@@ -78,7 +55,7 @@ def generate_manifest(target, source, env):
         if language == "cpp":
             if name.startswith("lib"):
                 name = name[3:]
-            entry["name"] = name
+            entry["name"] = class_map.get(name, name)
         elif language == "python":
             entry["classes"] = python_plugin_classes(path)
         entries.append(entry)
@@ -126,7 +103,7 @@ core_inc = os.environ.get("CASCADE_CORE_INCLUDE", os.path.join(prefix, "include"
 core_lib = os.environ.get("CASCADE_CORE_LIB", os.path.join(prefix, "lib"))
 root_config = require_env("ROOT_CONFIG", "root-config")
 pkg_config = require_env("PKG_CONFIG", "pkg-config")
-root_modules = globals().get("CASCADE_PLUGIN_ROOT_MODULES", set())
+root_modules = os.environ.get("CASCADE_PLUGIN_ROOT_MODULES", set())
 if isinstance(root_modules, str):
     root_modules = {name.strip() for name in root_modules.split(",") if name.strip()}
 else:
@@ -189,19 +166,7 @@ modules = [os.path.splitext(os.path.basename(h))[0] for h in headers]
 for mod in modules:
     cc_in = f"src/{mod}.cc"
     hh_in = f"include/{mod}.hh"
-    version_hash = hash_tree([cc_in, hh_in])
-
-    subs = {
-        "@BASENAME@": mod,
-        "@VERSION_HASH@": f"src:{version_hash}",
-    }
-
-    cc_out = f"build/src/{mod}.cc"
-    hh_out = f"build/include/{mod}.hh"
-    patch_file(cc_in, cc_out, subs)
-    patch_file(hh_in, hh_out, subs)
-
-    sources = [cc_out]
+    sources = [cc_in]
 
     # Auto-generate ABI entry if not provided in source
     cc_text = read_text(cc_in)
@@ -224,22 +189,14 @@ CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() {{ CASCADE_REGISTER_MODULE({c
     installed_lib = env.Install(plugin_lib_dir, lib)
     install_targets += installed_lib
     cpp_install += installed_lib
-    install_targets += env.Install(plugin_include_dir, [hh_out])
+    install_targets += env.Install(plugin_include_dir, [hh_in])
 
 # -------- Python modules --------
 py_srcs = [str(p) for p in Glob("python/*.py")]
-py_mods = [os.path.splitext(os.path.basename(p))[0] for p in py_srcs]
 
 py_install = []
-for mod, py_in in zip(py_mods, py_srcs):
-    version_hash = hash_tree([py_in])
-    subs = {
-        "@BASENAME@": mod,
-        "@VERSION_HASH@": f"src:{version_hash}",
-    }
-    py_out = f"build/python/{mod}.py"
-    patch_file(py_in, py_out, subs)
-    py_install += env.Install(site_packages, py_out)
+for py_in in py_srcs:
+    py_install += env.Install(site_packages, py_in)
 
 # __init__.py (lazy imports)
 def generate_init_py(target, source, env):

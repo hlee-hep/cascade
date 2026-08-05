@@ -1,4 +1,0 @@
-template = "../../../scripts/plugin_sconstruct"
-CASCADE_PLUGIN_ROOT_MODULES = {"RootEventModule"}
-with open(template, "r", encoding="utf-8") as source:
-    exec(compile(source.read(), template, "exec"), globals())

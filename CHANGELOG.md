@@ -7,6 +7,14 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Added
 
+- A terminal-only Cascade banner for the no-argument command and top-level help.
+- Convention-based `cascade plugin install` builds with optional
+  `cascade-plugin.yaml`, removing the need for package-owned SConstruct files.
+- Verified loaders now assign module basenames and code hashes directly from
+  manifest identities and artifact SHA-256 values; build-time source substitution
+  is removed.
+- Self-contained toy dimuon plugin example covering ROOT event generation,
+  RDataFrame selection, resonance fitting, reporting, cache reuse, and provenance.
 - Snapshot cache inspection, hit/miss explanation, and locked pruning through the CLI.
 - Per-run cache decisions and exact miss reasons in results, provenance, and CLI JSON.
 - Runtime policy diagnostics, one-shot CLI tuning flags, live DAG progress, and
@@ -19,6 +27,9 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Changed
 
+- Core, CLI, and Python-module logging now consistently uses
+  `[LEVEL] [COMPONENT] message` on standard error, including per-line prefixes for
+  multiline messages and shared Python module logging helpers.
 - Cache output revalidation now preserves symlink identity and the output hash
   policy recorded at commit time, avoiding unnecessary full reads.
 - Isolated worker and Python-runtime paths reject replaceable non-sticky writable

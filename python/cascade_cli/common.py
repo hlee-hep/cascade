@@ -17,9 +17,16 @@ if os.path.isdir(os.path.join(_CLI_PYTHON_ROOT, "cascade")):
     sys.path.insert(0, _CLI_PYTHON_ROOT)
 
 
-def _log(level: str, msg: str) -> None:
-    stream = sys.stderr if level in ("WARN", "ERROR") else sys.stdout
-    print(f"[{level}] {msg}", file=stream, flush=True)
+def _log(level: str, msg: str, component: str = "CLI") -> None:
+    requested_level = str(level).upper()
+    normalized_level = "WARNING" if requested_level in ("WARN", "WARNING") else requested_level
+    if normalized_level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+        msg = f"{requested_level}: {msg}"
+        normalized_level = "INFO"
+    normalized_component = str(component).strip() or "CLI"
+    lines = str(msg).splitlines() or [""]
+    for line in lines:
+        print(f"[{normalized_level}] [{normalized_component}] {line}", file=sys.stderr, flush=True)
 
 
 def _install_sigint_handler() -> None:

@@ -301,10 +301,13 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
             {
                 regFn();
                 const auto modulesAfterLoad = AnalysisModuleRegistry::Get().ListModules();
-                if (modulesAfterLoad == modulesBeforeLoad)
-                    throw std::runtime_error("plugin registration did not add a module");
+                std::vector<std::string> registered;
                 for (const auto &name : modulesAfterLoad)
-                    if (!moduleSetBeforeLoad.count(name)) AnalysisModuleRegistry::Get().SetPluginOrigin(name, plugin.Origin);
+                    if (!moduleSetBeforeLoad.count(name)) registered.push_back(name);
+                if (registered.size() != 1 || registered.front() != plugin.Name)
+                    throw std::runtime_error("plugin registration identity does not match verified manifest: expected " +
+                                             plugin.Name);
+                AnalysisModuleRegistry::Get().SetPluginOrigin(plugin.Name, plugin.Origin);
                 loadedPlugins.emplace(canonicalPlugin, plugin.Sha256);
                 LOG_INFO("PLUGIN", "Loaded " << ToString(plugin.Origin.Trust) << " plugin " << pluginFile.string());
             }
@@ -345,7 +348,11 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
     if (m_TrustPolicy == PluginTrustPolicy::RequireSigned && origin && origin->Trust != PluginTrustStatus::Signed)
         throw std::runtime_error("Module requires a signed plugin under the active trust policy: " + base);
     auto mod = AnalysisModuleRegistry::Get().Create(base);
-    if (origin && mod->BaseName() != base) AnalysisModuleRegistry::Get().SetPluginOrigin(mod->BaseName(), *origin);
+    if (origin)
+    {
+        mod->SetBaseName(base);
+        mod->SetCodeHash("artifact-sha256:" + origin->ArtifactSha256);
+    }
     mod->SetPluginOrigin(origin);
     mod->SetName(instanceName);
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));

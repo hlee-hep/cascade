@@ -13,11 +13,11 @@ metadata.
 
 ## Source layout
 
-The installed `plugin_sconstruct` template expects:
+The CLI recognizes this conventional source layout:
 
 ```text
 my_package/
-  SConstruct
+  cascade-plugin.yaml  # optional
   include/
     EventModule.hh
   src/
@@ -32,65 +32,41 @@ Rules:
 - a C++ file stem should end in `Module`, producing `lib...Module.so`;
 - Python plugin file names end in `module.py`;
 - Python plugin classes inherit `base_module`;
-- C++ class names match header stems unless `CASCADE_PLUGIN_CLASS_MAP` says
-  otherwise;
+- C++ class names match header stems unless `class_map` says otherwise;
 - module class names are globally unique across installed C++ and Python packages.
 
-Minimal external `SConstruct`:
+No build file is required. `cascade plugin install` invokes Cascade's installed
+plugin build template directly and supplies the active SDK and staging paths.
 
-```python
-import os
+The optional `cascade-plugin.yaml` declares only departures from the ROOT-free,
+stem-matched defaults:
 
-prefix = os.environ.get("CASCADE_PREFIX", os.path.expanduser("~/.local"))
-template = os.path.join(prefix, "share", "cascade", "scripts", "plugin_sconstruct")
-
-with open(template, "r", encoding="utf-8") as source:
-    exec(compile(source.read(), template, "exec"), globals())
+```yaml
+schema_version: 1
+root_modules:
+  - RootEventModule
+class_map:
+  EventModule: experiment::EventModule
 ```
 
-The in-repository mixed example loads the source-tree template directly.
-
-The template keeps ROOT-free modules on the minimal Cascade/yaml-cpp link surface.
-Declare only modules that actually include ROOT or use `AnalysisManager`/
-`PlotManager` before executing the template:
-
-```python
-CASCADE_PLUGIN_ROOT_MODULES = {"RootEventModule"}
-```
-
-Omitting the variable keeps every C++ module ROOT-free. Use `{"*"}` only when every
-module in the package needs ROOT. The template reads the installed
+Omitting `root_modules` keeps every C++ module ROOT-free. Use `['*']` only when
+every module in the package needs ROOT. List only modules that include ROOT or
+use `AnalysisManager`/`PlotManager`. The build template reads the installed
 `CascadeBuildConfig.hh`, applies the same C++ language mode as Cascade, and rejects
 a different ROOT version or C++ mode for ROOT-using modules.
 
-## Build substitutions
+## Verified module identity
 
-The template replaces these tokens in copied build sources:
+Plugin sources are compiled or installed without text substitution. After a
+verified artifact is selected, the loader assigns:
 
-| Token | Replacement |
-| --- | --- |
-| `@BASENAME@` | Source file stem |
-| `@VERSION_HASH@` | Hash derived from module source/header |
+- the manifest's C++ registration name or Python class name as the module basename;
+- the verified artifact SHA-256 as the module code hash.
 
-Typical constructor:
-
-```cpp
-EventModule::EventModule()
-{
-    SetBaseName("@BASENAME@");
-    SetCodeHash("@VERSION_HASH@");
-}
-```
-
-Python:
-
-```python
-self.basename = "@BASENAME@"
-self.code_version_hash = "@VERSION_HASH@"
-```
-
-These substitutions keep the source readable while making the built module's
-snapshot sensitive to code changes.
+Constructors only register analysis parameters and state. They do not call
+`SetBaseName`/`SetCodeHash` or assign Python identity fields. This keeps source
+files directly compilable and makes plugin verification, cache identity, worker
+selection, and provenance use the same artifact identity.
 
 ## C++ registration
 
@@ -173,45 +149,12 @@ cascade --require-signed plugin install . \
   --public-key /provisioning/path/plugin_public.pem
 ```
 
-The low-level SCons workflow remains available for unsigned packaging and development.
-
-Set the same prefix used to install Cascade:
-
-```bash
-export CASCADE_PREFIX=/your/cascade/prefix
-scons -j2
-```
-
-The regular build target compiles C++ modules. A local verified installation does
-not require a signing key:
-
-```bash
-CASCADE_PLUGIN_PACKAGE=my_package scons install
-```
-
-`CASCADE_PLUGIN_PACKAGE` accepts letters, digits, `.`, `_`, and `-`, and must start
-with a letter or digit.
-
-Signed installation must use `cascade plugin install` with both `--private-key`
-and `--public-key`. Cascade signs the completed staging tree after the plugin build
-process exits, so plugin-controlled build code never receives the private-key path.
-The trusted key is installed as `<package>.pem`; a key trusted for one package
-cannot authorize another package.
-
-To install plugins outside the core Cascade prefix with low-level SCons, keep
-the SDK and destination concepts separate:
-
-```bash
-CASCADE_PREFIX=/opt/cascade \
-CASCADE_PLUGIN_PREFIX=/data/cascade-plugins \
-CASCADE_PLUGIN_PACKAGE=my_package \
-scons install
-
-cascade plugin path add /data/cascade-plugins
-```
-
-`CASCADE_PREFIX` locates headers, libraries, and the installed SCons template.
-`CASCADE_PLUGIN_PREFIX` controls only the plugin destination.
+Package-owned `SConstruct` files and low-level plugin SCons installation are not
+supported. The CLI is the single build/install entry point. For signed packages,
+it signs the completed staging tree after the build process exits, so
+plugin-controlled code never receives the private-key path. The trusted key is
+installed as `<package>.pem`; a key trusted for one package cannot authorize
+another package.
 
 ## Persistent plugin prefixes
 
@@ -380,9 +323,9 @@ print(cascade.__abi_tag__)
 ABI mismatch is resolved by rebuilding, not by editing the manifest.
 
 ABI 3's public `IAnalysisModule.hh` is declaration-only and ROOT-free. Plugin code
-sets identity through `SetBaseName`/`SetCodeHash`, accesses parameters through
-`Parameters()`, and links lifecycle/manager implementation from `libAMCM` instead
-of embedding those fields and inline methods in every plugin library.
+accesses parameters through `Parameters()` while the verified loader assigns
+identity. Lifecycle/manager implementation is linked from `libAMCM` instead of
+embedding those fields and inline methods in every plugin library.
 
 ## Refreshing discovery in a long-running process
 

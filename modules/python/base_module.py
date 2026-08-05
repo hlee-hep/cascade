@@ -15,8 +15,6 @@ class base_module(cascade.IAnalysisModule):
 
     def __init__(self):
         super().__init__()
-        self.basename = ""
-        self.code_version_hash = ""
         self.summary = ""
         self.tags = []
 
@@ -28,6 +26,21 @@ class base_module(cascade.IAnalysisModule):
 
     def set_param_from_yaml(self, path):
         self.load_param_from_yaml(str(path))
+
+    def _log_component(self):
+        return self.name() or self.get_basename() or self.__class__.__name__
+
+    def log_debug(self, message):
+        cascade.log(cascade.log_level.DEBUG, self._log_component(), str(message))
+
+    def log_info(self, message):
+        cascade.log(cascade.log_level.INFO, self._log_component(), str(message))
+
+    def log_warning(self, message):
+        cascade.log(cascade.log_level.WARNING, self._log_component(), str(message))
+
+    def log_error(self, message):
+        cascade.log(cascade.log_level.ERROR, self._log_component(), str(message))
 
     def init(self):
         raise NotImplementedError("PythonModuleBase: init() must be implemented by subclass")
@@ -61,4 +74,4 @@ class base_module(cascade.IAnalysisModule):
         }
 
     def print_description(self):
-        raise NotImplementedError("PythonModuleBase: print_description() must be implemented by subclass")
+        self.log_info(getattr(self.__class__, "SUMMARY", self.summary))

@@ -1,5 +1,34 @@
 # Examples
 
+## Toy dimuon resonance analysis
+
+Location: `examples/plugins/toy_dimuon_analysis`
+
+This is the complete physics-analysis example:
+
+```text
+toy event generation (C++/ROOT)
+  -> RDataFrame selection (C++/ROOT)
+  -> Voigt + exponential mass fit (C++/ROOT)
+  -> Markdown/JSON report (ROOT-free Python)
+```
+
+It needs no external data and demonstrates deterministic generation, typed
+parameters, a four-node DAG, transactional multi-file output, cache reuse,
+provenance, worker isolation, a cutflow, and a fit pull plot.
+
+```bash
+cd examples/plugins/toy_dimuon_analysis
+cascade plugin install . --prefix ~/.local
+python3 run_analysis.py --output example-output
+python3 run_analysis.py --output example-output  # cache reuse
+```
+
+Use `--float-width` to float the resonance width and `--isolated` to exercise
+the worker boundary. See the package
+[README](../examples/plugins/toy_dimuon_analysis/README.md) for the fit model,
+outputs, and declarative workflow.
+
 ## Mixed plugin package
 
 Location: `examples/plugins/mixed_pipeline`
@@ -27,7 +56,7 @@ Build/install:
 
 ```bash
 cd examples/plugins/mixed_pipeline
-CASCADE_PLUGIN_PACKAGE=mixed_pipeline scons install
+cascade plugin install . --prefix ~/.local
 ```
 
 Run:
@@ -122,6 +151,8 @@ See [AnalysisManager](analysis-manager.md), [Parameters](parameters.md), and
 | Goal | Start with |
 | --- | --- |
 | Verify installation | `QuickstartExample.py` |
+| Follow a complete physics analysis | `plugins/toy_dimuon_analysis` |
+| Learn fitting, cutflows, and cache reuse | `plugins/toy_dimuon_analysis` |
 | Learn plugin structure | `plugins/mixed_pipeline` |
 | Learn DAG callbacks | `DAGPluginExample.py` |
 | Integrate a legacy ROOT macro | `RootMacroExample.C` |

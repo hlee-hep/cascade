@@ -38,10 +38,11 @@ export LD_LIBRARY_PATH="${CASCADE_PREFIX}/lib:${LD_LIBRARY_PATH}"
 cascade plugin install . --prefix ~/.local
 ```
 
-The source-tree `SConstruct` delegates to Cascade's plugin template. It replaces
-`@BASENAME@` and `@VERSION_HASH@`, compiles C++ modules, installs Python sources,
-generates separate verified manifests, verifies the staged package, and records
-the prefix in the persistent Cascade configuration.
+The CLI detects the conventional `include/`, `src/`, and `python/` layout. The
+small `cascade-plugin.yaml` marks only `RootEventModule` as ROOT-dependent. Cascade
+then compiles the original C++ sources, installs the original Python sources,
+generates separate verified manifests, assigns identity from the verified
+artifacts, and records the prefix in the persistent configuration.
 
 To test a signed distribution instead:
 

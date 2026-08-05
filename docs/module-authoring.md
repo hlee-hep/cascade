@@ -8,7 +8,7 @@ separately in [Plugin development and distribution](plugins.md).
 
 | Phase | Put this here | Avoid |
 | --- | --- | --- |
-| Constructor | Register parameters, set basename/code hash, static metadata | Opening inputs or creating final outputs |
+| Constructor | Register parameters and static module state | Opening inputs or creating final outputs |
 | `Init` / `init` | Validate parameters, load config, build managers and inputs | Long event loops |
 | `Check` | Framework-owned dry-run and snapshot-cache decision | User implementation; this phase is automatic |
 | `Execute` / `execute` | Event loops, RDF definitions, transformations | Publishing final output paths directly |
@@ -18,6 +18,20 @@ separately in [Plugin development and distribution](plugins.md).
 
 All lifecycle exceptions are converted to `RunResult`. Destructors, RAII, and
 Python context managers remain the preferred resource cleanup mechanism.
+
+## Logging
+
+Runtime logs from the core, CLI, C++ plugins, and Python plugins share the form
+`[LEVEL] [COMPONENT] message`. They are written to standard error so standard
+output remains safe for command results and JSON. Multiline messages receive the
+prefix on every line, and warning output is consistently labeled `WARNING`.
+
+C++ modules use `LOG_DEBUG`, `LOG_INFO`, `LOG_WARN`, and `LOG_ERROR` from
+`Logger.hh`. Python modules use `self.log_debug()`, `self.log_info()`,
+`self.log_warning()`, and `self.log_error()`; these call the same core logger and
+therefore honor `set_log_level()` and `set_log_file()`. The default Python
+`print_description()` logs the class `SUMMARY`, so a plugin only overrides it when
+it needs a richer description.
 
 ## C++ module
 
@@ -52,8 +66,6 @@ class SelectionModule final : public IAnalysisModule
 
 SelectionModule::SelectionModule()
 {
-    SetBaseName("SelectionModule");
-    SetCodeHash("replace-at-build-time");
     Parameters().Register<std::string>("input_config", "input.yaml");
     Parameters().Register<std::string>("cut_config", "cuts.yaml");
     Parameters().Register<std::string>("histogram_config", "histograms.yaml");
@@ -114,11 +126,12 @@ Call `RegisterAnalysisManager("name")` only when a module needs additional isola
 manager state.
 
 `IAnalysisModule.hh` intentionally exposes declarations and stable accessors, not
-its lifecycle/manager storage. Use `SetBaseName`, `SetCodeHash`, and `Parameters()`;
-do not depend on internal fields. A ROOT-free module can include this header and
-compile without ROOT headers. Include `AnalysisManager.hh` or ROOT headers only in
-modules that actually use those facilities, and list those module stems in
-`CASCADE_PLUGIN_ROOT_MODULES` in the package `SConstruct`.
+its lifecycle/manager storage. The verified loader assigns identity and code hash;
+plugin constructors only use `Parameters()` and their own state. A ROOT-free
+module can include this header and compile without ROOT headers. Include
+`AnalysisManager.hh` or ROOT headers only in modules that actually use those
+facilities, and list those module stems under `root_modules` in the optional
+package `cascade-plugin.yaml`.
 
 Parameters are frozen and published as an immutable snapshot for the complete run,
 so concurrent reads do not take the configuration mutex. Still copy scalar or
@@ -142,16 +155,11 @@ class SummaryModule(base_module):
 
     def __init__(self):
         super().__init__()
-        self.basename = "SummaryModule"
-        self.code_version_hash = "replace-at-build-time"
         self.summary = self.SUMMARY
         self.tags = list(self.TAGS)
         self.register_param("input", "events_manifest.json")
         self.register_param("output", "summary.json")
         self.register_param("label", "nominal")
-
-    def print_description(self):
-        print(self.SUMMARY)
 
     def init(self):
         input_path = self.final_output(self.get_param("input"))

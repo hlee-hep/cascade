@@ -129,14 +129,14 @@ Keys inside a plugin package do not grant trust.
 
 ### Plugin manifest missing
 
-`scons` only builds. Install the package to generate its verified manifest:
+Build and install through the CLI to generate and verify the package manifest:
 
 ```bash
-scons install
+cascade plugin install .
 ```
 
-Use `cascade plugin install --private-key ... --public-key ...` for a signed
-distribution. Low-level plugin SCons builds are intentionally unsigned.
+Package-owned `SConstruct` files and build-time source placeholders are no longer
+supported. Add both signing-key options for a signed distribution.
 
 ### Signature invalid
 

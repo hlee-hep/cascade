@@ -53,7 +53,7 @@ Installed files changed after rebuilding, so old SHA-256 entries and any existin
 signatures are invalid. Local development requires only a regenerated manifest:
 
 ```bash
-CASCADE_PLUGIN_PACKAGE=my_package scons install
+cascade plugin install . --package my_package
 cascade doctor plugins
 ```
 
@@ -148,12 +148,11 @@ C++:
 Parameters().Register<double>("threshold", 25.0);
 ```
 
-Older development modules that accessed protected storage directly must use the
-stable module API:
+Older development modules that accessed protected parameter storage directly must
+use the stable parameter API. Verified plugin identity and code hash are assigned
+by the loader:
 
 ```cpp
-SetBaseName("SelectionModule");
-SetCodeHash("build-generated-hash");
 Parameters().Register<double>("threshold", 25.0);
 ```
 

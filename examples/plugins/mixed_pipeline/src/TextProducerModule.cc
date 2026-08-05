@@ -6,8 +6,6 @@
 
 TextProducerModule::TextProducerModule()
 {
-    SetBaseName("@BASENAME@");
-    SetCodeHash("@VERSION_HASH@");
     Parameters().Register<std::string>("output", "message.json", "Output path relative to the execution output directory");
     Parameters().Register<std::string>("message", "hello from C++", "Message written to the output");
     Parameters().Register<int>("repeat", 3, "Number of message repetitions");

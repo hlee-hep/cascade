@@ -4,6 +4,14 @@ The `cascade` command exposes installation diagnostics, verified module discover
 single-module execution, mixed-language DAG workflows, and a compatibility
 adapter for ROOT macros.
 
+Human-readable command results and JSON are written to standard output. Runtime
+diagnostics use `[LEVEL] [COMPONENT] message` on standard error, which keeps pipes
+and `--json` consumers free from log text.
+
+Running `cascade` without arguments, or requesting top-level help in a terminal,
+shows the Cascade banner. The banner is omitted for subcommands, versions,
+non-interactive output, and pipes; `NO_COLOR` disables its ANSI color.
+
 ## Inspect an installation
 
 ```bash
@@ -35,12 +43,14 @@ cascade plugin install ./my-plugin
 cascade plugin install ./my-plugin --prefix /data/cascade-plugins
 ```
 
-The default plugin prefix is `~/.local`. The source directory must contain a
-Cascade-compatible `SConstruct`. Installation first targets a temporary
-directory inside the destination prefix. Cascade publishes the package only
-after its manifest, hashes, Python declarations, C++ ABI, and active signature
-policy pass verification. Existing package directories are restored if publish
-or configuration update fails.
+The default plugin prefix is `~/.local`. A conventional source directory needs
+only matching `include/*.hh` and `src/*.cc` modules and/or `python/*.py` modules.
+An optional `cascade-plugin.yaml` lists ROOT-dependent modules or C++ class-name
+overrides. Package-owned `SConstruct` files are rejected. Installation first
+targets a temporary directory inside the destination prefix. Cascade
+publishes the package only after its manifest, hashes, Python declarations, C++
+ABI, and active signature policy pass verification. Existing package directories
+are restored if publish or configuration update fails.
 
 Signed installation uses explicit key arguments:
 
