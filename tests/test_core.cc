@@ -2,6 +2,7 @@
 #include "AMCM.hh"
 #include "AnalysisManager.hh"
 #include "AnalysisModuleRegistry.hh"
+#include "CacheManager.hh"
 #include "DAGManager.hh"
 #include "ParamManager.hh"
 #include "PlotManager.hh"
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -37,9 +39,9 @@ class LifecycleModule final : public IAnalysisModule
   public:
     explicit LifecycleModule(ModulePhase failure = ModulePhase::None, std::string baseName = "LifecycleModule") : m_Failure(failure)
     {
-        m_Basename = std::move(baseName);
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", true);
+        SetBaseName(std::move(baseName));
+        SetCodeHash("test");
+        Parameters().Set("force_run", true);
     }
 
     void Description() const override {}
@@ -70,9 +72,9 @@ class TransactionModule final : public IAnalysisModule
     TransactionModule(bool failAfterWrite = false, std::string baseName = "TransactionModule")
         : m_FailAfterWrite(failAfterWrite)
     {
-        m_Basename = std::move(baseName);
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", true);
+        SetBaseName(std::move(baseName));
+        SetCodeHash("test");
+        Parameters().Set("force_run", true);
     }
 
     void Description() const override {}
@@ -97,17 +99,17 @@ class TrackedInputModule final : public IAnalysisModule
   public:
     TrackedInputModule()
     {
-        m_Basename = "TrackedInputModule";
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", false);
-        m_Param.Register<std::string>("input", "");
+        SetBaseName("TrackedInputModule");
+        SetCodeHash("test");
+        Parameters().Set("force_run", false);
+        Parameters().Register<std::string>("input", "");
     }
 
     void Description() const override {}
     static std::atomic<int> Executions;
 
   protected:
-    void Init() override { TrackInput(m_Param.Get<std::string>("input")); }
+    void Init() override { TrackInput(Parameters().Get<std::string>("input")); }
     void Execute() override { Executions.fetch_add(1); }
     void Finalize() override {}
     bool UsesAnalysisManagers() const override { return false; }
@@ -120,9 +122,9 @@ class SymlinkOutputModule final : public IAnalysisModule
   public:
     SymlinkOutputModule()
     {
-        m_Basename = "SymlinkOutputModule";
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", false);
+        SetBaseName("SymlinkOutputModule");
+        SetCodeHash("test");
+        Parameters().Set("force_run", false);
     }
 
     void Description() const override {}
@@ -146,9 +148,9 @@ class CrashModule final : public IAnalysisModule
   public:
     CrashModule()
     {
-        m_Basename = "CrashModule";
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", true);
+        SetBaseName("CrashModule");
+        SetCodeHash("test");
+        Parameters().Set("force_run", true);
     }
     void Description() const override {}
 
@@ -173,9 +175,9 @@ class BlockingModule final : public IAnalysisModule
 
     BlockingModule()
     {
-        m_Basename = "BlockingModule";
-        m_CodeVersionHash = "test";
-        m_Param.Set("force_run", true);
+        SetBaseName("BlockingModule");
+        SetCodeHash("test");
+        Parameters().Set("force_run", true);
     }
     void Description() const override {}
 

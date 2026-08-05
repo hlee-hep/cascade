@@ -13,6 +13,8 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
   long-running-process plugin refresh.
 - Declarative DAG validation without module execution.
 - Release preparation checklist and operational verification guidance.
+- Reproducible `scons verify` gate covering tests, the ROOT-free plugin compile
+  boundary, working-tree checks, runtime diagnostics, and plugin verification.
 - MIT License for source and distribution terms.
 
 ### Changed
@@ -21,13 +23,21 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
   policy recorded at commit time, avoiding unnecessary full reads.
 - Isolated worker and Python-runtime paths reject replaceable non-sticky writable
   parent directories, and non-finite timeout values are invalid.
-- The public plugin ABI is now 2 because `RunResult` exposes cache-decision fields.
+- The public plugin ABI is now 3. `IAnalysisModule` stores lifecycle state behind
+  a C++ implementation object, and plugins use accessor methods instead of
+  embedding framework/ROOT-facing implementation state in their class layout.
+- The build adopts ROOT's C++ language standard, records it in the installed SDK,
+  and requires external plugins to use the same standard.
+- External C++ modules are ROOT-free by default; packages explicitly list only
+  module stems that need ROOT/AnalysisManager/PlotManager linkage.
+- AnalysisManager and pybind registration implementations are split by feature
+  without changing the public ROOT, C++, or Python APIs.
 
 ## [0.3.0] - Unreleased
 
 ### Added
 
-- Initial public C++ plugin ABI 2 with full build fingerprint checks.
+- Initial public C++ plugin ABI 3 with full build fingerprint checks.
 - Verified C++ and Python plugin packages with optional Ed25519 publisher signatures.
 - Transactional plugin installation and persistent plugin prefix discovery.
 - Unified C++/Python module lifecycle, output transactions, cancellation, and subprocess isolation.

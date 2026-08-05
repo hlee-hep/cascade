@@ -50,6 +50,19 @@ with open(template, "r", encoding="utf-8") as source:
 
 The in-repository mixed example loads the source-tree template directly.
 
+The template keeps ROOT-free modules on the minimal Cascade/yaml-cpp link surface.
+Declare only modules that actually include ROOT or use `AnalysisManager`/
+`PlotManager` before executing the template:
+
+```python
+CASCADE_PLUGIN_ROOT_MODULES = {"RootEventModule"}
+```
+
+Omitting the variable keeps every C++ module ROOT-free. Use `{"*"}` only when every
+module in the package needs ROOT. The template reads the installed
+`CascadeBuildConfig.hh`, applies the same C++ language mode as Cascade, and rejects
+a different ROOT version or C++ mode for ROOT-using modules.
+
 ## Build substitutions
 
 The template replaces these tokens in copied build sources:
@@ -64,8 +77,8 @@ Typical constructor:
 ```cpp
 EventModule::EventModule()
 {
-    m_Basename = "@BASENAME@";
-    m_CodeVersionHash = "@VERSION_HASH@";
+    SetBaseName("@BASENAME@");
+    SetCodeHash("@VERSION_HASH@");
 }
 ```
 
@@ -342,7 +355,7 @@ Under the default policy, unsigned packages may load as `VERIFIED`. Invalid or
 untrusted signatures are always rejected; there is no downgrade to unsigned
 trust. Under `RequireSigned`, missing signatures are rejected as well.
 
-## ABI 2
+## ABI 3
 
 Cascade first compares the integer ABI, then the complete ABI tag. The tag covers:
 
@@ -365,6 +378,11 @@ print(cascade.__abi_tag__)
 ```
 
 ABI mismatch is resolved by rebuilding, not by editing the manifest.
+
+ABI 3's public `IAnalysisModule.hh` is declaration-only and ROOT-free. Plugin code
+sets identity through `SetBaseName`/`SetCodeHash`, accesses parameters through
+`Parameters()`, and links lifecycle/manager implementation from `libAMCM` instead
+of embedding those fields and inline methods in every plugin library.
 
 ## Refreshing discovery in a long-running process
 

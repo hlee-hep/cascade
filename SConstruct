@@ -1,4 +1,4 @@
-import os, subprocess, stat, sys
+import os, re, subprocess, stat, sys
 from SCons.Script import Environment, Variables
 import SCons.Util
 
@@ -161,6 +161,51 @@ def run_tests(target, source, env):
         stamp.write("ok\n")
     return 0
 
+def run_verification(target, source, env):
+    build_library_paths = [
+        os.path.abspath("build/src"),
+        os.path.abspath("build/utils"),
+        os.path.abspath("build/AnalysisManager"),
+        os.path.abspath("build/ParamManager"),
+        os.path.abspath("build/PlotManager"),
+        os.path.abspath("build/main"),
+    ]
+    verification_environment = {
+        **os.environ,
+        "CASCADE_CACHE_DIR": os.path.abspath("build/verify-cache"),
+        "CASCADE_CPP_WORKER": os.path.abspath("build/bin/cascade-worker"),
+        "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
+        "CASCADE_PYTHON_RUNTIME_DIR": os.path.abspath("build/test-runtime"),
+        "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
+        "PYTHONPATH": os.path.abspath("build/test-runtime"),
+        "TMPDIR": "/tmp",
+    }
+    if os.path.isdir(".git"):
+        subprocess.check_call(["git", "diff", "--check"])
+        subprocess.check_call(["git", "diff", "--cached", "--check"])
+    subprocess.check_call(
+        [sys.executable, "python/cascade", "doctor", "runtime", "--json"],
+        env=verification_environment,
+    )
+    subprocess.check_call(
+        [
+            sys.executable,
+            "python/cascade",
+            "doctor",
+            "plugins",
+            "--cpp-dir",
+            os.path.abspath("build/test-plugins"),
+            "--py-dir",
+            os.path.abspath("build/test-plugins"),
+            "--json",
+        ],
+        env=verification_environment,
+    )
+    os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
+    with open(str(target[0]), "w", encoding="utf-8") as stamp:
+        stamp.write("ok\n")
+    return 0
+
 def generate_test_plugin_manifest(target, source, env):
     import hashlib
     import json
@@ -224,10 +269,26 @@ if not env['PYMODULEDIR']:
 pybind_flags = os.popen("python3 -m pybind11 --includes").read().strip().split()
 pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 
+root_config = env.WhereIs("root-config") or "root-config"
+root_cflags = subprocess.check_output([root_config, "--cflags"], text=True).strip().split()
+root_version = subprocess.check_output([root_config, "--version"], text=True).strip()
+root_standard_flags = [flag for flag in root_cflags if re.fullmatch(r"-std=(?:c|gnu)\+\+(?:1z|17|2a|20|2b|23)", flag)]
+if len(set(root_standard_flags)) > 1:
+    raise RuntimeError("root-config reports multiple C++ language standards: " + " ".join(root_standard_flags))
+root_standard = root_standard_flags[0] if root_standard_flags else "-std=c++17"
+root_standard_name = root_standard.split("=", 1)[1]
+standard_name = root_standard_name.replace("gnu++", "c++")
+standard_aliases = {"c++1z": "c++17", "c++2a": "c++20", "c++2b": "c++23"}
+standard_name = standard_aliases.get(standard_name, standard_name)
+standard_values = {"c++17": "201703L", "c++20": "202002L", "c++23": "202302L"}
+if standard_name not in standard_values:
+    raise RuntimeError(f"Unsupported ROOT C++ language standard: {root_standard}")
+
 env.ParseConfig('root-config --cflags --libs')
 env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
+env["CXXFLAGS"] = [flag for flag in env.get("CXXFLAGS", []) if not str(flag).startswith("-std=")]
 env.AppendUnique(CXXFLAGS=[
-    "-std=c++17",
+    f"-std={root_standard_name}",
     "-O2",
     "-fvisibility=default",
     "-fstack-protector-strong",
@@ -241,6 +302,25 @@ env.AppendUnique(LINKFLAGS=[
 ])
 env.Append(CPPPATH=pybind_includes)
 env.Append(LIBS=["ssl","crypto"])
+
+generated_include = os.path.abspath("build/generated")
+generated_config = os.path.join(generated_include, "CascadeBuildConfig.hh")
+os.makedirs(generated_include, exist_ok=True)
+generated_config_content = (
+    "#pragma once\n\n"
+    f"#define CASCADE_ROOT_VERSION \"{root_version}\"\n"
+    f"#define CASCADE_CXX_STANDARD {standard_values[standard_name]}\n"
+    f"#define CASCADE_CXX_STANDARD_LEVEL {standard_name.removeprefix('c++')}\n"
+    f"#define CASCADE_CXX_STANDARD_FLAG \"{root_standard_name}\"\n"
+)
+existing_generated_config = ""
+if os.path.exists(generated_config):
+    with open(generated_config, encoding="utf-8") as input_file:
+        existing_generated_config = input_file.read()
+if existing_generated_config != generated_config_content:
+    with open(generated_config, "w", encoding="utf-8") as output:
+        output.write(generated_config_content)
+env.Prepend(CPPPATH=[generated_include])
 VariantDir("build/src", "src", duplicate=0)
 VariantDir("build/utils", "utils", duplicate=0)
 VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
@@ -308,7 +388,10 @@ utils_obj, utils_install = SConscript("build/utils/SConscript", exports=["env", 
 lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisManager/SConscript", exports=["env","TOP"])
 lib_plot_obj, lib_plot_install = SConscript("build/PlotManager/SConscript", exports=["env","TOP"])
 lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env","TOP"])
-core_objs, core_install = SConscript("build/src/SConscript", exports=["env" , "lib_param_obj"])
+core_objs, core_install = SConscript(
+    "build/src/SConscript",
+    exports=["env", "lib_param_obj", "lib_analysis_obj", "utils_obj"],
+)
 pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
     "env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj"
 ])
@@ -379,6 +462,7 @@ if os.path.isdir('modules'):
     hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), Glob('modules/base/IAnalysisModule.hh'))
 if os.path.isdir('include'):
     hdr_install += env.Install(env['INCLUDEDIR'], Glob('include/*.hh'))
+hdr_install += env.Install(env['INCLUDEDIR'], generated_config)
 
 for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
     if os.path.isdir(sub):
@@ -457,11 +541,43 @@ test_runtime_extension = env.Command(
     create_symlink,
 )
 test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_init + test_runtime_extension
+
+# Compile the native fixture with no ROOT include or link flags. This guards the
+# minimal plugin ABI boundary independently of the framework's ROOT build.
+root_free_env = Environment(ENV=os.environ, CXX=env["CXX"])
+root_free_env.ParseConfig('pkg-config --cflags yaml-cpp')
+root_free_env.AppendUnique(
+    CPPPATH=[
+        generated_include,
+        os.path.join(TOP, "modules", "base"),
+        os.path.join(TOP, "include"),
+        os.path.join(TOP, "ParamManager"),
+        os.path.join(TOP, "utils"),
+    ],
+    CXXFLAGS=[f"-std={root_standard_name}", "-fPIC"],
+)
+root_free_plugin_object = root_free_env.Object(
+    "build/tests/root-free/WorkerTestModule.o",
+    "tests/fixtures/WorkerTestModule.cc",
+)
+
 core_test_object = test_env.Object("build/tests/test_core.o", "tests/test_core.cc")
 core_test = test_env.Program("build/tests/test_core", [core_test_object])
-Depends(core_test, build_targets + test_plugin_manifest + test_runtime)
-test_stamp = env.Command("build/tests/.passed", [core_test, test_plugin_manifest] + test_runtime, run_tests)
+Depends(core_test, build_targets + test_plugin_manifest + test_runtime + root_free_plugin_object)
+test_stamp = env.Command(
+    "build/tests/.passed",
+    [core_test, test_plugin_manifest] + test_runtime + root_free_plugin_object,
+    run_tests,
+)
 AlwaysBuild(test_stamp)
 env.Alias("test", test_stamp)
+
+verify_stamp = env.Command(
+    "build/verify/.passed",
+    [test_stamp, cpp_worker, python_worker, test_plugin_manifest] + test_runtime + root_free_plugin_object,
+    run_verification,
+)
+AlwaysBuild(verify_stamp)
+env.Alias("verify", verify_stamp)
 
 Default(build_targets)

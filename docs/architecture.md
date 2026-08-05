@@ -30,6 +30,13 @@ control APIs. Physics/experiment-specific analysis modules live in verified
 packages, with optional publisher signatures for distribution.
 This keeps the runtime reusable and makes module provenance explicit.
 
+The public `IAnalysisModule.hh` is declaration-only and does not include ROOT.
+Lifecycle, cache, provenance, and `AnalysisManager` ownership live in the core
+library behind an implementation object. This keeps the plugin class layout small
+and prevents internal manager fields from becoming a permanent ABI contract.
+Plugins that actually use ROOT may include ROOT/manager headers in their own source;
+ROOT-free modules do not need them.
+
 ## Boundary 2: module logic versus execution
 
 Modules implement three user phases:

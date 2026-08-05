@@ -17,7 +17,12 @@ for obj in all_objs:
         modenv.AppendUnique(LIBPATH=[os.path.dirname(str(obj))])
 
 
-srcs = ["Cascade.cc"]
+srcs = [
+    "Cascade.cc",
+    "PluginBindings.cc",
+    "StateBindings.cc",
+    "WorkflowBindings.cc",
+]
 
 lib = modenv.SharedLibrary("Cascade", srcs)
 modenv.Depends(lib, all_objs)

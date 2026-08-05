@@ -78,6 +78,5 @@ Behavior changes should cover the relevant boundary:
 Run:
 
 ```bash
-scons test -j2
-git diff --check
+scons verify -j2
 ```

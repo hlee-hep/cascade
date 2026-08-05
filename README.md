@@ -5,14 +5,14 @@
 
 # Cascade
 
-Cascade is a C++17/Python analysis framework for ROOT-based workflows. Analysis
+Cascade is a C++/Python analysis framework for ROOT-based workflows. Analysis
 code is packaged as verified plugins with optional publisher signing; the core
 supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
 The current development release is **0.3.0** with
-**plugin ABI 2**. The full build fingerprint is checked in addition to the
+**plugin ABI 3**. The full build fingerprint is checked in addition to the
 integer ABI.
 
 Release notes are tracked in [CHANGELOG.md](CHANGELOG.md), and the verification
@@ -54,9 +54,9 @@ The supported Python control surface is `py_amcm`. `cascade._cascade` and the ra
 
 ### Requirements
 
-- Linux or another POSIX platform;
+- Linux;
 - ROOT with `root-config` available;
-- C++17 compiler;
+- a compiler supporting the C++ standard reported by `root-config` (C++17, 20, or 23);
 - Python 3 with pybind11;
 - PyYAML;
 - SCons;
@@ -81,7 +81,7 @@ Then build and run the complete test suite:
 
 ```bash
 scons -j2
-scons test -j2
+scons verify -j2
 scons install PREFIX=/your/cascade/prefix
 ```
 
@@ -147,10 +147,10 @@ class EventCountModule final : public IAnalysisModule
   public:
     EventCountModule()
     {
-        m_Basename = "EventCountModule";
-        m_CodeVersionHash = "replace-at-build-time";
-        m_Param.Register<std::string>("output", "count.txt");
-        m_Param.Register<int>("count", 10);
+        SetBaseName("EventCountModule");
+        SetCodeHash("replace-at-build-time");
+        Parameters().Register<std::string>("output", "count.txt");
+        Parameters().Register<int>("count", 10);
     }
 
     void Description() const override {}
@@ -158,13 +158,13 @@ class EventCountModule final : public IAnalysisModule
   protected:
     void Init() override
     {
-        if (m_Param.Get<int>("count") < 0) throw std::invalid_argument("count must be non-negative");
+        if (Parameters().Get<int>("count") < 0) throw std::invalid_argument("count must be non-negative");
     }
 
     void Execute() override
     {
-        std::ofstream output(StageOutput(m_Param.Get<std::string>("output")));
-        output << m_Param.Get<int>("count") << '\n';
+        std::ofstream output(StageOutput(Parameters().Get<std::string>("output")));
+        output << Parameters().Get<int>("count") << '\n';
         if (!output) throw std::runtime_error("cannot write output");
     }
 
@@ -266,7 +266,8 @@ result = controller.run_module_isolated("module_instance")
 ```
 
 Isolation preserves committed files and cache state, but not changes made only to
-the child module object's memory. It currently requires POSIX `fork()`.
+the worker module object's memory. It is Linux-only: worker hardening and descriptor
+handling use Linux `prctl` and `/proc` interfaces in addition to process spawning.
 
 See [Execution contract](docs/execution.md).
 
@@ -332,11 +333,13 @@ See [Plugin development and distribution](docs/plugins.md) and
 ## Development checks
 
 ```bash
-scons test -j2
+scons verify -j2
 scons compdb
 scons tidy
-git diff --check
 ```
+
+`verify` runs the complete test suite, compiles the public plugin boundary without
+ROOT headers, checks working-tree whitespace, and runs runtime/plugin diagnostics.
 
 The `tidy` target requires `clang-tidy` to be installed and available on
 `PATH`.

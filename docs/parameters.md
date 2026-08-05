@@ -7,15 +7,15 @@ must target an existing key and remain compatible with that type.
 ## C++ registration and access
 
 ```cpp
-m_Param.Register<std::string>(
+Parameters().Register<std::string>(
     "input", "events.root", "Input ROOT file");
-m_Param.Register<double>(
+Parameters().Register<double>(
     "threshold", 0.5, "Selection threshold");
-m_Param.Register<std::vector<std::string>>(
+Parameters().Register<std::vector<std::string>>(
     "systematics", {"nominal"}, "Systematic labels");
 
-const auto input = m_Param.Get<std::string>("input");
-m_Param.Set<double>("threshold", 0.8);
+const auto input = Parameters().Get<std::string>("input");
+Parameters().Set<double>("threshold", 0.8);
 ```
 
 `Has(key)` tests registration and `TypeOf(key)` returns the serialized type
@@ -81,10 +81,10 @@ type. Loading never creates new parameters.
 C++ `ParamManager` I/O:
 
 ```cpp
-m_Param.LoadYAMLFile("params.yaml");
-m_Param.SaveYAMLFile("resolved-params.yaml");
-m_Param.LoadJSONFile("params.json");
-m_Param.SaveJSONFile("resolved-params.json");
+Parameters().LoadYAMLFile("params.yaml");
+Parameters().SaveYAMLFile("resolved-params.yaml");
+Parameters().LoadJSONFile("params.json");
+Parameters().SaveJSONFile("resolved-params.json");
 ```
 
 Python handles for C++ modules expose the same contract:

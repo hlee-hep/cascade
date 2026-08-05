@@ -13,24 +13,31 @@ tools:
 | PyYAML | `python3 -c 'import yaml; print(yaml.__version__)'` |
 | OpenSSL | headers and `ssl`, `crypto` libraries |
 | nlohmann/json | headers available to the compiler |
-| C++ compiler | C++17 support |
+| Operating system | Linux |
+| C++ compiler | Support for ROOT's configured C++17, C++20, or C++23 mode |
 
-The runtime and plugins must use ABI-compatible compiler, standard-library, ROOT,
-pointer-width, and build-mode settings.
+Cascade reads the `-std=` mode and version from `root-config`, uses that mode for
+the framework, and installs `CascadeBuildConfig.hh` for plugin builds. The runtime
+and plugins must use ABI-compatible compiler, standard-library, ROOT,
+pointer-width, language-standard, and build-mode settings.
 
 ## SCons targets
 
 ```bash
 scons -j2          # Build core libraries and Python binding
 scons test -j2     # Build and run C++ and Python tests
+scons verify -j2   # Run the complete local release gate
 scons install      # Install to the configured prefix
 scons compdb       # Generate compile_commands.json
 scons tidy         # Run clang-tidy over framework sources (requires clang-tidy)
 scons -c           # Remove SCons build products
 ```
 
-Run tests before installation. Plugin smoke tests should be run against the exact
-installed prefix intended for use.
+Use `verify` before installation or release. It depends on `test`, compiles a
+native plugin fixture using no ROOT include/link flags, checks whitespace, and
+runs `doctor runtime` plus manifest/hash/ABI verification against the built test
+package. Plugin smoke tests should still be run against the exact installed prefix
+intended for use.
 
 ## Install variables
 
@@ -195,8 +202,7 @@ Before preparing a release, run locally in the intended ROOT and compiler
 environment:
 
 ```bash
-scons test -j2
-git diff --check
+scons verify -j2
 ```
 
 For plugin changes, also install into a temporary prefix, build a verified test

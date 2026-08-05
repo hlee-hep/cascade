@@ -42,13 +42,13 @@ A complete classic loop has a fixed setup order:
 void SelectionModule::Init()
 {
     auto *manager = Am();
-    manager->LoadInputConfig(m_Param.Get<std::string>("input_config"));
+    manager->LoadInputConfig(Parameters().Get<std::string>("input_config"));
     if (!manager->BuildChain())
         throw std::runtime_error("cannot build input chain");
 
-    manager->LoadCutConfig(m_Param.Get<std::string>("cut_config"));
+    manager->LoadCutConfig(Parameters().Get<std::string>("cut_config"));
     manager->EnableAllCuts();
-    manager->LoadHistogramConfig(m_Param.Get<std::string>("histogram_config"));
+    manager->LoadHistogramConfig(Parameters().Get<std::string>("histogram_config"));
 }
 
 void SelectionModule::Execute()

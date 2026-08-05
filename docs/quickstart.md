@@ -23,11 +23,12 @@ From the repository root:
 
 ```bash
 scons -j2
-scons test -j2
+scons verify -j2
 ```
 
-The test target covers the C++ core, Python lifecycle, plugin package discovery,
-output rollback, and subprocess crash containment.
+The verification target covers the C++ core, Python lifecycle, plugin package
+discovery, output rollback, subprocess crash containment, a ROOT-free plugin
+compile guard, and CLI runtime/plugin diagnostics.
 
 ## 3. Install into a prefix
 
@@ -55,7 +56,7 @@ python3 -c 'import cascade; print(cascade.__version__, cascade.__abi_version__)'
 Expected version/ABI for this tree:
 
 ```text
-0.3.0 2
+0.3.0 3
 ```
 
 ## 4. Install the example plugin
@@ -79,7 +80,7 @@ A healthy local result reports:
 
 - `VERIFIED` package status;
 - matching SHA-256 hashes;
-- `RootEventModule` and `TextProducerModule` at ABI 2;
+- `RootEventModule` and `TextProducerModule` at ABI 3;
 - `RootSummaryModule` and `TextTransformModule` in the Python package;
 - zero errors.
 

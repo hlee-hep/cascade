@@ -954,7 +954,7 @@ RuntimeProvenance ProvenanceRecorder::Runtime(const std::string &language)
     runtime.CascadeVersion = CascadeVersionString();
     runtime.PluginAbiVersion = CASCADE_PLUGIN_ABI_VERSION;
     runtime.PluginAbiTag = CASCADE_ABI_TAG;
-    runtime.RootVersion = ROOT_RELEASE;
+    runtime.RootVersion = CASCADE_ROOT_VERSION;
     runtime.Language = language;
     return runtime;
 }

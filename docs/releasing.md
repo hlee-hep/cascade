@@ -17,7 +17,7 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 ### Verification
 
 - [ ] `scons -j2` completes from a clean checkout with documented dependencies.
-- [ ] `scons test -j2` passes.
+- [ ] `scons verify -j2` passes.
 - [ ] `cascade info` reports the expected version, ABI integer, and ABI tag.
 - [ ] `cascade doctor env`, `cascade doctor runtime`, and `cascade doctor plugins`
   report no unexpected failures.
@@ -43,7 +43,7 @@ verification reproducible:
 
 ```bash
 scons -j2
-scons test -j2
+scons verify -j2
 scons install PREFIX=/tmp/cascade-release
 
 /tmp/cascade-release/bin/cascade info

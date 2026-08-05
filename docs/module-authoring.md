@@ -52,24 +52,24 @@ class SelectionModule final : public IAnalysisModule
 
 SelectionModule::SelectionModule()
 {
-    m_Basename = "SelectionModule";
-    m_CodeVersionHash = "replace-at-build-time";
-    m_Param.Register<std::string>("input_config", "input.yaml");
-    m_Param.Register<std::string>("cut_config", "cuts.yaml");
-    m_Param.Register<std::string>("histogram_config", "histograms.yaml");
-    m_Param.Register<std::string>("output", "histograms.root");
-    m_Param.Register<double>("weight", 1.0);
+    SetBaseName("SelectionModule");
+    SetCodeHash("replace-at-build-time");
+    Parameters().Register<std::string>("input_config", "input.yaml");
+    Parameters().Register<std::string>("cut_config", "cuts.yaml");
+    Parameters().Register<std::string>("histogram_config", "histograms.yaml");
+    Parameters().Register<std::string>("output", "histograms.root");
+    Parameters().Register<double>("weight", 1.0);
 }
 
 void SelectionModule::Description() const
 {
-    LOG_INFO(m_Basename, "Runs a classic TTree selection.");
+    LOG_INFO(BaseName(), "Runs a classic TTree selection.");
 }
 
 ModuleMetadata SelectionModule::GetMetadata() const
 {
     ModuleMetadata metadata;
-    metadata.Name = m_Basename;
+    metadata.Name = BaseName();
     metadata.Version = "1.0.0";
     metadata.Summary = "Example event selection";
     metadata.Tags = {"selection", "classic-tree"};
@@ -79,17 +79,17 @@ ModuleMetadata SelectionModule::GetMetadata() const
 void SelectionModule::Init()
 {
     auto *manager = Am();
-    manager->LoadInputConfig(m_Param.Get<std::string>("input_config"));
+    manager->LoadInputConfig(Parameters().Get<std::string>("input_config"));
     if (!manager->BuildChain()) throw std::runtime_error("cannot build input chain");
-    manager->LoadCutConfig(m_Param.Get<std::string>("cut_config"));
+    manager->LoadCutConfig(Parameters().Get<std::string>("cut_config"));
     manager->EnableAllCuts();
-    manager->LoadHistogramConfig(m_Param.Get<std::string>("histogram_config"));
+    manager->LoadHistogramConfig(Parameters().Get<std::string>("histogram_config"));
 }
 
 void SelectionModule::Execute()
 {
     auto *manager = Am();
-    const double weight = m_Param.Get<double>("weight");
+    const double weight = Parameters().Get<double>("weight");
     for (Long64_t index = 0; index < manager->GetEntryCount(); ++index)
     {
         if (IsCancellationRequested()) return;
@@ -100,18 +100,25 @@ void SelectionModule::Execute()
 
 void SelectionModule::Finalize()
 {
-    Am()->WriteHistograms(StageOutput(m_Param.Get<std::string>("output")).string());
+    Am()->WriteHistograms(StageOutput(Parameters().Get<std::string>("output")).string());
 }
 
 void SelectionModule::OnFailure(ModulePhase phase, const std::string &message)
 {
-    LOG_ERROR(m_Basename, "Failure in " << ToString(phase) << ": " << message);
+    LOG_ERROR(BaseName(), "Failure in " << ToString(phase) << ": " << message);
 }
 ```
 
 The framework creates the `main` analysis manager before `Init`. Use `Am()` for it.
 Call `RegisterAnalysisManager("name")` only when a module needs additional isolated
 manager state.
+
+`IAnalysisModule.hh` intentionally exposes declarations and stable accessors, not
+its lifecycle/manager storage. Use `SetBaseName`, `SetCodeHash`, and `Parameters()`;
+do not depend on internal fields. A ROOT-free module can include this header and
+compile without ROOT headers. Include `AnalysisManager.hh` or ROOT headers only in
+modules that actually use those facilities, and list those module stems in
+`CASCADE_PLUGIN_ROOT_MODULES` in the package `SConstruct`.
 
 Parameters are frozen and published as an immutable snapshot for the complete run,
 so concurrent reads do not take the configuration mutex. Still copy scalar or

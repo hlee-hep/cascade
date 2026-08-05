@@ -8,9 +8,9 @@ class WorkerTestModule final : public IAnalysisModule
   public:
     WorkerTestModule()
     {
-        m_Basename = "WorkerTestModule";
-        m_CodeVersionHash = "worker-test-v1";
-        m_Param.Set("force_run", true);
+        SetBaseName("WorkerTestModule");
+        SetCodeHash("worker-test-v1");
+        Parameters().Set("force_run", true);
     }
 
     void Description() const override {}

@@ -9,7 +9,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 | --- | --- |
 | Semantic version | `0.3.0` |
 | C++ plugin ABI | 2 |
-| C++ standard | C++17 |
+| C++ standard | The mode reported by `root-config` (C++17, 20, or 23) |
 | Plugin manifest | Schema 2, verified; optional signature |
 | Analysis config | `schema_version: 1` |
 | Lifecycle result | `RunResult` with status, phase, message, exception |
@@ -17,7 +17,9 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 
 ## 1. Build plugins against the public ABI
 
-ABI 2 is the initial public baseline. Rebuild any development-only binaries
+ABI 3 is the initial public baseline. It moves `IAnalysisModule` lifecycle state
+behind an implementation object and removes ROOT-facing state from the public
+module header. Rebuild any development-only binaries
 against the 0.3 headers and libraries rather than treating their earlier ABI
 numbers as released contracts.
 
@@ -31,7 +33,9 @@ The runtime now compares:
 - pointer width;
 - debug/release mode.
 
-Even ABI 2 plugins must be rebuilt when this fingerprint differs.
+Even ABI 3 plugins must be rebuilt when this fingerprint differs. The installed
+plugin build template reads `CascadeBuildConfig.hh` and selects the same C++ mode
+automatically.
 
 Check the runtime:
 
@@ -141,7 +145,16 @@ External assignment now requires a pre-registered parameter with a stable type.
 C++:
 
 ```cpp
-m_Param.Register<double>("threshold", 25.0);
+Parameters().Register<double>("threshold", 25.0);
+```
+
+Older development modules that accessed protected storage directly must use the
+stable module API:
+
+```cpp
+SetBaseName("SelectionModule");
+SetCodeHash("build-generated-hash");
+Parameters().Register<double>("threshold", 25.0);
 ```
 
 Python:
@@ -175,9 +188,10 @@ Opt in to crash containment:
 controller.run_module_isolated("selection")
 ```
 
-Isolated execution is POSIX-only and does not copy child object state back to the
-parent. Refactor downstream consumers to read committed outputs rather than member
-variables when isolation is required.
+Isolated execution is Linux-only and does not copy worker object state back to the
+parent. It uses Linux `prctl` and `/proc` facilities for worker hardening and file
+descriptor handling. Refactor downstream consumers to read committed outputs
+rather than member variables when isolation is required.
 
 ## 8. Validate ownership assumptions
 
@@ -197,7 +211,7 @@ and upgraded to schema 1 when written.
 
 ## Migration verification
 
-- [ ] Framework reports version 0.3.0 and ABI 2.
+- [ ] Framework reports version 0.3.0 and ABI 3.
 - [ ] No development-only binaries built against pre-baseline headers remain in active plugin roots.
 - [ ] Every analysis config has `schema_version: 1`.
 - [ ] Every protected output uses a staging helper.
@@ -208,3 +222,4 @@ and upgraded to schema 1 when written.
 - [ ] Distributed signed manifests were re-signed when applicable.
 - [ ] `cascade doctor plugins` reports zero errors.
 - [ ] Normal, cached, failure, and isolated smoke tests pass.
+- [ ] `scons verify -j2` passes in the intended ROOT/toolchain environment.

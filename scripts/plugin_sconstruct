@@ -1,5 +1,5 @@
 import ast
-import os, sys, hashlib, json, re
+import os, sys, hashlib, json, re, shlex, subprocess
 from pathlib import Path
 from SCons.Script import AlwaysBuild, Environment, Glob
 
@@ -126,6 +126,11 @@ core_inc = os.environ.get("CASCADE_CORE_INCLUDE", os.path.join(prefix, "include"
 core_lib = os.environ.get("CASCADE_CORE_LIB", os.path.join(prefix, "lib"))
 root_config = require_env("ROOT_CONFIG", "root-config")
 pkg_config = require_env("PKG_CONFIG", "pkg-config")
+root_modules = globals().get("CASCADE_PLUGIN_ROOT_MODULES", set())
+if isinstance(root_modules, str):
+    root_modules = {name.strip() for name in root_modules.split(",") if name.strip()}
+else:
+    root_modules = set(root_modules)
 class_map = {}
 class_map_raw = os.environ.get("CASCADE_PLUGIN_CLASS_MAP", "")
 if class_map_raw:
@@ -136,13 +141,42 @@ if class_map_raw:
 
 env = Environment(ENV=os.environ, CASCADE_PLUGIN_PACKAGE=package_name)
 
-env.ParseConfig(f'{root_config} --cflags --libs')
-env.ParseConfig(f'{pkg_config} --cflags --libs yaml-cpp')
+env.ParseConfig(f'{shlex.quote(pkg_config)} --cflags --libs yaml-cpp')
 env.Append(CPPPATH=[core_inc, "include", "build/include"])
 env.Append(LIBPATH=[core_lib])
 env.Append(RPATH=[core_lib])
-env.Append(LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"])
-env.AppendUnique(CXXFLAGS=["-std=c++17", "-O2", "-fvisibility=default", "-DCASCADE_PLUGIN_NO_AUTO_REGISTER"])
+env.Append(LIBS=["AMCM", "ParamManager", "utils"])
+
+build_config_path = os.path.join(core_inc, "CascadeBuildConfig.hh")
+build_config = read_text(build_config_path)
+standard_match = re.search(r'^#define CASCADE_CXX_STANDARD_FLAG "([^"]+)"$', build_config, re.MULTILINE)
+root_version_match = re.search(r'^#define CASCADE_ROOT_VERSION "([^"]+)"$', build_config, re.MULTILINE)
+if not standard_match or not root_version_match:
+    raise RuntimeError(f"Cannot read Cascade build configuration: {build_config_path}")
+cascade_standard = standard_match.group(1)
+cascade_root_version = root_version_match.group(1)
+env.AppendUnique(CXXFLAGS=[f"-std={cascade_standard}", "-O2", "-fvisibility=default", "-DCASCADE_PLUGIN_NO_AUTO_REGISTER"])
+
+root_env = None
+if root_modules:
+    root_env = env.Clone()
+    root_cflags = subprocess.check_output([root_config, "--cflags"], text=True).strip().split()
+    root_standards = [flag.split("=", 1)[1].replace("gnu++", "c++") for flag in root_cflags if flag.startswith("-std=")]
+    aliases = {"c++1z": "c++17", "c++2a": "c++20", "c++2b": "c++23"}
+    root_standards = [aliases.get(value, value) for value in root_standards]
+    cascade_standard_name = cascade_standard.replace("gnu++", "c++")
+    normalized_cascade_standard = aliases.get(cascade_standard_name, cascade_standard_name)
+    if root_standards and any(value != normalized_cascade_standard for value in root_standards):
+        raise RuntimeError(
+            f"ROOT uses {root_standards[-1]} but Cascade uses {cascade_standard}; rebuild with one C++ standard"
+        )
+    root_version = subprocess.check_output([root_config, "--version"], text=True).strip()
+    if root_version != cascade_root_version:
+        raise RuntimeError(f"ROOT {root_version} does not match Cascade ROOT {cascade_root_version}")
+    root_env.ParseConfig(f'{shlex.quote(root_config)} --cflags --libs')
+    root_env["CXXFLAGS"] = [flag for flag in root_env.get("CXXFLAGS", []) if not str(flag).startswith("-std=")]
+    root_env.AppendUnique(CXXFLAGS=[f"-std={cascade_standard}"])
+    root_env.AppendUnique(LIBS=["AnalysisManager", "PlotManager"])
 
 install_targets = []
 libs = []
@@ -183,7 +217,8 @@ CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() {{ CASCADE_REGISTER_MODULE({c
         write_text(entry_out, entry_src)
         sources.append(entry_out)
 
-    lib = env.SharedLibrary(mod, sources)
+    module_env = root_env if "*" in root_modules or mod in root_modules else env
+    lib = module_env.SharedLibrary(mod, sources)
     libs.append(lib)
 
     installed_lib = env.Install(plugin_lib_dir, lib)

@@ -1,9 +1,15 @@
 #pragma once
-#include <RVersion.h>
+#include "CascadeBuildConfig.hh"
 #include <cstdint>
 #include <memory>
 
-#define CASCADE_PLUGIN_ABI_VERSION 2
+#define CASCADE_PLUGIN_ABI_VERSION 3
+
+#if (__cplusplus >= 202100L && CASCADE_CXX_STANDARD_LEVEL != 23) ||                                                       \
+    (__cplusplus >= 202002L && __cplusplus < 202100L && CASCADE_CXX_STANDARD_LEVEL != 20) ||                            \
+    (__cplusplus >= 201703L && __cplusplus < 202002L && CASCADE_CXX_STANDARD_LEVEL != 17) || __cplusplus < 201703L
+#error "Cascade plugins must use the same C++ language standard as the Cascade build"
+#endif
 
 #define CASCADE_STRINGIFY_DETAIL(value) #value
 #define CASCADE_STRINGIFY(value) CASCADE_STRINGIFY_DETAIL(value)
@@ -57,8 +63,8 @@
 #endif
 
 #define CASCADE_ABI_TAG                                                                                                                                            \
-    "abi=2;cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
-    ";cxx11abi=" CASCADE_STDLIB_ABI_STR ";root=" ROOT_RELEASE ";ptr=" CASCADE_POINTER_WIDTH_STR                                      \
+    "abi=3;cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
+    ";cxx11abi=" CASCADE_STDLIB_ABI_STR ";root=" CASCADE_ROOT_VERSION ";ptr=" CASCADE_POINTER_WIDTH_STR                                      \
     ";build=" CASCADE_BUILD_MODE_STR ";glibcxx_debug=" CASCADE_GLIBCXX_DEBUG_STR
 
 #ifdef __cplusplus

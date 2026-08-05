@@ -51,7 +51,7 @@ material inputs explicitly:
 ```cpp
 void SelectionModule::Init()
 {
-    TrackInput(FinalOutput(m_Param.Get<std::string>("input")));
+    TrackInput(FinalOutput(Parameters().Get<std::string>("input")));
 }
 ```
 

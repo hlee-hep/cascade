@@ -154,7 +154,7 @@ The integer plugin ABI differs. Rebuild against the current Cascade headers.
 
 ### ABI tag mismatch
 
-ABI 2 matches but compiler, standard library, ROOT, pointer width, or build mode
+ABI 3 matches but compiler, standard library, ROOT, pointer width, or build mode
 differs. Compare:
 
 ```python
