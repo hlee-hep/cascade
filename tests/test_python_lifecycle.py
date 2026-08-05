@@ -11,8 +11,11 @@ import tempfile
 import types
 import unittest
 
+from tests.module_isolation import restore_package_modules, snapshot_package_modules
+
 
 def _load_base_module():
+    previous_modules = snapshot_package_modules("cascade")
     cascade = types.ModuleType("cascade")
     cascade.__version__ = "test"
     cascade.is_interrupted = lambda: False
@@ -30,32 +33,36 @@ def _load_base_module():
         build_root / "src" / "libAMCM.so",
     ):
         ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
-    loader = importlib.machinery.ExtensionFileLoader("cascade._cascade", str(extension_path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    extension = importlib.util.module_from_spec(spec)
-    loader.exec_module(extension)
-    cascade.CancellationToken = extension.CancellationToken
-    cascade.CacheManager = extension.CacheManager
-    cascade.OutputTransaction = extension.OutputTransaction
-    cascade.ExecutionContext = extension.ExecutionContext
-    cascade.IAnalysisModule = extension.IAnalysisModule
-    cascade.ModulePhase = extension.ModulePhase
-    cascade.ModuleStatus = extension.ModuleStatus
-    cascade.ProvenanceRecorder = extension.ProvenanceRecorder
-    cascade.PluginTrustPolicy = extension.PluginTrustPolicy
-    cascade.PluginVerifier = extension.PluginVerifier
-    cascade.ParamManager = extension.ParamManager
-    cascade.SnapshotHasher = extension.SnapshotHasher
-    cascade.RunResult = extension.RunResult
+    try:
+        loader = importlib.machinery.ExtensionFileLoader("cascade._cascade", str(extension_path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        extension = importlib.util.module_from_spec(spec)
+        loader.exec_module(extension)
+        sys.modules["cascade._cascade"] = extension
+        cascade.CancellationToken = extension.CancellationToken
+        cascade.CacheManager = extension.CacheManager
+        cascade.OutputTransaction = extension.OutputTransaction
+        cascade.ExecutionContext = extension.ExecutionContext
+        cascade.IAnalysisModule = extension.IAnalysisModule
+        cascade.ModulePhase = extension.ModulePhase
+        cascade.ModuleStatus = extension.ModuleStatus
+        cascade.ProvenanceRecorder = extension.ProvenanceRecorder
+        cascade.PluginTrustPolicy = extension.PluginTrustPolicy
+        cascade.PluginVerifier = extension.PluginVerifier
+        cascade.ParamManager = extension.ParamManager
+        cascade.SnapshotHasher = extension.SnapshotHasher
+        cascade.RunResult = extension.RunResult
 
-    path = pathlib.Path(__file__).parents[1] / "modules" / "python" / "base_module.py"
-    spec = importlib.util.spec_from_file_location("cascade_test_base_module", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+        path = pathlib.Path(__file__).parents[1] / "modules" / "python" / "base_module.py"
+        spec = importlib.util.spec_from_file_location("cascade_test_base_module", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, cascade, extension
+    finally:
+        restore_package_modules("cascade", previous_modules)
 
 
-base = _load_base_module()
+base, test_runtime, test_extension = _load_base_module()
 
 
 class Module(base.base_module):
@@ -128,7 +135,7 @@ class LifecycleTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_logging_helpers_use_the_core_logger(self):
-        runtime = sys.modules["cascade"]
+        runtime = test_runtime
         original_log = runtime.log
         records = []
         runtime.log = lambda level, component, message: records.append((level, component, message))
@@ -157,7 +164,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"]["language"], "python")
         self.assertEqual(manifest["result"]["status"], "Done")
         self.assertEqual(len(manifest["identity"]["snapshot_hash"]), 64)
-        self.assertTrue(sys.modules["cascade"].CacheManager.is_hash_cached(
+        self.assertTrue(test_runtime.CacheManager.is_hash_cached(
             "Module", manifest["identity"]["snapshot_hash"], str(module.context.cache_directory)
         ))
 
@@ -212,7 +219,7 @@ class LifecycleTests(unittest.TestCase):
             "openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
             "-in", str(manifest), "-out", str(manifest) + ".sig",
         ])
-        cascade = sys.modules["cascade"]
+        cascade = test_runtime
         verified = cascade.PluginVerifier.verify_package(
             str(package), str(trust_store), cascade.PluginTrustPolicy.Verified, "python"
         )
@@ -380,7 +387,7 @@ class LifecycleTests(unittest.TestCase):
         module.set_name("python-isolated")
         module.set_output_directory(pathlib.Path(self.tempdir.name) / "outputs")
         module.set_cache_directory(pathlib.Path(self.tempdir.name) / "cache")
-        controller = sys.modules["cascade._cascade"].AMCM()
+        controller = test_extension.AMCM()
         controller.register_module_handle(module)
         with self.assertRaisesRegex(RuntimeError, "verified plugin"):
             controller.run_module_isolated(module)

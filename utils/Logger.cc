@@ -195,6 +195,7 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
     if (level < m_Level) return;
 
     const std::string component = module.empty() ? "CASCADE" : module;
+    const bool isTerminal = isatty(fileno(stderr));
     std::istringstream input(msg);
     std::string line;
     bool emitted = false;
@@ -203,7 +204,7 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
         if (!std::getline(input, line) && emitted) break;
         emitted = true;
         const std::string raw = "[" + ToString_(level) + "] [" + component + "] " + line;
-        std::cerr << (m_IsTerminal ? ApplyColor_(level, component, line) : raw) << std::endl;
+        std::cerr << (isTerminal ? ApplyColor_(level, component, line) : raw) << std::endl;
         if (m_LogFileOut && m_LogFileOut->is_open())
             *m_LogFileOut << "[" << GetCurrentTime() << "] " << raw << std::endl;
     } while (input.good());
@@ -212,7 +213,7 @@ void Logger::Log(LogLevel level, const std::string &module, const std::string &m
 void Logger::PrintProgressBar(const std::string &name, double progress, double elapsed, double eta)
 {
     std::lock_guard<std::recursive_mutex> lock(m_LogMutex);
-    if (!m_IsTerminal)
+    if (!isatty(fileno(stderr)))
     {
         if (progress >= 1.0)
             std::cerr << "[INFO] [" << (name.empty() ? "CASCADE" : name) << "] Progress 100.0% | " << std::fixed

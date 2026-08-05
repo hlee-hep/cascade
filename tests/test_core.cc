@@ -1645,6 +1645,24 @@ void TestLoggerContract()
     assert(plain == "[INFO] [CASCADE] ready\n"
                     "[WARNING] [PLUGIN] first\n"
                     "[WARNING] [PLUGIN] second\n");
+
+    int descriptors[2];
+    assert(pipe(descriptors) == 0);
+    const int originalDescriptor = dup(STDERR_FILENO);
+    assert(originalDescriptor >= 0);
+    assert(dup2(descriptors[1], STDERR_FILENO) >= 0);
+    close(descriptors[1]);
+    logger::Logger::Get().Log(logger::LogLevel::INFO, "REDIRECT", "plain");
+    std::cerr.flush();
+    assert(dup2(originalDescriptor, STDERR_FILENO) >= 0);
+    close(originalDescriptor);
+
+    char redirectedBuffer[128]{};
+    const auto redirectedSize = read(descriptors[0], redirectedBuffer, sizeof(redirectedBuffer));
+    close(descriptors[0]);
+    assert(redirectedSize > 0);
+    assert(std::string(redirectedBuffer, static_cast<std::size_t>(redirectedSize)) ==
+           "[INFO] [REDIRECT] plain\n");
 }
 } // namespace
 

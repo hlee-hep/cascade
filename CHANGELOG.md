@@ -27,6 +27,8 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Changed
 
+- Python tests now restore injected `cascade` modules between suites, and the
+  logger reevaluates terminal color support after runtime stderr redirection.
 - Core, CLI, and Python-module logging now consistently uses
   `[LEVEL] [COMPONENT] message` on standard error, including per-line prefixes for
   multiline messages and shared Python module logging helpers.

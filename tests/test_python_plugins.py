@@ -10,12 +10,15 @@ import types
 import unittest
 from unittest import mock
 
+from tests.module_isolation import restore_package_modules, snapshot_package_modules
+
 
 class DummyBaseModule:
     pass
 
 
-def _load_controller():
+def _load_controller(test_case):
+    previous_modules = snapshot_package_modules("cascade")
     cascade = types.ModuleType("cascade")
     cascade.__file__ = str(pathlib.Path(__file__).parents[1] / "python" / "__init__.py")
     cascade.init_interrupt = lambda: None
@@ -157,10 +160,15 @@ def _load_controller():
     extension.PluginPaths = TestPluginPaths
     sys.modules["cascade._cascade"] = extension
 
-    path = pathlib.Path(__file__).parents[1] / "python" / "py_amcm.py"
-    spec = importlib.util.spec_from_file_location("cascade_test_py_amcm", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        path = pathlib.Path(__file__).parents[1] / "python" / "py_amcm.py"
+        spec = importlib.util.spec_from_file_location("cascade_test_py_amcm", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        restore_package_modules("cascade", previous_modules)
+        raise
+    test_case.addCleanup(restore_package_modules, "cascade", previous_modules)
     return module
 
 
@@ -172,7 +180,7 @@ def _sha256(path):
 
 class PluginPackageTests(unittest.TestCase):
     def test_persistent_prefix_is_discovered_without_plugin_root_environment(self):
-        controller = _load_controller()
+        controller = _load_controller(self)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             prefix = root / "plugin-prefix"
@@ -219,7 +227,7 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(index["PersistentModule"]["origin"]["trust"], "Verified")
 
     def test_multiple_signed_packages_coexist(self):
-        controller = _load_controller()
+        controller = _load_controller(self)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             plugin_root = root / "pyplugin"
@@ -314,7 +322,7 @@ class PluginPackageTests(unittest.TestCase):
                     os.environ["CASCADE_PLUGIN_TRUST_STORE"] = previous_trust
 
     def test_unsigned_package_is_verified_but_rejected_by_signed_policy(self):
-        controller = _load_controller()
+        controller = _load_controller(self)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             plugin_root = root / "pyplugin"
@@ -367,7 +375,7 @@ class PluginPackageTests(unittest.TestCase):
                     os.environ["CASCADE_PLUGIN_TRUST_STORE"] = previous_trust
 
     def test_import_executes_the_exact_source_bytes_that_were_verified(self):
-        controller = _load_controller()
+        controller = _load_controller(self)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             plugin_root = root / "pyplugin"
