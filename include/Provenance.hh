@@ -15,6 +15,7 @@ struct ArtifactProvenance
 {
     std::string Path;
     std::string Kind;
+    std::string HashMode;
     std::string Sha256;
     std::uintmax_t Size = 0;
     std::uintmax_t Device = 0;
@@ -54,6 +55,8 @@ struct ModuleRunManifest
     bool Isolated = false;
     bool CacheHit = false;
     bool DryRun = false;
+    std::string CacheDecision;
+    std::string CacheReason;
     std::string CacheSourceManifest;
     ModuleStatus Status = ModuleStatus::Pending;
     ModulePhase Phase = ModulePhase::None;

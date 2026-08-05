@@ -115,6 +115,32 @@ class TrackedInputModule final : public IAnalysisModule
 
 std::atomic<int> TrackedInputModule::Executions{0};
 
+class SymlinkOutputModule final : public IAnalysisModule
+{
+  public:
+    SymlinkOutputModule()
+    {
+        m_Basename = "SymlinkOutputModule";
+        m_CodeVersionHash = "test";
+        m_Param.Set("force_run", false);
+    }
+
+    void Description() const override {}
+
+  protected:
+    void Init() override {}
+    void Execute() override
+    {
+        const auto target = StageOutput("target.txt");
+        std::ofstream output(target);
+        output << "target";
+        output.close();
+        std::filesystem::create_symlink("target.txt", StageOutput("link.txt"));
+    }
+    void Finalize() override {}
+    bool UsesAnalysisManagers() const override { return false; }
+};
+
 class CrashModule final : public IAnalysisModule
 {
   public:
@@ -527,6 +553,8 @@ void TestProvenanceCacheLink()
     second.GetParamManager().Register<std::string>("api_token", "do-not-record");
     const auto skipped = second.Run();
     assert(skipped.Status == ModuleStatus::Skipped);
+    assert(skipped.CacheDecision == "hit");
+    assert(skipped.CacheReason.find("outputs matched") != std::string::npos);
     std::ifstream input(second.GetLastProvenancePath());
     nlohmann::json manifest;
     input >> manifest;
@@ -624,13 +652,54 @@ void TestCacheIntegrityValidation()
     outputChanged.SetOutputDirectory(output.string());
     outputChanged.SetCacheDirectory(cache.string());
     outputChanged.GetParamManager().Set("force_run", false);
-    assert(outputChanged.Run().Status == ModuleStatus::Done);
+    const auto changedOutputResult = outputChanged.Run();
+    assert(changedOutputResult.Status == ModuleStatus::Done);
+    assert(changedOutputResult.CacheDecision == "miss");
+    assert(changedOutputResult.CacheReason.find("content changed") != std::string::npos);
     {
         std::ifstream restored(output / "result.txt");
         std::string contents;
         restored >> contents;
         assert(contents == "new");
     }
+
+    const char *configuredOutputHashMode = std::getenv("CASCADE_PROVENANCE_HASH_MODE");
+    const bool hadConfiguredOutputHashMode = configuredOutputHashMode && *configuredOutputHashMode;
+    const std::string originalOutputHashMode = hadConfiguredOutputHashMode ? configuredOutputHashMode : "";
+    setenv("CASCADE_PROVENANCE_HASH_MODE", "none", 1);
+    TransactionModule metadataFirst(false, "MetadataOutputModule");
+    metadataFirst.SetName("metadata-first");
+    metadataFirst.SetOutputDirectory(output.string());
+    metadataFirst.SetCacheDirectory(cache.string());
+    metadataFirst.GetParamManager().Set("force_run", false);
+    assert(metadataFirst.Run().Status == ModuleStatus::Done);
+    assert(chmod((output / "result.txt").c_str(), 0000) == 0);
+    TransactionModule metadataCached(false, "MetadataOutputModule");
+    metadataCached.SetName("metadata-cached");
+    metadataCached.SetOutputDirectory(output.string());
+    metadataCached.SetCacheDirectory(cache.string());
+    metadataCached.GetParamManager().Set("force_run", false);
+    const auto metadataResult = metadataCached.Run();
+    assert(metadataResult.Status == ModuleStatus::Skipped);
+    assert(metadataResult.CacheDecision == "hit");
+    assert(chmod((output / "result.txt").c_str(), 0600) == 0);
+
+    setenv("CASCADE_PROVENANCE_HASH_MODE", "full", 1);
+    SymlinkOutputModule symlinkFirst;
+    symlinkFirst.SetName("symlink-first");
+    symlinkFirst.SetOutputDirectory(output.string());
+    symlinkFirst.SetCacheDirectory(cache.string());
+    assert(symlinkFirst.Run().Status == ModuleStatus::Done);
+    assert(std::filesystem::is_symlink(output / "link.txt"));
+    SymlinkOutputModule symlinkCached;
+    symlinkCached.SetName("symlink-cached");
+    symlinkCached.SetOutputDirectory(output.string());
+    symlinkCached.SetCacheDirectory(cache.string());
+    assert(symlinkCached.Run().Status == ModuleStatus::Skipped);
+    if (hadConfiguredOutputHashMode)
+        setenv("CASCADE_PROVENANCE_HASH_MODE", originalOutputHashMode.c_str(), 1);
+    else
+        unsetenv("CASCADE_PROVENANCE_HASH_MODE");
 }
 
 void TestControllerContracts()
@@ -673,6 +742,7 @@ void TestControllerContracts()
     workerModule->SetCacheDirectory(isolatedCache.string());
     const auto workerResult = controller.RunAModuleIsolated(workerModule);
     assert(workerResult.Succeeded());
+    assert(workerResult.CacheDecision == "bypassed");
     {
         std::ifstream output(isolatedOutput / "worker-result.txt");
         std::string contents;
@@ -698,7 +768,10 @@ void TestControllerContracts()
     }
     assert(relativeWorkerRejected);
 
-    const auto customWorker = isolatedOutput / "untrusted-worker";
+    const auto workerSecurityRoot = std::filesystem::current_path() / "build" / "test-worker-security";
+    std::filesystem::remove_all(workerSecurityRoot);
+    std::filesystem::create_directories(workerSecurityRoot);
+    const auto customWorker = workerSecurityRoot / "untrusted-worker";
     const auto leakedEnvironment = isolatedOutput / "worker-environment-leaked";
     {
         std::ofstream script(customWorker);
@@ -724,7 +797,26 @@ void TestControllerContracts()
     }
     assert(writableWorkerRejected);
 
+    const auto writableParent = workerSecurityRoot / "writable-parent";
+    std::filesystem::create_directories(writableParent);
+    assert(chmod(writableParent.c_str(), 0777) == 0);
+    const auto parentWorker = writableParent / "worker";
+    std::filesystem::copy_file(customWorker, parentWorker);
+    assert(chmod(parentWorker.c_str(), 0700) == 0);
+    setenv("CASCADE_CPP_WORKER", parentWorker.string().c_str(), 1);
+    bool writableParentRejected = false;
+    try
+    {
+        controller.RunAModuleIsolated(hardenedModule);
+    }
+    catch (const std::runtime_error &error)
+    {
+        writableParentRejected = std::string(error.what()).find("parent directory") != std::string::npos;
+    }
+    assert(writableParentRejected);
+
     assert(chmod(customWorker.c_str(), 0700) == 0);
+    setenv("CASCADE_CPP_WORKER", customWorker.string().c_str(), 1);
     setenv("LD_PRELOAD", "/cascade/nonexistent-preload.so", 1);
     const auto workerStarted = std::chrono::steady_clock::now();
     const auto invalidWorkerResult = controller.RunAModuleIsolated(hardenedModule);
@@ -734,6 +826,7 @@ void TestControllerContracts()
     assert(invalidWorkerResult.Status == ModuleStatus::Failed);
     assert(workerElapsed < std::chrono::milliseconds(750));
     assert(!std::filesystem::exists(leakedEnvironment));
+    assert(controller.RefreshPlugins().empty());
 
     const auto workflowPath =
         std::filesystem::temp_directory_path() / "cascade-controller-workflow-provenance.json";

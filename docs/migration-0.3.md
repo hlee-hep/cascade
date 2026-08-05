@@ -8,7 +8,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 | Area | 0.3 requirement |
 | --- | --- |
 | Semantic version | `0.3.0` |
-| C++ plugin ABI | 1 |
+| C++ plugin ABI | 2 |
 | C++ standard | C++17 |
 | Plugin manifest | Schema 2, verified; optional signature |
 | Analysis config | `schema_version: 1` |
@@ -17,7 +17,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 
 ## 1. Build plugins against the public ABI
 
-ABI 1 is the initial public baseline. Rebuild any development-only binaries
+ABI 2 is the initial public baseline. Rebuild any development-only binaries
 against the 0.3 headers and libraries rather than treating their earlier ABI
 numbers as released contracts.
 
@@ -31,7 +31,7 @@ The runtime now compares:
 - pointer width;
 - debug/release mode.
 
-Even ABI 1 plugins must be rebuilt when this fingerprint differs.
+Even ABI 2 plugins must be rebuilt when this fingerprint differs.
 
 Check the runtime:
 
@@ -197,7 +197,7 @@ and upgraded to schema 1 when written.
 
 ## Migration verification
 
-- [ ] Framework reports version 0.3.0 and ABI 1.
+- [ ] Framework reports version 0.3.0 and ABI 2.
 - [ ] No development-only binaries built against pre-baseline headers remain in active plugin roots.
 - [ ] Every analysis config has `schema_version: 1`.
 - [ ] Every protected output uses a staging helper.

@@ -154,7 +154,7 @@ The integer plugin ABI differs. Rebuild against the current Cascade headers.
 
 ### ABI tag mismatch
 
-ABI 1 matches but compiler, standard library, ROOT, pointer width, or build mode
+ABI 2 matches but compiler, standard library, ROOT, pointer width, or build mode
 differs. Compare:
 
 ```python
@@ -271,9 +271,9 @@ restored.
 
 ### Snapshot cache appears stale
 
-The snapshot only knows explicit parameters, manager state, code hash, and
-execution state. Make hidden external inputs explicit. For one diagnostic rerun,
-set `force_run=true`.
+The snapshot knows explicit parameters, manager state, code hash, execution state,
+and inputs declared with `TrackInput`/`track_input`. Make hidden external inputs
+explicit. For one diagnostic rerun, set `force_run=true`.
 
 Cache defaults:
 
@@ -288,6 +288,34 @@ created the snapshot.
 
 Inspect the single schema-versioned cache format through `cascade cache list`.
 Python and C++ modules use the same core cache manager and locking rules.
+
+The default `CASCADE_INPUT_HASH_MODE=metadata` detects normal replacement and
+in-place modification through device, inode, size, mtime, and ctime. It does not
+cryptographically prove byte identity. Try `CASCADE_INPUT_HASH_MODE=full` when
+investigating files restored with preserved metadata, network filesystems with weak
+timestamp semantics, or reproducibility requirements.
+
+A hit also requires the linked completed provenance manifest, the same output root,
+and valid recorded outputs. Moving the output root, deleting a manifest, or changing
+an output therefore causes a normal rerun even when the snapshot hash is present.
+
+### Cache check is slow before `Execute`
+
+Separate input and output validation:
+
+- `CASCADE_INPUT_HASH_MODE=full` reads every tracked regular input in a new process;
+- tracking a directory enumerates its complete tree even in metadata mode;
+- a cached output recorded with `full` is rehashed when its filesystem identity
+  changed; `metadata` and `none` retain their original lower-cost policy;
+- a cold filesystem cache can make metadata walks visibly slower.
+
+For large ROOT inputs, the normal setting is `CASCADE_INPUT_HASH_MODE=metadata`.
+Track a versioned dataset manifest instead of an enormous directory when possible.
+Do not weaken `CASCADE_PROVENANCE_HASH_MODE` until measurements show output hashing
+is the actual bottleneck.
+
+Run the module once with `--explain-cache` to print the exact decision, or inspect
+the always-present `cache_decision` and `cache_reason` fields in `--json` output.
 
 ## Isolated execution failures
 
@@ -308,7 +336,25 @@ Expected: isolated child memory is not copied back. Read committed output instea
 ### Isolation hangs
 
 Request cancellation from another control thread. Cascade sends `SIGTERM` and then
-`SIGKILL` if needed. Also inspect external I/O calls that do not respond to signals.
+`SIGKILL` if needed. For unattended runs set a positive
+`CASCADE_ISOLATED_TIMEOUT_SECONDS`; zero and an unset value mean no deadline. Also
+inspect external I/O calls that do not respond to signals.
+
+### Isolated worker path or permission is rejected
+
+The worker executable, and the isolated Python runtime directory when applicable,
+must resolve to absolute owner/root-controlled paths that are not group/world
+writable. Normal installations derive both from `CASCADE_PREFIX`. The
+`CASCADE_CPP_WORKER`, `CASCADE_PYTHON_WORKER`, and
+`CASCADE_PYTHON_RUNTIME_DIR` overrides are intended for packaging tests and custom
+layouts; remove stale overrides before debugging the installation itself.
+
+### Worker is killed after enabling limits
+
+The optional limits apply to the complete worker, including ROOT libraries,
+memory-mapped data, files, and plugin-created child processes. Raise or unset the
+specific `CASCADE_WORKER_*` value after measuring peak usage. A resource limit is a
+hard operating-system boundary, not a scheduler hint.
 
 ## DAG failures
 
@@ -338,6 +384,14 @@ result = controller.run_dag(fail_fast=False)
 ```
 
 After correcting a failed branch, call `dag.reset_failed()` before retrying.
+
+### DAG has idle workers
+
+Check node lanes and memory pressure before raising `CASCADE_DAG_MAX_WORKERS`.
+In-process Python and generic `Serial` callbacks are exclusive. A ready serial node
+stops new pooled dispatch while active work drains. ROOT nodes are also limited to
+one process-wide active ROOT lane, including across controller instances. Only
+ROOT-free C++ and isolated nodes provide general parallel capacity.
 Controller nodes added through `add_module_to_dag` already convert module failure
 results into DAG failures; low-level callback nodes signal failure by throwing.
 

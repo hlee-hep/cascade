@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <memory>
 
-#define CASCADE_PLUGIN_ABI_VERSION 1
+#define CASCADE_PLUGIN_ABI_VERSION 2
 
 #define CASCADE_STRINGIFY_DETAIL(value) #value
 #define CASCADE_STRINGIFY(value) CASCADE_STRINGIFY_DETAIL(value)
@@ -57,7 +57,7 @@
 #endif
 
 #define CASCADE_ABI_TAG                                                                                                                                            \
-    "abi=1;cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
+    "abi=2;cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
     ";cxx11abi=" CASCADE_STDLIB_ABI_STR ";root=" ROOT_RELEASE ";ptr=" CASCADE_POINTER_WIDTH_STR                                      \
     ";build=" CASCADE_BUILD_MODE_STR ";glibcxx_debug=" CASCADE_GLIBCXX_DEBUG_STR
 

@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 
 from .common import _parse_kv, _positive_int
@@ -12,7 +13,30 @@ from .plugin import (
     cmd_plugin_path_remove,
 )
 from .provenance import cmd_diff, cmd_history, cmd_inspect, cmd_replay
-from .system import _framework_info, cmd_doctor_env, cmd_info, cmd_macro_run
+from .system import _framework_info, cmd_doctor_env, cmd_doctor_runtime, cmd_info, cmd_macro_run
+
+
+def _non_negative_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
+
+
+def _non_negative_int(value):
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
+
+
+def _add_runtime_options(parser, include_workers=False):
+    parser.add_argument("--input-hash", choices=("metadata", "auto", "full"), help="Tracked-input identity policy")
+    parser.add_argument("--output-hash", choices=("full", "metadata", "none"), help="Output provenance hash policy")
+    parser.add_argument("--timeout", type=_non_negative_float, help="Isolated worker timeout in seconds")
+    parser.add_argument("--progress-interval-ms", type=_non_negative_int, help="Analysis progress render interval")
+    if include_workers:
+        parser.add_argument("--workers", type=_positive_int, help="Maximum concurrent DAG workers")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     environment.add_argument("--root-exe", default="root", help="ROOT executable name/path")
     environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     environment.set_defaults(func=cmd_doctor_env)
+    runtime = doctor_sub.add_parser("runtime", help="Show resolved runtime policies, workers, and directory safety")
+    runtime.add_argument("--json", action="store_true", help="Emit machine-readable diagnostics")
+    runtime.set_defaults(func=cmd_doctor_runtime)
     plugins = doctor_sub.add_parser("plugins", help="Verify plugin manifests, hashes, signatures, and ABI")
     plugins.add_argument("--cpp-dir", help="C++ plugin directory")
     plugins.add_argument("--py-dir", help="Python plugin directory")
@@ -92,7 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     module_run.add_argument("--output-directory", help="Module output root")
     module_run.add_argument("--cache-directory", help="Module cache root")
     module_run.add_argument("--isolated", action="store_true", help="Run the module in a subprocess")
+    module_run.add_argument("--explain-cache", action="store_true", help="Print the cache hit/miss decision and reason")
     module_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
+    _add_runtime_options(module_run)
     module_run.set_defaults(func=cmd_module_run)
 
     cache = sub.add_parser("cache", help="Inspect and prune snapshot cache entries")
@@ -127,8 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     fail_fast.add_argument("--keep-going", dest="fail_fast", action="store_false", help="Finish independent branches")
     dag_run.add_argument("--dot", help="Write final DAG state to this DOT file")
     dag_run.add_argument("--provenance", help="Write workflow provenance to this JSON file")
+    progress = dag_run.add_mutually_exclusive_group()
+    progress.add_argument("--progress", dest="progress", action="store_true", help="Show live node and module progress")
+    progress.add_argument("--no-progress", dest="progress", action="store_false", help="Disable live DAG progress")
     dag_run.add_argument("--json", action="store_true", help="Emit machine-readable result JSON")
-    dag_run.set_defaults(func=cmd_dag_run, fail_fast=None)
+    _add_runtime_options(dag_run, include_workers=True)
+    dag_run.set_defaults(func=cmd_dag_run, fail_fast=None, progress=None)
     dag_validate = dag_sub.add_parser("validate", help="Validate a workflow without executing modules")
     dag_validate.add_argument("workflow", help="Workflow YAML or JSON file")
     dag_validate.add_argument("--json", action="store_true", help="Emit machine-readable validation result")

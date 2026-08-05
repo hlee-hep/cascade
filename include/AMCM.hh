@@ -48,6 +48,7 @@ class AMCM
     DAGRunResult RunDAG(bool failFast = true);
     void LoadPlugins(const std::string &path);
     void LoadPluginPackage(const std::string &manifestPath, const std::string &moduleName);
+    std::vector<std::string> RefreshPlugins();
 
   private:
     std::map<std::string, std::shared_ptr<IAnalysisModule>> m_Modules;

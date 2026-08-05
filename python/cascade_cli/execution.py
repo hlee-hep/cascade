@@ -1,4 +1,7 @@
 import os
+import sys
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .common import (
@@ -10,6 +13,7 @@ from .common import (
     _redirect_stdout_to_stderr,
     _resolve_config_path,
     _result_payload,
+    _runtime_environment,
     _split_parameter_ref,
     _validate_keys,
 )
@@ -38,17 +42,18 @@ def cmd_module_list(args) -> None:
 
 
 def cmd_module_run(args) -> None:
-    with _redirect_stdout_to_stderr(args.json):
-        controller = _load_controller(args.json, getattr(args, "require_signed", False))
-        handle = controller.register_module(args.module, args.name)
-        if args.output_directory:
-            handle.set_output_directory(os.path.abspath(args.output_directory))
-        if args.cache_directory:
-            handle.set_cache_directory(os.path.abspath(args.cache_directory))
-        if args.params:
-            _apply_parameters(handle, _load_mapping(args.params))
-        _apply_parameters(handle, dict(_parse_kv(value) for value in args.set))
-        result = controller.run_module(handle.name(), isolated=args.isolated)
+    with _runtime_environment(args):
+        with _redirect_stdout_to_stderr(args.json):
+            controller = _load_controller(args.json, getattr(args, "require_signed", False))
+            handle = controller.register_module(args.module, args.name)
+            if args.output_directory:
+                handle.set_output_directory(os.path.abspath(args.output_directory))
+            if args.cache_directory:
+                handle.set_cache_directory(os.path.abspath(args.cache_directory))
+            if args.params:
+                _apply_parameters(handle, _load_mapping(args.params))
+            _apply_parameters(handle, dict(_parse_kv(value) for value in args.set))
+            result = controller.run_module(handle.name(), isolated=args.isolated)
     payload = _result_payload(result, handle.name())
     payload["run_id"] = handle.get_run_id()
     payload["provenance"] = handle.get_last_provenance_path()
@@ -57,6 +62,9 @@ def cmd_module_run(args) -> None:
     else:
         detail = f": {payload['message']}" if payload["message"] else ""
         print(f"{payload['name']}: {payload['status']} ({payload['phase']}){detail}")
+        if getattr(args, "explain_cache", False):
+            reason = f": {payload['cache_reason']}" if payload["cache_reason"] else ""
+            print(f"Cache {payload['cache_decision']}{reason}")
     if not payload["allows_dependents"]:
         raise SystemExit(1)
 
@@ -215,35 +223,105 @@ def cmd_dag_validate(args) -> None:
         )
 
 
-def cmd_dag_run(args) -> None:
-    with _redirect_stdout_to_stderr(args.json):
-        configured = _configure_dag_workflow(args)
-        controller = configured["controller"]
-        workflow = configured["workflow"]
-        base = configured["base"]
+def _dag_status_text(status) -> str:
+    value = getattr(status, "name", str(status).rsplit(".", 1)[-1])
+    return value.title() if value.isupper() else value
 
-        provenance_path = getattr(args, "provenance", None) or workflow.get("provenance")
-        resolved_provenance = (
-            _resolve_config_path(base, provenance_path)
-            if provenance_path
-            else None
-        )
-        if resolved_provenance:
-            result = controller.run_dag(
-                fail_fast=configured["fail_fast"], provenance_path=resolved_provenance
+
+def _run_dag_with_progress(controller, fail_fast, provenance_path):
+    result_holder = {}
+    error_holder = {}
+
+    def run():
+        try:
+            if provenance_path:
+                result_holder["result"] = controller.run_dag(
+                    fail_fast=fail_fast, provenance_path=provenance_path
+                )
+            else:
+                result_holder["result"] = controller.run_dag(fail_fast=fail_fast)
+        except BaseException as error:
+            error_holder["error"] = error
+
+    dag = controller.get_dag()
+    dependencies = {name: list(values) for name, values in dag.get_dependencies().items()}
+    total = len(dependencies)
+    previous = {}
+    worker = threading.Thread(target=run, name="cascade-dag-cli")
+    worker.start()
+    try:
+        while worker.is_alive():
+            nodes = dag.get_node_results()
+            statuses = {node.name: _dag_status_text(node.status) for node in nodes}
+            progress = controller.get_all_progress()
+            completed = sum(status in ("Succeeded", "Failed", "Blocked") for status in statuses.values())
+            for node in nodes:
+                status = statuses[node.name]
+                detail = node.message
+                percent = None
+                if status == "Running":
+                    values = list(progress.get(node.name, {}).values())
+                    if values:
+                        percent = int(round(sum(values) / len(values) * 100))
+                        detail = f"{percent}%"
+                elif status == "Pending":
+                    waiting = [name for name in dependencies.get(node.name, []) if statuses.get(name) != "Succeeded"]
+                    detail = f"waiting for {', '.join(waiting)}" if waiting else "waiting for execution lane"
+                state = (status, detail, percent)
+                if previous.get(node.name) != state:
+                    suffix = f" - {detail}" if detail else ""
+                    print(f"[{completed}/{total}] {node.name}: {status}{suffix}", file=sys.stderr, flush=True)
+                    previous[node.name] = state
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        for name in controller.get_list_registered_modules():
+            module = controller.get_module(name)
+            if module is not None:
+                module.request_cancellation()
+        worker.join()
+        raise
+    worker.join()
+    if "error" in error_holder:
+        raise error_holder["error"]
+    return result_holder["result"]
+
+
+def cmd_dag_run(args) -> None:
+    with _runtime_environment(args):
+        with _redirect_stdout_to_stderr(args.json):
+            configured = _configure_dag_workflow(args)
+            controller = configured["controller"]
+            workflow = configured["workflow"]
+            base = configured["base"]
+
+            provenance_path = getattr(args, "provenance", None) or workflow.get("provenance")
+            resolved_provenance = (
+                _resolve_config_path(base, provenance_path)
+                if provenance_path
+                else None
             )
-        else:
-            result = controller.run_dag(fail_fast=configured["fail_fast"])
-        dot_path = args.dot or workflow.get("dot")
-        if dot_path:
-            resolved_dot = _resolve_config_path(base, dot_path)
-            os.makedirs(os.path.dirname(resolved_dot), exist_ok=True)
-            controller.get_dag().dump_dot(resolved_dot)
+            requested_progress = getattr(args, "progress", None)
+            show_progress = requested_progress if requested_progress is not None else (sys.stderr.isatty() and not args.json)
+            if show_progress:
+                result = _run_dag_with_progress(
+                    controller, configured["fail_fast"], resolved_provenance
+                )
+            elif resolved_provenance:
+                result = controller.run_dag(
+                    fail_fast=configured["fail_fast"], provenance_path=resolved_provenance
+                )
+            else:
+                result = controller.run_dag(fail_fast=configured["fail_fast"])
+            dot_path = args.dot or workflow.get("dot")
+            if dot_path:
+                resolved_dot = _resolve_config_path(base, dot_path)
+                os.makedirs(os.path.dirname(resolved_dot), exist_ok=True)
+                controller.get_dag().dump_dot(resolved_dot)
 
     nodes = [
         {
             "name": node.name,
-            "status": getattr(node.status, "name", str(node.status).rsplit(".", 1)[-1]).title(),
+            "status": _dag_status_text(node.status),
             "message": node.message,
         }
         for node in result.nodes

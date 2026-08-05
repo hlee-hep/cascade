@@ -8,15 +8,26 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 ### Added
 
 - Snapshot cache inspection, hit/miss explanation, and locked pruning through the CLI.
+- Per-run cache decisions and exact miss reasons in results, provenance, and CLI JSON.
+- Runtime policy diagnostics, one-shot CLI tuning flags, live DAG progress, and
+  long-running-process plugin refresh.
 - Declarative DAG validation without module execution.
 - Release preparation checklist and operational verification guidance.
 - MIT License for source and distribution terms.
+
+### Changed
+
+- Cache output revalidation now preserves symlink identity and the output hash
+  policy recorded at commit time, avoiding unnecessary full reads.
+- Isolated worker and Python-runtime paths reject replaceable non-sticky writable
+  parent directories, and non-finite timeout values are invalid.
+- The public plugin ABI is now 2 because `RunResult` exposes cache-decision fields.
 
 ## [0.3.0] - Unreleased
 
 ### Added
 
-- Initial public C++ plugin ABI 1 with full build fingerprint checks.
+- Initial public C++ plugin ABI 2 with full build fingerprint checks.
 - Verified C++ and Python plugin packages with optional Ed25519 publisher signatures.
 - Transactional plugin installation and persistent plugin prefix discovery.
 - Unified C++/Python module lifecycle, output transactions, cancellation, and subprocess isolation.

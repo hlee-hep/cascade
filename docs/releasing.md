@@ -19,7 +19,8 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 - [ ] `scons -j2` completes from a clean checkout with documented dependencies.
 - [ ] `scons test -j2` passes.
 - [ ] `cascade info` reports the expected version, ABI integer, and ABI tag.
-- [ ] `cascade doctor env` and `cascade doctor plugins` report no unexpected failures.
+- [ ] `cascade doctor env`, `cascade doctor runtime`, and `cascade doctor plugins`
+  report no unexpected failures.
 - [ ] `cascade dag validate examples/plugins/mixed_pipeline/workflow.yaml` passes after installing the example plugin.
 - [ ] The mixed C++/Python workflow completes in both in-process and isolated modes.
 - [ ] A second identical run produces expected snapshot cache hits.
@@ -47,6 +48,7 @@ scons install PREFIX=/tmp/cascade-release
 
 /tmp/cascade-release/bin/cascade info
 /tmp/cascade-release/bin/cascade doctor env
+/tmp/cascade-release/bin/cascade doctor runtime
 /tmp/cascade-release/bin/cascade doctor plugins
 ```
 

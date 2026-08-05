@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
@@ -81,6 +82,23 @@ RunResult ExternalFailure(ModuleStatus status, const std::string &message)
     return result;
 }
 
+void ValidateControlledPathParents(const fs::path &path, const std::string &label)
+{
+    fs::path current = path.root_path();
+    for (const auto &component : path.relative_path().parent_path())
+    {
+        current /= component;
+        struct stat metadata{};
+        if (lstat(current.c_str(), &metadata) != 0 || !S_ISDIR(metadata.st_mode))
+            throw std::runtime_error("Cannot inspect " + label + " parent directory: " + current.string());
+        const bool writable = (metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0;
+        const bool controlledSticky = (metadata.st_mode & S_ISVTX) != 0 &&
+                                      (metadata.st_uid == geteuid() || metadata.st_uid == 0);
+        if (writable && !controlledSticky)
+            throw std::runtime_error(label + " parent directory is group/world writable: " + current.string());
+    }
+}
+
 std::string WorkerExecutable(const std::string &language)
 {
     const char *variable = language == "python" ? "CASCADE_PYTHON_WORKER" : "CASCADE_CPP_WORKER";
@@ -106,6 +124,7 @@ std::string WorkerExecutable(const std::string &language)
         throw std::runtime_error("Isolated worker is owned by another user: " + resolved.string());
     if ((metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0)
         throw std::runtime_error("Isolated worker is group/world writable: " + resolved.string());
+    ValidateControlledPathParents(resolved, "Isolated worker");
     return resolved.string();
 }
 
@@ -164,6 +183,7 @@ std::string PythonRuntimeDirectory()
         throw std::runtime_error("Isolated Python runtime is owned by another user: " + resolved.string());
     if ((metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0)
         throw std::runtime_error("Isolated Python runtime is group/world writable: " + resolved.string());
+    ValidateControlledPathParents(resolved / "placeholder", "Isolated Python runtime");
     return resolved.string();
 }
 
@@ -174,7 +194,7 @@ double IsolatedTimeoutSeconds()
     char *end = nullptr;
     errno = 0;
     const double value = std::strtod(configured, &end);
-    if (errno != 0 || end == configured || *end != '\0' || value < 0.0)
+    if (errno != 0 || end == configured || *end != '\0' || !std::isfinite(value) || value < 0.0)
         throw std::runtime_error("CASCADE_ISOLATED_TIMEOUT_SECONDS must be a non-negative number");
     return value;
 }
@@ -182,7 +202,7 @@ double IsolatedTimeoutSeconds()
 void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
 {
     static std::mutex pluginLoadMutex;
-    static std::set<std::string> loadedPlugins;
+    static std::map<std::string, std::string> loadedPlugins;
     for (const auto &package : packages)
     {
         LOG_DEBUG("PLUGIN", ToString(package.Trust) << " package " << package.Package);
@@ -191,8 +211,17 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
             std::lock_guard<std::mutex> loadLock(pluginLoadMutex);
             const fs::path pluginFile(plugin.Path);
             const std::string canonicalPlugin = plugin.Path;
-            if (loadedPlugins.count(canonicalPlugin))
+            const auto existingModule = AnalysisModuleRegistry::Get().GetPluginOrigin(plugin.Name);
+            if (existingModule && existingModule->Package == plugin.Origin.Package &&
+                existingModule->ArtifactSha256 != plugin.Sha256)
+                throw std::runtime_error("Installed C++ plugin changed and requires a new process: " +
+                                         plugin.Name);
+            const auto loaded = loadedPlugins.find(canonicalPlugin);
+            if (loaded != loadedPlugins.end())
             {
+                if (loaded->second != plugin.Sha256)
+                    throw std::runtime_error("Installed C++ plugin changed and requires a new process: " +
+                                             canonicalPlugin);
                 for (const auto &name : AnalysisModuleRegistry::Get().ListModules())
                 {
                     const auto existing = AnalysisModuleRegistry::Get().GetPluginOrigin(name);
@@ -276,7 +305,7 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
                     throw std::runtime_error("plugin registration did not add a module");
                 for (const auto &name : modulesAfterLoad)
                     if (!moduleSetBeforeLoad.count(name)) AnalysisModuleRegistry::Get().SetPluginOrigin(name, plugin.Origin);
-                loadedPlugins.insert(canonicalPlugin);
+                loadedPlugins.emplace(canonicalPlugin, plugin.Sha256);
                 LOG_INFO("PLUGIN", "Loaded " << ToString(plugin.Origin.Trust) << " plugin " << pluginFile.string());
             }
             catch (const std::exception &error)
@@ -610,14 +639,20 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
         }
         IsolatedRunHeader header;
         if (!ReadAll(channel[0], &header, sizeof(header)) || header.Magic != kCascadeWorkerResultMagic ||
-            header.MessageSize > kCascadeWorkerMaxMessageSize)
+            header.MessageSize > kCascadeWorkerMaxMessageSize ||
+            header.CacheDecisionSize > kCascadeWorkerMaxCacheDetailSize ||
+            header.CacheReasonSize > kCascadeWorkerMaxCacheDetailSize)
         {
             externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module exited without a valid result");
         }
         else
         {
             std::string message(header.MessageSize, '\0');
-            if (!ReadAll(channel[0], message.data(), message.size()))
+            std::string cacheDecision(header.CacheDecisionSize, '\0');
+            std::string cacheReason(header.CacheReasonSize, '\0');
+            if (!ReadAll(channel[0], message.data(), message.size()) ||
+                !ReadAll(channel[0], cacheDecision.data(), cacheDecision.size()) ||
+                !ReadAll(channel[0], cacheReason.data(), cacheReason.size()))
                 externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module result was truncated");
             else if (header.Status < static_cast<std::int32_t>(ModuleStatus::Pending) ||
                      header.Status > static_cast<std::int32_t>(ModuleStatus::Failed) ||
@@ -629,6 +664,8 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
                 externalResult.Status = static_cast<ModuleStatus>(header.Status);
                 externalResult.Phase = static_cast<ModulePhase>(header.Phase);
                 externalResult.Message = std::move(message);
+                externalResult.CacheDecision = std::move(cacheDecision);
+                externalResult.CacheReason = std::move(cacheReason);
             }
         }
     }
@@ -844,4 +881,17 @@ void AMCM::LoadPluginPackage(const std::string &manifestPath, const std::string 
     if (package.ManifestPath != manifest.string())
         throw std::runtime_error("Targeted plugin manifest changed during verification");
     LoadVerifiedCppPackages({package});
+}
+
+std::vector<std::string> AMCM::RefreshPlugins()
+{
+    if (m_Dag->IsExecuting()) throw std::runtime_error("Cannot refresh plugins while the DAG is executing");
+    auto before = ListAvailableModules();
+    for (const auto &pluginRoot : CppPluginRoots()) LoadPlugins(pluginRoot.string());
+    auto after = ListAvailableModules();
+    std::sort(before.begin(), before.end());
+    std::sort(after.begin(), after.end());
+    std::vector<std::string> added;
+    std::set_difference(after.begin(), after.end(), before.begin(), before.end(), std::back_inserter(added));
+    return added;
 }

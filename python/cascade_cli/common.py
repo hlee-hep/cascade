@@ -79,6 +79,32 @@ def _load_controller(quiet: bool = False, require_signed: bool = False):
 
 
 @contextmanager
+def _runtime_environment(args):
+    mapping = {
+        "input_hash": "CASCADE_INPUT_HASH_MODE",
+        "output_hash": "CASCADE_PROVENANCE_HASH_MODE",
+        "workers": "CASCADE_DAG_MAX_WORKERS",
+        "timeout": "CASCADE_ISOLATED_TIMEOUT_SECONDS",
+        "progress_interval_ms": "CASCADE_PROGRESS_INTERVAL_MS",
+    }
+    previous = {}
+    try:
+        for attribute, variable in mapping.items():
+            value = getattr(args, attribute, None)
+            if value is None:
+                continue
+            previous[variable] = os.environ.get(variable)
+            os.environ[variable] = str(value)
+        yield
+    finally:
+        for variable, value in previous.items():
+            if value is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = value
+
+
+@contextmanager
 def _redirect_stdout_to_stderr(enabled: bool):
     if not enabled:
         yield
@@ -142,6 +168,8 @@ def _result_payload(result, name: str) -> Dict[str, Any]:
         "status": status,
         "phase": phase,
         "message": str(getattr(result, "message", "")),
+        "cache_decision": str(getattr(result, "cache_decision", "not_checked")),
+        "cache_reason": str(getattr(result, "cache_reason", "")),
         "succeeded": bool(result.succeeded()),
         "allows_dependents": bool(result.allows_dependents()),
     }

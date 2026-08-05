@@ -240,6 +240,11 @@ literal `METADATA`, `VERSION`, `SUMMARY`, and `TAGS` class constants without
 executing plugin source; pass the explicit instantiation option only when dynamic
 metadata is required.
 
+Install or remove packages before constructing a long-lived controller. Its Python
+index remains stable for the controller lifetime, so a newly published
+Python package is visible to a new controller/process rather than appearing midway
+through an active workflow.
+
 ## Installed layout
 
 C++ and Python artifacts have separate manifests:
@@ -337,7 +342,7 @@ Under the default policy, unsigned packages may load as `VERIFIED`. Invalid or
 untrusted signatures are always rejected; there is no downgrade to unsigned
 trust. Under `RequireSigned`, missing signatures are rejected as well.
 
-## ABI 1
+## ABI 2
 
 Cascade first compares the integer ABI, then the complete ABI tag. The tag covers:
 
@@ -360,6 +365,28 @@ print(cascade.__abi_tag__)
 ```
 
 ABI mismatch is resolved by rebuilding, not by editing the manifest.
+
+## Refreshing discovery in a long-running process
+
+Controllers discover plugins when they are constructed. A notebook, service, or
+interactive Python process can discover packages installed afterward without
+restarting:
+
+```python
+changes = controller.refresh_plugins()
+print(changes["added_cpp"])
+print(changes["added_python"])
+```
+
+Refresh is allowed only while the DAG is idle. New C++ libraries are verified and
+loaded, and new or removed Python declarations update the controller's discovery
+index. Already loaded native libraries and imported Python source cannot be safely
+replaced or unloaded in place. If an installed artifact at an existing path changed,
+refresh raises an error naming the affected plugin and requires a new process.
+
+C++ callers can use `AMCM::RefreshPlugins()`, which returns newly available C++
+module names. C++ plugins removed from disk remain loaded until the process exits;
+the same lifetime rule applies to already registered module instances.
 
 ## Diagnostics
 
@@ -407,6 +434,22 @@ Plugin signatures establish publisher trust and file integrity. They do not make
 plugin code safe. C++ plugins execute with the process's privileges; the clean
 `exec()` worker avoids inherited runtime locks, applies resource-limit hooks and
 `no_new_privs`, and contains crashes, but it is not a filesystem or network sandbox.
+
+The practical trust boundaries are:
+
+| Control | Protects against | Does not protect against |
+| --- | --- | --- |
+| Manifest hash and package boundary checks | Accidental replacement, path escape, wrong artifact | A malicious package author |
+| Unsigned ownership/mode checks | Other local users modifying an accepted package through common writable paths | Code intentionally installed by the current user/root |
+| Publisher signature | Modification after signing and an untrusted publisher under `RequireSigned` | Harmful behavior signed by a trusted publisher |
+| ABI version and tag | Known compiler/ROOT/standard-library incompatibility | Logic bugs or arbitrary native constructor behavior |
+| Isolated worker | Fatal signals, inherited locks/state, bounded optional resources | Ordinary filesystem/network access or same-user data theft |
+
+Loading a C++ shared library may execute native constructors before registration is
+complete. Use `cascade doctor plugins` for static package diagnosis without
+`dlopen`, require signatures in managed deployments, and isolate risky data or
+native code. Do not treat `Verified` unsigned packages as third-party sandboxed
+extensions.
 
 ## Release checklist
 

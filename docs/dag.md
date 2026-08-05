@@ -15,6 +15,33 @@ Only one in-process ROOT module runs at a time, including across controller
 instances. Set `CASCADE_DAG_MAX_WORKERS` to a positive integer to bound concurrent
 ROOT-free and isolated work. The default is the detected hardware concurrency.
 
+The bound covers `Root`, `Parallel`, and `Isolated` nodes together. A ready generic
+`Serial` node is an exclusive barrier: no additional pooled work is dispatched,
+active work drains, and then the serial callback runs. This gives exclusive nodes
+deterministic priority but may leave worker capacity idle. Mark a callback
+`Parallel` only after verifying that it does not share mutable or ROOT state.
+
+## CLI progress and one-shot tuning
+
+`cascade dag run workflow.yaml` renders live progress automatically when stderr is
+an interactive terminal. The display is event-based: it prints only node state,
+wait reason, message, or percentage changes rather than redrawing the complete DAG.
+It therefore remains readable in terminals and can be forced into redirected logs:
+
+```bash
+cascade dag run workflow.yaml --progress --workers 4
+cascade dag run workflow.yaml --no-progress
+```
+
+Pending nodes distinguish unsatisfied dependencies from a ready node waiting for a
+ROOT/serial/worker lane. A running module reports the mean of its available
+`AnalysisManager` progress values. Final node results remain unchanged, and JSON
+stdout is never mixed with progress output.
+
+`--input-hash`, `--output-hash`, `--timeout`, `--progress-interval-ms`, and
+`--workers` are invocation-scoped counterparts to the runtime environment
+variables. They are applied before the controller and scheduler are constructed.
+
 ## Module DAGs from Python
 
 Use the controller-level API for mixed C++/Python workflows:
@@ -246,3 +273,9 @@ dot -Tpng pipeline.dot -o pipeline.png
   is intentionally not deterministic.
 - Output path collisions remain a module-design error.
 - External side effects are not covered by the module output transaction.
+
+Worker count should normally be chosen from peak memory consumption rather than
+CPU count alone. Isolated ROOT processes can run concurrently, but each process may
+hold its own input cache and histogram state. For scheduling lane details and
+example production profiles, see
+[Runtime reliability and performance](runtime-reference.md#dag-scheduling-lanes).

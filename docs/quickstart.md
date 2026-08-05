@@ -55,7 +55,7 @@ python3 -c 'import cascade; print(cascade.__version__, cascade.__abi_version__)'
 Expected version/ABI for this tree:
 
 ```text
-0.3.0 1
+0.3.0 2
 ```
 
 ## 4. Install the example plugin
@@ -79,7 +79,7 @@ A healthy local result reports:
 
 - `VERIFIED` package status;
 - matching SHA-256 hashes;
-- `RootEventModule` and `TextProducerModule` at ABI 1;
+- `RootEventModule` and `TextProducerModule` at ABI 2;
 - `RootSummaryModule` and `TextTransformModule` in the Python package;
 - zero errors.
 

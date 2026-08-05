@@ -14,7 +14,8 @@ Every terminal module run produces a `cascade.module-run` document containing:
   fingerprint when available;
 - code hash, snapshot hash, and resolved parameters;
 - start/finish timestamps and configured output/cache roots;
-- status, failed phase, message, isolation, dry-run, and cache-hit state;
+- status, failed phase, message, isolation, dry-run, cache decision, and exact
+  cache reason;
 - tracked input artifacts and transactional output artifacts;
 - the prior manifest referenced by a cache hit.
 
@@ -36,6 +37,11 @@ Output files and directories are discovered automatically from
 `StageOutput`/`stage_output`. Regular files receive a SHA-256 digest. Directory
 digests are deterministic over sorted relative entries and their content hashes.
 Symlinks are hashed by link target and are not followed.
+
+Each artifact record contains `path`, `kind`, `exists`, aggregate `size`,
+`hash_mode`, optional `sha256`, and an `identity` object. The identity holds device, inode, nanosecond
+mtime, and nanosecond ctime. It is an optimization as well as an audit record: an
+exact identity match lets cache validation avoid rereading a large output.
 
 ## Declaring inputs
 
@@ -140,11 +146,23 @@ record. On a cache hit, the new skipped-run manifest points to the completed run
 that supplied the cached snapshot. Before accepting the hit, Cascade validates the
 completed manifest, snapshot hash, output root, and every recorded output. Stable
 file identities avoid rehashing unchanged outputs; changed identities fall back to
-content validation.
+validation under the policy recorded in `hash_mode`. This prevents a `metadata` or
+`none` artifact from being reread in full merely because its inode or timestamps
+changed. The final path component is kept unresolved so a recorded symlink remains
+a symlink during validation.
 
 Tracked input identity defaults to filesystem metadata so large ROOT files are not
 read solely to make a cache decision. `CASCADE_INPUT_HASH_MODE=full` records and
-uses SHA-256 instead, while `auto` hashes regular inputs up to 64 MiB.
+uses SHA-256 instead, while `auto` hashes regular inputs up to 64 MiB. Metadata
+mode records identity without proving byte equality. Directory capture still walks
+the directory tree, even when regular-file contents are not hashed.
+
+Output records use the independent `CASCADE_PROVENANCE_HASH_MODE`. Its default,
+`full`, allows a moved or replaced output to be accepted only if the recomputed
+content hash matches. With `metadata` or `none`, kind and size are the remaining
+checks after an identity change. See
+[Runtime reliability and performance](runtime-reference.md#output-provenance-policy)
+for the complete decision table.
 
 Legacy hash-only C++ YAML sequences and Python JSON lists are read and upgraded
 when the cache is next written.

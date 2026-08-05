@@ -11,6 +11,7 @@ cascade --version
 cascade info
 cascade info --json
 cascade doctor env
+cascade doctor runtime
 cascade doctor plugins
 ```
 
@@ -18,6 +19,11 @@ cascade doctor plugins
 plugin roots, and trust store. `doctor plugins` reports `VERIFIED` or `SIGNED`
 packages and checks manifests, hashes, package boundaries, Python class
 declarations, and the complete C++ ABI tag.
+
+`doctor runtime` resolves output/cache roots, input and output hash policies, DAG
+worker count, progress interval, isolation timeout, resource limits, both worker
+executables, and the isolated Python runtime. It also checks ownership, executable
+permissions, and writable parent directories. Use `--json` for deployment gates.
 
 ## Install and locate plugins
 
@@ -80,6 +86,21 @@ cascade module run TextProducerModule \
   --set repeat=5
 ```
 
+Runtime policy can be scoped to this invocation without exporting environment
+variables:
+
+```bash
+cascade module run TextProducerModule \
+  --input-hash metadata \
+  --output-hash full \
+  --timeout 900 \
+  --progress-interval-ms 250 \
+  --explain-cache
+```
+
+`--explain-cache` prints `hit`, `miss`, `bypassed`, or `not_checked` plus the exact
+reason. JSON output always contains `cache_decision` and `cache_reason`.
+
 Use `--params parameters.yaml` for a YAML or JSON parameter mapping.
 Command-line `--set` values are applied afterward and therefore override the
 file. Add `--isolated` to execute the module in a subprocess.
@@ -123,6 +144,7 @@ Run a workflow with:
 cascade dag validate workflow.yaml
 cascade dag run workflow.yaml
 cascade dag run workflow.yaml --keep-going --dot output/final.dot
+cascade dag run workflow.yaml --workers 4 --progress
 cascade dag run workflow.yaml --json
 ```
 
@@ -171,12 +193,24 @@ Workflow-relative paths include `output_directory`, `cache_directory`,
 `--fail-fast` and `--keep-going` override the file's failure policy.
 `--provenance PATH` overrides the workflow field.
 
+Interactive non-JSON runs show live node transitions automatically when stderr is
+a terminal. `--progress` forces event-style progress in redirected logs and
+`--no-progress` disables it. Pending nodes say whether they are waiting for
+dependencies or an execution lane; running analysis modules include their averaged
+manager progress when available. The display is written only to stderr, preserving
+machine-readable stdout.
+
+DAG runs accept the same hash, timeout, and progress-interval options as module
+runs, plus `--workers N` for the bounded execution pool. These options affect only
+the current process invocation and take precedence over the corresponding runtime
+environment variables while the command executes.
+
 The mixed plugin contains a runnable
 [`workflow.yaml`](../examples/plugins/mixed_pipeline/workflow.yaml).
 
 ## JSON output
 
-`info`, `doctor env`, `doctor plugins`, plugin management commands, cache
+`info`, all `doctor` commands, plugin management commands, cache
 commands, `module list`, `module run`, and DAG commands support `--json`. Framework and module stdout
 is redirected to stderr during execution so stdout remains a single JSON
 document.

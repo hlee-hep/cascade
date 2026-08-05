@@ -302,6 +302,19 @@ files. Set `CASCADE_INPUT_HASH_MODE=full` when byte-for-byte identity is require
 or `auto` to SHA-256 files no larger than 64 MiB. Do not encode this distinction by
 file extension; the same C++ policy serves C++ and Python modules.
 
+Use this rule of thumb:
+
+| Input | Recommended declaration |
+| --- | --- |
+| Large immutable local ROOT file | Track the file; use the default metadata mode |
+| Small config, lookup table, or model | Track the file; use `auto` or `full` |
+| Versioned remote dataset | Register the URI and immutable dataset/version ID as parameters |
+| Directory containing many data shards | Track a versioned manifest/checksum file instead of the whole directory |
+| Archival or release input | Use `full` and retain the completed provenance manifest |
+
+Hashing policy is process-wide configuration. Set it before constructing
+controllers and do not mutate environment variables while runs are active.
+
 Direct writes, network calls, database updates, and messages sent to external
 services are not transactional.
 

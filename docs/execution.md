@@ -64,6 +64,13 @@ Statuses:
 `Pending`, `Initializing`, `Running`, and `Finalizing` are observable in-progress
 states rather than terminal results.
 
+Every result also carries `CacheDecision`/`cache_decision` and
+`CacheReason`/`cache_reason`. Decisions are `not_checked` for a dry run or a run
+that never reached `Check`, `bypassed` for `force_run`, `miss` when execution was
+required, and `hit` when a completed snapshot and every recorded output matched.
+The reason preserves the exact stale-manifest or output-validation failure instead
+of reducing every rerun to a generic cache miss.
+
 ## ExecutionContext
 
 Every run owns:
@@ -120,6 +127,11 @@ Multiple staged files form one transaction. Commit order:
 5. commit the module provenance manifest with the output set;
 6. atomically record the snapshot hash and manifest linkage;
 7. remove the staging directory, backups, and journal.
+
+This is rollback-capable failure atomicity, not simultaneous multi-path visibility
+or a power-loss durability guarantee. A reader outside Cascade's output locks may
+observe promotion in progress, and abrupt parent-process or machine failure is not
+followed by a general startup recovery scan.
 
 If promotion or cache update fails, promoted files are removed and originals are
 restored. During isolated execution, the parent can replay the on-disk journal
@@ -184,11 +196,24 @@ Use `full` for SHA-256 content identity or `auto` to hash regular files up to
 64 MiB and use metadata for larger inputs. This policy is shared by C++ and Python
 modules and applies to tracked-input provenance as well.
 
-A cache entry is accepted only when its completed provenance manifest matches the snapshot and
-output root and its recorded outputs still match their committed identities or
-content hashes. Missing, replaced, or corrupted output invalidates the entry and
-causes a normal rerun. Cache index and module-provenance reads are capped at
-16 MiB to bound malformed local-state parsing.
+A cache entry is accepted only when its completed provenance manifest matches the
+snapshot and output root and its recorded outputs still match their committed
+identities or content hashes. Missing, replaced, or corrupted output invalidates
+the entry and causes a normal rerun. Cache index and module-provenance reads are
+capped at 16 MiB to bound malformed local-state parsing.
+
+Output artifact records retain the hash policy used when they were committed.
+After a filesystem identity change, validation recaptures with that same policy:
+`full` may rehash content, while `metadata` and `none` never pay an accidental
+full-content read. Symlink outputs are validated as symlinks without resolving the
+final component to their target.
+
+Metadata input identity is the performance-oriented default, not a cryptographic
+content guarantee. Use `full` on filesystems with weak timestamp semantics, when
+another tool may deliberately preserve metadata while rewriting a file, or for an
+archival/release run. Directory inputs are traversed even in metadata mode, so a
+versioned dataset manifest is usually a better tracked input than a directory with
+millions of entries.
 
 ## Cancellation
 
@@ -262,12 +287,16 @@ arbitrary in-memory module handle cannot be reconstructed safely after `exec()`.
 Set `CASCADE_ISOLATED_TIMEOUT_SECONDS` to a positive number to enforce a worker
 deadline; zero or an unset value means no deadline. Worker executables must resolve
 to absolute, executable, owner/root-controlled files that are not group/world
-writable. Workers close inherited descriptors, enable Linux `no_new_privs`, use a
+writable. Their parent directories, and the isolated Python runtime's parent chain,
+must not be group/world writable unless the directory is sticky and owned by root
+or the current user, such as `/tmp`. Workers close inherited descriptors, enable Linux `no_new_privs`, use a
 private umask, and do not inherit loader-injection variables such as `LD_PRELOAD`
 or `LD_AUDIT`. The Python worker starts in interpreter-isolated mode, ignores the
 inherited `PYTHONPATH`, and imports Cascade only from the canonical runtime
 directory. Custom `PYTHONDIR` layouts can provide that parent directory through
 `CASCADE_PYTHON_RUNTIME_DIR`; it must be absolute and owner/root controlled.
+`cascade doctor runtime` reports the exact resolved paths and applies the same
+ownership and directory-safety checks without starting a worker.
 
 Optional positive worker limits are `CASCADE_WORKER_MEMORY_LIMIT_MB`,
 `CASCADE_WORKER_FILE_SIZE_LIMIT_MB`, `CASCADE_WORKER_MAX_PROCESSES`, and
@@ -287,6 +316,10 @@ file device, inode, size, modification time, and change time are unchanged. This
 avoids repeated reads when independent modules track the same immutable input. The
 cache holds 1024 identities by default; set
 `CASCADE_PROVENANCE_HASH_CACHE_ENTRIES=0` to disable it or choose another bound.
+The digest cache is not persisted across processes. With output hashing set to
+`metadata` or `none`, a later identity change cannot be resolved by byte comparison;
+cache validation then has only the recorded kind and size. This is an explicit
+throughput-versus-integrity tradeoff.
 
 ## Concurrency
 
@@ -330,4 +363,5 @@ controller.save_run_log_all()
 These names remain compatibility aliases and now write `cascade.workflow-run`
 JSON. Prefer `SaveProvenance()` / `save_provenance()`. See
 [Provenance manifests](provenance.md) for locations, input tracking, redaction,
-and cache linkage.
+and cache linkage. The complete setting and decision reference is
+[Runtime reliability and performance](runtime-reference.md).

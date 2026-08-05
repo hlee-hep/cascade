@@ -681,6 +681,12 @@ PYBIND11_MODULE(_cascade, m)
         .def("get_list_available_module_metadata", &AMCM::ListAvailableModuleMetadata)
         .def("get_plugin_origin", &AMCM::GetPluginOrigin)
         .def("get_plugin_trust_policy", &AMCM::GetPluginTrustPolicy)
+        .def("refresh_plugins",
+             [](AMCM &self)
+             {
+                 py::gil_scoped_release release;
+                 return self.RefreshPlugins();
+             })
         .def("get_list_registered_modules", &AMCM::ListRegisteredModules)
         .def("get_status", &AMCM::GetStatus)
         .def("get_module", &AMCM::GetModule, py::return_value_policy::reference_internal)
@@ -834,6 +840,8 @@ PYBIND11_MODULE(_cascade, m)
         .def_readonly("status", &RunResult::Status)
         .def_readonly("phase", &RunResult::Phase)
         .def_readonly("message", &RunResult::Message)
+        .def_readonly("cache_decision", &RunResult::CacheDecision)
+        .def_readonly("cache_reason", &RunResult::CacheReason)
         .def_property_readonly("exception",
              [](const RunResult &result) -> py::object
              {

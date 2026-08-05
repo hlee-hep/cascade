@@ -1,7 +1,10 @@
 import json
+import math
 import os
+import pathlib
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -85,6 +88,125 @@ def cmd_doctor_env(args) -> None:
     if args.json:
         _emit({"checks": checks}, True)
     else:
+        for item in checks:
+            _log(item["status"], f"{item['name']}: {item['detail']}")
+    if any(item["status"] == "ERROR" for item in checks):
+        raise SystemExit(1)
+
+
+def _runtime_path_check(path: str, kind: str) -> Dict[str, str]:
+    resolved = os.path.realpath(path)
+    if not os.path.isabs(path):
+        return {"name": kind, "status": "ERROR", "detail": f"path must be absolute: {path}"}
+    expected = os.path.isdir if kind == "Python runtime" else os.path.isfile
+    if not expected(resolved):
+        return {"name": kind, "status": "ERROR", "detail": f"not found: {resolved}"}
+    try:
+        metadata = os.stat(resolved)
+    except OSError as error:
+        return {"name": kind, "status": "ERROR", "detail": f"cannot inspect {resolved}: {error}"}
+    if metadata.st_uid not in (os.geteuid(), 0):
+        return {"name": kind, "status": "ERROR", "detail": f"owned by another user: {resolved}"}
+    if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return {"name": kind, "status": "ERROR", "detail": f"group/world writable: {resolved}"}
+    current = pathlib.Path(resolved).parent
+    while current != current.parent:
+        try:
+            parent = os.stat(current)
+        except OSError as error:
+            return {"name": kind, "status": "ERROR", "detail": f"cannot inspect {current}: {error}"}
+        writable = parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        controlled_sticky = parent.st_mode & stat.S_ISVTX and parent.st_uid in (os.geteuid(), 0)
+        if writable and not controlled_sticky:
+            return {"name": kind, "status": "ERROR", "detail": f"writable parent: {current}"}
+        current = current.parent
+    if kind != "Python runtime" and not os.access(resolved, os.X_OK):
+        return {"name": kind, "status": "ERROR", "detail": f"not executable: {resolved}"}
+    return {"name": kind, "status": "OK", "detail": resolved}
+
+
+def cmd_doctor_runtime(args) -> None:
+    prefix = os.path.realpath(_CLI_PREFIX)
+    values = {
+        "prefix": prefix,
+        "output_directory": os.path.realpath(os.environ.get("CASCADE_OUTPUT_DIR", os.getcwd())),
+        "cache_directory": os.path.realpath(
+            os.environ.get("CASCADE_CACHE_DIR", os.path.expanduser("~/.cache/cascade/snapshot_cache"))
+        ),
+        "input_hash": os.environ.get("CASCADE_INPUT_HASH_MODE", "metadata"),
+        "output_hash": os.environ.get("CASCADE_PROVENANCE_HASH_MODE", "full"),
+        "dag_workers": os.environ.get("CASCADE_DAG_MAX_WORKERS", str(os.cpu_count() or 1)),
+        "progress_interval_ms": os.environ.get("CASCADE_PROGRESS_INTERVAL_MS", "200"),
+        "isolated_timeout_seconds": os.environ.get("CASCADE_ISOLATED_TIMEOUT_SECONDS", "0"),
+    }
+    cpp_worker = os.environ.get("CASCADE_CPP_WORKER", os.path.join(prefix, "bin", "cascade-worker"))
+    python_worker = os.environ.get(
+        "CASCADE_PYTHON_WORKER", os.path.join(prefix, "bin", "cascade-python-worker")
+    )
+    python_runtime = os.environ.get("CASCADE_PYTHON_RUNTIME_DIR", os.path.join(prefix, "lib"))
+    values.update(
+        {
+            "cpp_worker": os.path.realpath(cpp_worker),
+            "python_worker": os.path.realpath(python_worker),
+            "python_runtime": os.path.realpath(python_runtime),
+        }
+    )
+
+    checks = [
+        _runtime_path_check(cpp_worker, "C++ worker"),
+        _runtime_path_check(python_worker, "Python worker"),
+        _runtime_path_check(python_runtime, "Python runtime"),
+    ]
+    if values["input_hash"] not in ("metadata", "auto", "full"):
+        checks.append({"name": "input hash", "status": "ERROR", "detail": values["input_hash"]})
+    if values["output_hash"] not in ("full", "metadata", "none"):
+        checks.append({"name": "output hash", "status": "ERROR", "detail": values["output_hash"]})
+
+    integers = {
+        "dag workers": (values["dag_workers"], False),
+        "progress interval": (values["progress_interval_ms"], True),
+    }
+    for name, (raw, allow_zero) in integers.items():
+        try:
+            parsed = int(raw)
+            valid = parsed >= 0 if allow_zero else parsed > 0
+        except ValueError:
+            valid = False
+        if not valid:
+            checks.append({"name": name, "status": "ERROR", "detail": str(raw)})
+    try:
+        timeout = float(values["isolated_timeout_seconds"])
+        timeout_valid = math.isfinite(timeout) and timeout >= 0
+    except ValueError:
+        timeout_valid = False
+    if not timeout_valid:
+        checks.append(
+            {"name": "isolated timeout", "status": "ERROR", "detail": values["isolated_timeout_seconds"]}
+        )
+
+    limits = {}
+    for variable in (
+        "CASCADE_WORKER_MEMORY_LIMIT_MB",
+        "CASCADE_WORKER_FILE_SIZE_LIMIT_MB",
+        "CASCADE_WORKER_MAX_PROCESSES",
+        "CASCADE_WORKER_MAX_OPEN_FILES",
+    ):
+        raw = os.environ.get(variable)
+        limits[variable] = raw
+        if raw is not None and (not raw.isdigit() or int(raw) <= 0):
+            checks.append({"name": variable, "status": "ERROR", "detail": raw})
+    values["worker_limits"] = limits
+
+    payload = {"runtime": values, "checks": checks}
+    if args.json:
+        _emit(payload, True)
+    else:
+        for key, value in values.items():
+            if key == "worker_limits":
+                for variable, limit in value.items():
+                    print(f"{variable}: {limit if limit is not None else 'unset'}")
+            else:
+                print(f"{key}: {value}")
         for item in checks:
             _log(item["status"], f"{item['name']}: {item['detail']}")
     if any(item["status"] == "ERROR" for item in checks):

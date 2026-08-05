@@ -93,6 +93,20 @@ Release builds enable stack-protector and fortified libc checks and link with
 RELRO, immediate symbol binding, and a non-executable stack. The native isolated
 worker is also built as PIE.
 
+On Linux, verify release hardening from the installed artifacts rather than relying
+only on build flags:
+
+```bash
+readelf -h "${CASCADE_PREFIX}/bin/cascade-worker" | grep 'Type:'
+readelf -lW "${CASCADE_PREFIX}/bin/cascade-worker" | grep GNU_STACK
+readelf -lW "${CASCADE_PREFIX}/lib/libCascade.so" | grep GNU_RELRO
+readelf -dW "${CASCADE_PREFIX}/lib/libCascade.so" | grep -E 'BIND_NOW|FLAGS_1'
+```
+
+The worker should be a position-independent executable, `GNU_STACK` should not be
+executable, and the library should report RELRO plus immediate binding. Tool output
+varies by binutils release.
+
 ## Runtime environment
 
 For a non-system prefix:
@@ -138,6 +152,8 @@ Other runtime directories:
 | `CASCADE_CACHE_DIR` | Default snapshot-cache root |
 
 Per-module setters take precedence for output/cache placement after construction.
+See [Runtime reliability and performance](runtime-reference.md#runtime-variables)
+for hashing, cache retention, DAG, progress, isolation, and worker-limit controls.
 
 ## Verify an installation
 
@@ -173,9 +189,10 @@ framework change:
 4. run `cascade doctor plugins`;
 5. run normal and isolated smoke tests.
 
-## CI expectations
+## Release verification
 
-A release or pull request pipeline should minimally run:
+Before preparing a release, run locally in the intended ROOT and compiler
+environment:
 
 ```bash
 scons test -j2
@@ -184,5 +201,5 @@ git diff --check
 
 For plugin changes, also install into a temporary prefix, build a verified test
 package, run `cascade doctor plugins`, and execute one in-process and one isolated
-workflow. Distribution pipelines should additionally build a signed package and
-run `cascade --require-signed doctor plugins`.
+workflow. Signed distributions should additionally build a signed package and run
+`cascade --require-signed doctor plugins`.

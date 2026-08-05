@@ -11,8 +11,8 @@ supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
-The current development release is **0.3.0** with the initial public
-**plugin ABI 1**. The full build fingerprint is checked in addition to the
+The current development release is **0.3.0** with
+**plugin ABI 2**. The full build fingerprint is checked in addition to the
 integer ABI.
 
 Release notes are tracked in [CHANGELOG.md](CHANGELOG.md), and the verification
@@ -112,6 +112,7 @@ Verify the installed package and run both execution modes:
 
 ```bash
 cascade doctor plugins
+cascade doctor runtime
 cascade module list
 cascade dag run workflow.yaml
 python3 run_pipeline.py --output example-output
@@ -299,12 +300,13 @@ See [Plugin development and distribution](docs/plugins.md) and
 | Guide | Use it when |
 | --- | --- |
 | [Quickstart](docs/quickstart.md) | Building and running the included mixed plugin for the first time |
-| [Build and installation](docs/build.md) | Configuring prefixes, libraries, Python paths, and CI |
+| [Build and installation](docs/build.md) | Configuring prefixes, libraries, Python paths, and local verification |
 | [Writing analysis modules](docs/module-authoring.md) | Implementing C++ or Python analysis logic |
 | [Parameters](docs/parameters.md) | Declaring typed contracts and loading YAML/JSON values |
 | [Configuration schema](docs/configuration.md) | Authoring input, cut, histogram, and parameter files |
 | [AnalysisManager](docs/analysis-manager.md) | Building classic TTree and RDataFrame analyses |
 | [Execution contract](docs/execution.md) | Understanding lifecycle, cache, transactions, cancellation, isolation |
+| [Runtime reliability and performance](docs/runtime-reference.md) | Choosing hashing, cache, DAG, worker, and isolation settings |
 | [DAG execution](docs/dag.md) | Composing modules and propagating failures or parameters |
 | [Command-line interface](docs/cli.md) | Diagnosing installations and running modules, DAG workflows, or ROOT macros |
 | [Plotting](docs/plotting.md) | Producing ROOT or Matplotlib plots |
@@ -338,5 +340,3 @@ git diff --check
 
 The `tidy` target requires `clang-tidy` to be installed and available on
 `PATH`.
-
-CI configuration is available in `.github/workflows/ci.yml`.

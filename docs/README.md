@@ -17,6 +17,7 @@
 ## Reference and operations
 
 - [Build and installation](build.md)
+- [Runtime reliability and performance reference](runtime-reference.md)
 - [Examples](examples.md)
 - [Troubleshooting](troubleshooting.md)
 - [FAQ](faq.md)

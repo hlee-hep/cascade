@@ -65,10 +65,15 @@ class IAnalysisModule
             ParamManager &Parameters;
             ~ParameterThaw() { Parameters.Thaw(); }
         } parameterThaw{m_Param};
+        m_Hash.clear();
+        m_CacheDecision = "not_checked";
+        m_CacheReason = "cache check not reached";
         m_ExternalRunReserved = false;
         m_Context.CleanupExternalRun();
         if (result.Failed() && !result.Exception)
             result.Exception = std::make_exception_ptr(std::runtime_error(result.Message.empty() ? "Isolated module failed" : result.Message));
+        m_CacheDecision = result.CacheDecision;
+        m_CacheReason = result.CacheReason;
         return Finish_(result.Status, result.Phase, result.Message, result.Exception);
     }
 
@@ -181,7 +186,9 @@ class IAnalysisModule
             const std::string provenancePath =
                 ProvenanceRecorder::SuccessfulModuleManifestPath(m_Context.OutputDirectory(), m_Context.RunId());
             const auto outputs = m_Context.Outputs().StagedOutputs();
-            const RunResult successful{ModuleStatus::Done, ModulePhase::None, "", nullptr};
+            RunResult successful{ModuleStatus::Done, ModulePhase::None, "", nullptr};
+            successful.CacheDecision = m_CacheDecision;
+            successful.CacheReason = m_CacheReason;
             auto manifest = ProvenanceRecorder::BuildModuleRun(
                 m_Context.RunId(), GetMetadata(), m_CodeVersionHash, m_Hash, m_Param.DumpJSON(),
                 m_Context.OutputDirectory(), m_Context.CacheDirectory(), successful, outputs, provenancePath);
@@ -431,6 +438,8 @@ class IAnalysisModule
     ExecutionContext m_Context;
     bool m_ExternalRunReserved = false;
     std::optional<PluginOrigin> m_PluginOrigin;
+    std::string m_CacheDecision = "not_checked";
+    std::string m_CacheReason;
 
     struct CheckDecision
     {
@@ -443,6 +452,8 @@ class IAnalysisModule
         if (status != ModuleStatus::Done && m_Context.IsActive()) m_Context.RollbackRun();
         SetStatus(status);
         RunResult result{status, phase, std::move(message), std::move(exception)};
+        result.CacheDecision = m_CacheDecision;
+        result.CacheReason = m_CacheReason;
         {
             std::lock_guard<std::mutex> lock(m_ResultMutex);
             m_LastResult = result;
@@ -522,6 +533,8 @@ class IAnalysisModule
     {
         if (m_Param.Get<bool>("dry_run"))
         {
+            m_CacheDecision = "not_checked";
+            m_CacheReason = "dry_run enabled";
             LOG_INFO(Name(), "DRY run is enabled. variables and setting will be shown.");
             for (auto &[_, mg] : m_Managers)
             {
@@ -532,26 +545,39 @@ class IAnalysisModule
             LOG_INFO("ParamManager", m_Param.DumpJSON());
             return {false, "dry_run enabled"};
         }
+        m_CacheDecision = "checking";
+        m_CacheReason = "evaluating snapshot cache";
         m_Hash = ComputeSnapshotHash_();
         if (m_Param.Get<bool>("force_run"))
         {
+            m_CacheDecision = "bypassed";
+            m_CacheReason = "force_run enabled";
             LOG_INFO(Name(), "Force run is enabled. Run will be started.");
             return {true, ""};
         }
 
         auto cached = CacheManager::Lookup(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+        if (!cached)
+        {
+            m_CacheDecision = "miss";
+            m_CacheReason = "snapshot not found";
+        }
         if (cached)
         {
             std::string reason;
             if (!ProvenanceRecorder::ValidateCachedRun(cached->Provenance, m_Hash, m_Context.OutputDirectory(), &reason))
             {
                 LOG_WARN(Name(), "Discarding stale snapshot cache entry: " << reason);
+                m_CacheDecision = "miss";
+                m_CacheReason = reason;
                 CacheManager::RemoveHash(m_Basename, m_Hash, m_Context.CacheDirectory().string());
                 cached.reset();
             }
         }
         if (cached)
         {
+            m_CacheDecision = "hit";
+            m_CacheReason = "snapshot and recorded outputs matched";
             ProvenanceRecorder::SetCacheSource(m_Context.RunId(), cached->Provenance);
             LOG_INFO(Name(), "Matching snapshot is already cached.");
         }

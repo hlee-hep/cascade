@@ -140,6 +140,8 @@ class _FakeModuleResult:
     status = types.SimpleNamespace(name="Done")
     phase = types.SimpleNamespace(name="None_")
     message = ""
+    cache_decision = "hit"
+    cache_reason = "snapshot and recorded outputs matched"
 
     def succeeded(self):
         return True
@@ -247,6 +249,65 @@ class CliTests(unittest.TestCase):
         args = cli_parser.build_parser().parse_args(["--require-signed", "module", "list"])
         self.assertTrue(args.require_signed)
         self.assertIs(args.func, cli_execution.cmd_module_list)
+
+    def test_module_run_explains_cache_and_restores_runtime_options(self):
+        controller = _FakeController()
+        args = cli_parser.build_parser().parse_args(
+            [
+                "module", "run", "AnalysisModule", "--name", "analysis",
+                "--explain-cache", "--input-hash", "full", "--output-hash", "metadata",
+                "--timeout", "12",
+            ]
+        )
+        output = io.StringIO()
+        previous_input = os.environ.get("CASCADE_INPUT_HASH_MODE")
+        with mock.patch.object(cli_execution, "_load_controller", return_value=controller), \
+                contextlib.redirect_stdout(output):
+            cli_execution.cmd_module_run(args)
+        self.assertIn("Cache hit: snapshot and recorded outputs matched", output.getvalue())
+        self.assertEqual(os.environ.get("CASCADE_INPUT_HASH_MODE"), previous_input)
+
+    def test_runtime_doctor_reports_resolved_workers_and_policies(self):
+        build_directory = pathlib.Path(__file__).parents[1] / "build"
+        with tempfile.TemporaryDirectory(dir=build_directory) as directory:
+            root = pathlib.Path(directory)
+            cpp_worker = root / "cascade-worker"
+            python_worker = root / "cascade-python-worker"
+            runtime = root / "runtime"
+            runtime.mkdir()
+            for worker in (cpp_worker, python_worker):
+                worker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                worker.chmod(0o700)
+            environment = {
+                "CASCADE_CPP_WORKER": str(cpp_worker),
+                "CASCADE_PYTHON_WORKER": str(python_worker),
+                "CASCADE_PYTHON_RUNTIME_DIR": str(runtime),
+                "CASCADE_INPUT_HASH_MODE": "auto",
+                "CASCADE_PROVENANCE_HASH_MODE": "full",
+            }
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, environment, clear=False), contextlib.redirect_stdout(output):
+                cli_system.cmd_doctor_runtime(types.SimpleNamespace(json=True))
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["runtime"]["input_hash"], "auto")
+            self.assertTrue(all(check["status"] == "OK" for check in payload["checks"]))
+
+    def test_dag_progress_and_runtime_options_are_exposed(self):
+        args = cli_parser.build_parser().parse_args(
+            ["dag", "run", "workflow.yaml", "--progress", "--workers", "3", "--input-hash", "full"]
+        )
+        self.assertTrue(args.progress)
+        self.assertEqual(args.workers, 3)
+        self.assertEqual(args.input_hash, "full")
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                cli_parser.build_parser().parse_args(
+                    ["dag", "run", "workflow.yaml", "--workers", "1.5"]
+                )
+            with self.assertRaises(SystemExit):
+                cli_parser.build_parser().parse_args(
+                    ["module", "run", "AnalysisModule", "--timeout", "nan"]
+                )
 
     def test_cache_list_explain_and_prune_missing_provenance(self):
         with tempfile.TemporaryDirectory() as directory:

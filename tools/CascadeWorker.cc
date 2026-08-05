@@ -37,12 +37,20 @@ bool WriteAll(int descriptor, const void *data, std::size_t size)
 bool SendResult(int descriptor, RunResult result)
 {
     if (result.Message.size() > kCascadeWorkerMaxMessageSize) result.Message.resize(kCascadeWorkerMaxMessageSize);
+    if (result.CacheDecision.size() > kCascadeWorkerMaxCacheDetailSize)
+        result.CacheDecision.resize(kCascadeWorkerMaxCacheDetailSize);
+    if (result.CacheReason.size() > kCascadeWorkerMaxCacheDetailSize)
+        result.CacheReason.resize(kCascadeWorkerMaxCacheDetailSize);
     IsolatedRunHeader header;
     header.Status = static_cast<std::int32_t>(result.Status);
     header.Phase = static_cast<std::int32_t>(result.Phase);
     header.MessageSize = static_cast<std::uint32_t>(result.Message.size());
+    header.CacheDecisionSize = static_cast<std::uint32_t>(result.CacheDecision.size());
+    header.CacheReasonSize = static_cast<std::uint32_t>(result.CacheReason.size());
     return WriteAll(descriptor, &header, sizeof(header)) &&
-           WriteAll(descriptor, result.Message.data(), result.Message.size());
+           WriteAll(descriptor, result.Message.data(), result.Message.size()) &&
+           WriteAll(descriptor, result.CacheDecision.data(), result.CacheDecision.size()) &&
+           WriteAll(descriptor, result.CacheReason.data(), result.CacheReason.size());
 }
 
 RunResult Failure(const std::string &message)

@@ -75,6 +75,8 @@ struct RunResult
     ModulePhase Phase = ModulePhase::None;
     std::string Message;
     std::exception_ptr Exception;
+    std::string CacheDecision = "not_checked";
+    std::string CacheReason;
 
     bool Succeeded() const { return Status == ModuleStatus::Done; }
     bool Failed() const { return Status == ModuleStatus::Failed; }

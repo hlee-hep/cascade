@@ -257,6 +257,20 @@ enum class InputHashMode
     Auto
 };
 
+const char *ArtifactHashModeName(ArtifactHashMode mode)
+{
+    switch (mode)
+    {
+    case ArtifactHashMode::Full:
+        return "full";
+    case ArtifactHashMode::Metadata:
+        return "metadata";
+    case ArtifactHashMode::None:
+        return "none";
+    }
+    return "none";
+}
+
 InputHashMode ConfiguredInputHashMode()
 {
     const char *configured = std::getenv("CASCADE_INPUT_HASH_MODE");
@@ -309,6 +323,7 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
 {
     ArtifactProvenance artifact;
     artifact.Path = recordedPath;
+    artifact.HashMode = ArtifactHashModeName(hashMode);
     std::error_code error;
     const auto status = fs::symlink_status(source, error);
     if (error || !fs::exists(status))
@@ -394,6 +409,7 @@ json ArtifactJson(const ArtifactProvenance &artifact)
             {"kind", artifact.Kind},
             {"exists", artifact.Exists},
             {"size", artifact.Size},
+            {"hash_mode", artifact.HashMode.empty() ? json(nullptr) : json(artifact.HashMode)},
             {"identity",
              artifact.Exists
                  ? json{{"device", artifact.Device},
@@ -411,6 +427,8 @@ ArtifactProvenance ArtifactFromJson(const json &value)
     ArtifactProvenance artifact;
     artifact.Path = value.value("path", "");
     artifact.Kind = value.value("kind", "");
+    if (value.contains("hash_mode") && value["hash_mode"].is_string())
+        artifact.HashMode = value["hash_mode"].get<std::string>();
     artifact.Exists = value.value("exists", false);
     artifact.Size = value.value("size", static_cast<std::uintmax_t>(0));
     const auto identity = value.value("identity", json(nullptr));
@@ -562,6 +580,8 @@ std::string ModuleRunManifest::ToJSON(int indent) const
          {{"isolated", Isolated},
           {"cache_hit", CacheHit},
           {"dry_run", DryRun},
+          {"cache_decision", CacheDecision},
+          {"cache_reason", CacheReason},
           {"cache_source_manifest", CacheSourceManifest.empty() ? json(nullptr) : json(CacheSourceManifest)}}},
         {"result", {{"status", ToString(Status)}, {"phase", ToString(Phase)}, {"message", Message}}},
         {"artifacts", {{"inputs", inputs}, {"outputs", outputs}}},
@@ -675,6 +695,8 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     manifest.Isolated = active.Isolated;
     manifest.CacheHit = result.Status == ModuleStatus::Skipped && result.Message == "snapshot already cached";
     manifest.DryRun = result.Status == ModuleStatus::Skipped && result.Message == "dry_run enabled";
+    manifest.CacheDecision = result.CacheDecision;
+    manifest.CacheReason = result.CacheReason;
     manifest.CacheSourceManifest = active.CacheSourceManifest;
     manifest.Status = result.Status;
     manifest.Phase = result.Phase;
@@ -742,6 +764,8 @@ ModuleRunManifest ProvenanceRecorder::LoadModuleRun(const fs::path &path)
     manifest.Isolated = execution.value("isolated", false);
     manifest.CacheHit = execution.value("cache_hit", false);
     manifest.DryRun = execution.value("dry_run", false);
+    manifest.CacheDecision = execution.value("cache_decision", manifest.CacheHit ? "hit" : "not_checked");
+    manifest.CacheReason = execution.value("cache_reason", "");
     if (execution.contains("cache_source_manifest") && execution["cache_source_manifest"].is_string())
         manifest.CacheSourceManifest = execution["cache_source_manifest"].get<std::string>();
     const auto result = value.value("result", json::object());
@@ -789,11 +813,13 @@ bool ProvenanceRecorder::ValidateCachedRun(const fs::path &path, const std::stri
         const fs::path relative(recorded.Path);
         if (relative.empty() || relative.is_absolute() || relative.has_root_path())
             return fail("cached provenance contains an invalid output path");
-        const fs::path candidate = fs::weakly_canonical(root / relative, error);
-        if (error) return fail("cached output cannot be resolved: " + recorded.Path);
-        const fs::path contained = candidate.lexically_relative(root);
-        if (contained.empty() || *contained.begin() == "..")
+        const fs::path unresolved = (root / relative).lexically_normal();
+        const fs::path resolvedParent = fs::weakly_canonical(unresolved.parent_path(), error);
+        if (error) return fail("cached output parent cannot be resolved: " + recorded.Path);
+        const fs::path containedParent = resolvedParent.lexically_relative(root);
+        if (resolvedParent != root && (containedParent.empty() || *containedParent.begin() == ".."))
             return fail("cached output escapes the configured output directory: " + recorded.Path);
+        const fs::path candidate = resolvedParent / unresolved.filename();
         struct stat metadata{};
         if (lstat(candidate.c_str(), &metadata) == 0 && recorded.Inode != 0)
         {
@@ -808,7 +834,12 @@ bool ProvenanceRecorder::ValidateCachedRun(const fs::path &path, const std::stri
         ArtifactProvenance current;
         try
         {
-            current = CaptureArtifact(candidate, recorded.Path, ArtifactHashMode::Full);
+            ArtifactHashMode validationMode = ArtifactHashMode::Full;
+            if (recorded.HashMode == "metadata")
+                validationMode = ArtifactHashMode::Metadata;
+            else if (recorded.HashMode == "none" || (recorded.HashMode.empty() && recorded.Sha256.empty()))
+                validationMode = ArtifactHashMode::None;
+            current = CaptureArtifact(candidate, recorded.Path, validationMode);
         }
         catch (const std::exception &failure)
         {

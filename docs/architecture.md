@@ -47,8 +47,11 @@ The framework inserts:
 - output/cache commit;
 - rollback and terminal status.
 
-The same contract is implemented by C++ `IAnalysisModule` and Python
-`base_module`.
+The lifecycle state machine, snapshot/cache decision, transaction, provenance,
+plugin verification, and DAG execution are implemented once in C++. C++
+`IAnalysisModule` and Python `base_module` provide language-specific user hooks on
+that shared contract. Python retains object adaptation and import logic rather than
+a second execution implementation.
 
 ## Boundary 3: durable versus in-memory state
 
@@ -82,7 +85,7 @@ persistent prefix config + runtime prefix
 ### Execution
 
 ```text
-registered parameters + manager config + code hash
+registered parameters + manager config + tracked-input identity + code hash
   -> snapshot
   -> cache decision
   -> analysis phases
@@ -118,6 +121,14 @@ validated nodes/dependencies
 ## Concurrency
 
 Registries and controller bookkeeping are guarded. One module instance serializes
-its runs; independent instances can run concurrently. External output paths and
-non-thread-safe ROOT/application resources remain the module author's
+its runs; independent instances can run concurrently. Parameters are immutable for
+the duration of a run. Hierarchical inter-process locks protect overlapping staged
+output commits, and recovery uses recorded artifact identity to avoid reverting a
+newer publisher.
+
+ROOT work remains process-wide serialized. C++ modules that declare no analysis
+manager use, plus isolated processes, may use the bounded DAG pool. Python
+in-process modules use the conservative serial lane because the framework cannot
+prove that plugin globals and imported libraries are thread-safe. External side
+effects and unregistered direct output paths remain the module author's
 responsibility.

@@ -227,6 +227,42 @@ class py_amcm:
             self._python_index_cache = _load_python_plugin_index(self.require_signed)
         return self._python_index_cache
 
+    def refresh_plugins(self):
+        if self.ctrl.get_dag().is_executing():
+            raise RuntimeError("Cannot refresh plugins while the DAG is executing")
+        global _PYPLUGIN_CACHE, _PYPLUGIN_CACHE_KEY
+        previous_global = _PYPLUGIN_CACHE
+        previous_key = _PYPLUGIN_CACHE_KEY
+        previous_index = dict(self._python_index())
+        try:
+            _PYPLUGIN_CACHE = None
+            _PYPLUGIN_CACHE_KEY = None
+            refreshed = _load_python_plugin_index(self.require_signed)
+            changed = sorted(
+                name
+                for name in previous_index.keys() & refreshed.keys()
+                if previous_index[name]["sha256"] != refreshed[name]["sha256"]
+            )
+            if changed:
+                raise RuntimeError(
+                    "Installed Python plugins changed and require a new process: "
+                    + ", ".join(changed)
+                )
+            self._python_index_cache = refreshed
+            added_cpp = list(self.ctrl.refresh_plugins())
+            added_python = sorted(refreshed.keys() - previous_index.keys())
+            removed_python = sorted(previous_index.keys() - refreshed.keys())
+            return {
+                "added_cpp": sorted(added_cpp),
+                "added_python": added_python,
+                "removed_python": removed_python,
+            }
+        except Exception:
+            _PYPLUGIN_CACHE = previous_global
+            _PYPLUGIN_CACHE_KEY = previous_key
+            self._python_index_cache = previous_index
+            raise
+
     def _register_python_plugin_info(self, info, instance_name):
         mod = _import_python_plugin(info)
         cls = getattr(mod, info["class"])
