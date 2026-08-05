@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "AMCM.hh"
 #include "Provenance.hh"
 #include "AnalysisModuleRegistry.hh"

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="cascade_logo.svg" alt="Cascade icon" width="128"/>
+</p>
+
 # Cascade documentation
 
 ## Start here

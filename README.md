@@ -1,6 +1,5 @@
 <p align="center">
-  <img src="docs/framework.png" alt="Cascade" width="300"/>
-  <img src="docs/framework_light.png" alt="Cascade light" width="300"/>
+  <img src="docs/cascade.svg" alt="Cascade — composable analysis with secure caching and DAG execution" width="615"/>
 </p>
 
 # Cascade
