@@ -216,9 +216,10 @@ Python:
 result = controller.run_module_isolated("module_instance")
 ```
 
-The parent reserves the run and staging directory, then forks. The child executes
-the normal lifecycle and returns a bounded status message through a pipe. The
-parent converts:
+The parent reserves the run and staging directory, then starts a clean worker with
+`exec()`. The worker rediscovers the installed plugin, verifies that its manifest
+and artifact hashes still match, reconstructs the module, and executes the normal
+lifecycle. A bounded status message returns through a pipe. The parent converts:
 
 - fatal signals;
 - abnormal exit;
@@ -237,12 +238,24 @@ Committed files and cache records cross the boundary. These do not:
 
 Design isolated pipelines around files or another explicit durable protocol.
 
-Isolation currently requires POSIX `fork()`. It contains crashes but does not
-restrict filesystem, network, or process privileges and is not a security sandbox.
+Only modules discovered from verified plugin packages can run in isolation; an
+arbitrary in-memory module handle cannot be reconstructed safely after `exec()`.
+Set `CASCADE_ISOLATED_TIMEOUT_SECONDS` to a positive number to enforce a worker
+deadline; zero or an unset value means no deadline. Isolation contains crashes but
+does not restrict filesystem, network, or process privileges and is not a security
+sandbox.
+
+Provenance hashing defaults to `CASCADE_PROVENANCE_HASH_MODE=full`. Use `metadata`
+to avoid reading complete artifacts, or `none` to record only existence, kind, and
+size where throughput matters more than content fingerprints. Cache histories keep
+256 snapshots per module by default; override that with
+`CASCADE_CACHE_MAX_SNAPSHOTS` (`0` means unlimited).
 
 ## Concurrency
 
 - A module instance serializes its own runs.
+- Module parameters are frozen from run reservation through completion; concurrent
+  reads are safe and writes fail instead of changing a live snapshot.
 - Different module instances may run concurrently.
 - Registry/controller metadata is protected for concurrent access.
 - DAG structure cannot be mutated while execution is active.

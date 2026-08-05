@@ -10,6 +10,10 @@ dict_cxx = os.path.join(builddir, "utilsDict.cxx")
 pcm = os.path.join(builddir, "utilsDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libutils.rootmap")
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libutils.so",
+    r"-Wl,-rpath=\$$ORIGIN",
+])
 
 dict = modenv.Command(
     target=[dict_cxx, pcm, rootmap],

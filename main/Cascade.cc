@@ -403,6 +403,12 @@ PYBIND11_MODULE(_cascade, m)
                  py::gil_scoped_release release;
                  parameters.LoadJSONFile(path);
              })
+        .def("set_params_from_json",
+             [](ParamManager &parameters, const std::string &document)
+             {
+                 py::gil_scoped_release release;
+                 parameters.SetParamsFromJSON(document);
+             })
         .def("save_json_file",
              [](const ParamManager &parameters, const std::string &path)
              {
@@ -459,14 +465,15 @@ PYBIND11_MODULE(_cascade, m)
         .def_static("compute",
                     [](const ParamManager &parameters, const std::string &moduleName,
                        const std::string &codeVersion, const std::string &analysisState,
-                       const std::string &executionState)
+                       const std::string &executionState, const std::string &pluginArtifactHash)
                     {
                         py::gil_scoped_release release;
                         return SnapshotHasher::ComputeSerialized(parameters, moduleName, codeVersion,
-                                                                 analysisState, executionState);
+                                                                 analysisState, executionState, pluginArtifactHash);
                     },
                     py::arg("parameters"), py::arg("module_name"), py::arg("code_version"),
-                    py::arg("analysis_state"), py::arg("execution_state") = "");
+                    py::arg("analysis_state"), py::arg("execution_state") = "",
+                    py::arg("plugin_artifact_hash") = "");
     py::class_<CacheSnapshot>(m, "CacheSnapshot")
         .def_readonly("module", &CacheSnapshot::Module)
         .def_readonly("hash", &CacheSnapshot::Hash)
@@ -923,6 +930,9 @@ PYBIND11_MODULE(_cascade, m)
         .def("run", [](IAnalysisModule &module) { py::gil_scoped_release release; return module.Run(); })
         .def("prepare_external_run",
              [](IAnalysisModule &module) { py::gil_scoped_release release; module.PrepareExternalRun(); })
+        .def("prepare_external_run_with_id",
+             [](IAnalysisModule &module, const std::string &runId)
+             { py::gil_scoped_release release; module.PrepareExternalRunWithId(runId); })
         .def("run_prepared_external",
              [](IAnalysisModule &module) { py::gil_scoped_release release; return module.RunPreparedExternal(); })
         .def("adopt_external_run_result",
@@ -979,6 +989,12 @@ PYBIND11_MODULE(_cascade, m)
              {
                  py::gil_scoped_release release;
                  module.LoadParamsFromJSON(path);
+             })
+        .def("set_params_from_json",
+             [](IAnalysisModule &module, const std::string &document)
+             {
+                 py::gil_scoped_release release;
+                 module.SetParamsFromJSON(document);
              })
         .def("save_params_to_yaml",
              [](IAnalysisModule &module, const std::string &path)

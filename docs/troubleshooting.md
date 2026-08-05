@@ -52,6 +52,13 @@ installed library directory in `LD_LIBRARY_PATH`.
 
 ## Python import failures
 
+If a newly installed Cascade reports missing C++ symbols while an older Cascade is
+also installed, inspect `LD_LIBRARY_PATH` first. ELF `RUNPATH` deliberately has
+lower priority than `LD_LIBRARY_PATH`, so an old `libAMCM.so` or manager library in
+that variable can be selected ahead of the libraries beside the active
+`libCascade.so`. Remove the stale entry or start from the intended Cascade runtime
+environment, then verify with `ldd`.
+
 ### `No module named cascade`
 
 For the default layout, `PYTHONPATH` contains the parent of the `cascade`

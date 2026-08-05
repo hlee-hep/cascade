@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+import json
+import os
+import struct
+import sys
+
+
+RESULT_DESCRIPTOR = int(sys.argv[1]) if len(sys.argv) == 2 else -1
+RESULT_MAGIC = 0x43534344
+MAX_MESSAGE_SIZE = 4096
+
+
+def send_result(status, phase, message):
+    payload = str(message).encode("utf-8", errors="replace")[:MAX_MESSAGE_SIZE]
+    header = struct.pack("=IiiI", RESULT_MAGIC, int(status), int(phase), len(payload))
+    data = header + payload
+    while data:
+        written = os.write(RESULT_DESCRIPTOR, data)
+        data = data[written:]
+
+
+def main():
+    try:
+        if RESULT_DESCRIPTOR < 3:
+            raise RuntimeError("Isolated worker requires a valid result descriptor")
+        request = json.load(sys.stdin)
+        if request.get("schema") != 1:
+            raise RuntimeError("Unsupported isolated worker request schema")
+
+        from cascade.py_amcm import _load_python_plugin_index, py_amcm
+
+        require_signed = bool(request.get("require_signed", False))
+        info = _load_python_plugin_index(require_signed).get(request["module"])
+        if info is None:
+            raise RuntimeError(f"Python plugin module not found: {request['module']}")
+        origin = info["origin"]
+        if (
+            origin["manifest_sha256"] != request["manifest_sha256"]
+            or origin["artifact_sha256"] != request["artifact_sha256"]
+        ):
+            raise RuntimeError(
+                "Plugin changed between isolated execution validation and worker startup"
+            )
+
+        controller = py_amcm(require_signed=require_signed)
+        handle = controller.register_module(request["module"], request["instance"])
+        module = handle._module
+        module.set_cache_directory(request["cache_directory"])
+        module.set_output_directory(request["output_directory"])
+        module.set_params_from_json(json.dumps(request["params"]))
+        module.prepare_external_run_with_id(request["run_id"])
+        result = module.run_prepared_external()
+        statuses = {
+            "Pending": 0,
+            "Initializing": 1,
+            "Running": 2,
+            "Finalizing": 3,
+            "Done": 4,
+            "Skipped": 5,
+            "Interrupted": 6,
+            "Failed": 7,
+        }
+        phases = {"None": 0, "Init": 1, "Check": 2, "Execute": 3, "Finalize": 4, "Commit": 5}
+        send_result(statuses[result.status.value], phases[result.phase.value], result.message)
+        return 0
+    except Exception as error:
+        # ModuleStatus::Failed == 7 and ModulePhase::Execute == 3.
+        send_result(7, 3, error)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

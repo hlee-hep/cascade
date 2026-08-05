@@ -14,6 +14,7 @@
 #include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <regex>
 #include <sstream>
 using namespace logger;
@@ -1321,34 +1322,41 @@ std::map<std::string, std::string> AnalysisManager::ListCutExpressions() const {
 std::string AnalysisManager::SnapshotState() const
 {
     namespace fs = std::filesystem;
-    std::ostringstream state;
-    state << "tree=" << m_InTreeName << ";rdf=" << m_UseRdf << ";";
+    nlohmann::json inputs = nlohmann::json::array();
     for (const auto &file : m_InputFiles)
     {
         std::error_code error;
         const auto size = fs::file_size(file, error);
-        state << "input=" << file;
+        nlohmann::json input = {{"path", file}};
         if (!error)
         {
             const auto modified = fs::last_write_time(file, error);
-            state << ":size=" << size;
-            if (!error) state << ":mtime=" << modified.time_since_epoch().count();
+            input["size"] = size;
+            if (!error) input["mtime"] = modified.time_since_epoch().count();
         }
-        state << ";";
+        inputs.push_back(std::move(input));
     }
+
+    nlohmann::json cuts = nlohmann::json::object();
     for (const auto &[name, expression] : m_RawCutExpr)
-        state << "cut=" << name << ":" << expression << ";";
+        cuts[name] = expression;
+
+    nlohmann::json histograms = nlohmann::json::array();
     for (const auto &[alias, prefixes] : m_HistMap)
         for (const auto &[prefix, bins] : prefixes)
         {
-            state << "hist=" << alias << ":" << prefix << ":";
+            std::string expression;
             if (m_HistExpressions.count(alias) && m_HistExpressions.at(alias).count(prefix))
-                state << m_HistExpressions.at(alias).at(prefix);
-            for (const double bin : bins)
-                state << ":" << bin;
-            state << ";";
+                expression = m_HistExpressions.at(alias).at(prefix);
+            histograms.push_back({{"alias", alias}, {"prefix", prefix}, {"expression", expression}, {"bins", bins}});
         }
-    return state.str();
+    return nlohmann::json{{"schema_version", 2},
+                          {"tree", m_InTreeName},
+                          {"rdf", m_UseRdf},
+                          {"inputs", std::move(inputs)},
+                          {"cuts", std::move(cuts)},
+                          {"histograms", std::move(histograms)}}
+        .dump();
 }
 
 void AnalysisManager::WriteMetadata(const std::string &filename, const std::string &hash, const std::string &baseName, const std::string &paramJson)

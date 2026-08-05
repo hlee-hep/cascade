@@ -49,6 +49,54 @@ YAML::Node MixedToYAML(const MixedElement &value)
 
 ParamManager::ParamManager() = default;
 
+ParamManager::ParamManager(const ParamManager &other)
+{
+    std::lock_guard<std::recursive_mutex> lock(other.m_Mutex);
+    m_RawValues = other.m_RawValues;
+    m_Descriptions = other.m_Descriptions;
+    m_Frozen = false;
+}
+
+ParamManager &ParamManager::operator=(const ParamManager &other)
+{
+    if (this == &other) return *this;
+    std::scoped_lock lock(m_Mutex, other.m_Mutex);
+    if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
+    m_RawValues = other.m_RawValues;
+    m_Descriptions = other.m_Descriptions;
+    return *this;
+}
+
+ParamManager::ParamManager(ParamManager &&other)
+{
+    std::lock_guard<std::recursive_mutex> lock(other.m_Mutex);
+    m_RawValues = std::move(other.m_RawValues);
+    m_Descriptions = std::move(other.m_Descriptions);
+    m_Frozen = false;
+}
+
+ParamManager &ParamManager::operator=(ParamManager &&other)
+{
+    if (this == &other) return *this;
+    std::scoped_lock lock(m_Mutex, other.m_Mutex);
+    if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
+    m_RawValues = std::move(other.m_RawValues);
+    m_Descriptions = std::move(other.m_Descriptions);
+    return *this;
+}
+
+void ParamManager::Freeze()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    m_Frozen = true;
+}
+
+void ParamManager::Thaw()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    m_Frozen = false;
+}
+
 ParamValue ParamManager::ConvertFromYaml_(const YAML::Node &value)
 {
     if (!value || value.IsNull()) return std::monostate{};
@@ -316,6 +364,7 @@ void ParamManager::LoadYAMLFile(const std::string &path) { SetParamsFromYAML(YAM
 
 void ParamManager::SaveYAMLFile(const std::string &path) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     std::ofstream output(path);
     if (!output) throw std::runtime_error("ParamManager: cannot open YAML file: " + path);
     output << DumpYAML(4);
@@ -326,8 +375,15 @@ void ParamManager::LoadJSONFile(const std::string &path)
 {
     std::ifstream input(path);
     if (!input) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
-    json document;
-    input >> document;
+    std::stringstream buffer;
+    buffer << input.rdbuf();
+    SetParamsFromJSON(buffer.str());
+}
+
+void ParamManager::SetParamsFromJSON(const std::string &serialized)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    const json document = json::parse(serialized);
     if (!document.is_object()) throw std::runtime_error("ParamManager: JSON root must be an object.");
 
     for (const auto &[key, entry] : document.items())
@@ -345,6 +401,7 @@ void ParamManager::LoadJSONFile(const std::string &path)
 
 void ParamManager::SaveJSONFile(const std::string &path) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     std::ofstream output(path);
     if (!output) throw std::runtime_error("ParamManager: cannot open JSON file: " + path);
     output << DumpJSON(2);
@@ -353,6 +410,7 @@ void ParamManager::SaveJSONFile(const std::string &path) const
 
 std::string ParamManager::DumpYAML(int indent) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     YAML::Emitter output;
     output.SetIndent(indent);
     output.SetMapFormat(YAML::Block);
@@ -362,10 +420,15 @@ std::string ParamManager::DumpYAML(int indent) const
     return output.c_str();
 }
 
-std::string ParamManager::DumpJSON(int indent) const { return ToJsonInternal_().dump(indent); }
+std::string ParamManager::DumpJSON(int indent) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    return ToJsonInternal_().dump(indent);
+}
 
 void ParamManager::SetParamsFromYAML(const YAML::Node &document)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     if (!document.IsMap()) throw std::runtime_error("ParamManager: YAML root must be a map.");
     for (const auto &item : document)
     {
@@ -381,10 +444,15 @@ void ParamManager::SetParamsFromYAML(const YAML::Node &document)
     }
 }
 
-YAML::Node ParamManager::ToYAMLNode() const { return ToYamlInternal_(); }
+YAML::Node ParamManager::ToYAMLNode() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    return ToYamlInternal_();
+}
 
 void ParamManager::RegisterCommon()
 {
+    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     if (!Has("dry_run")) Register("dry_run", false, "simulate execution only");
     if (!Has("force_run")) Register("force_run", false, "force execution");
 }

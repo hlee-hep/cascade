@@ -339,6 +339,11 @@ untrusted/corrupt data:
 result = controller.run_module_isolated("selection")
 ```
 
+The module must come from a verified installed plugin package. Cascade starts a
+clean worker with `exec()`, rediscovers that package, and checks its manifest and
+artifact hashes before reconstructing the module. Direct in-memory handles remain
+available for in-process execution only.
+
 Only durable effects cross the process boundary:
 
 - committed files;

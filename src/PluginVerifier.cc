@@ -163,6 +163,47 @@ std::vector<unsigned char> ReadDescriptor(int descriptor)
     return data;
 }
 
+std::string Sha256Descriptor(int descriptor)
+{
+    if (lseek(descriptor, 0, SEEK_SET) < 0) throw std::runtime_error("cannot seek plugin file descriptor");
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    if (!context || EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1)
+    {
+        if (context) EVP_MD_CTX_free(context);
+        throw std::runtime_error("cannot initialize plugin SHA-256 digest");
+    }
+    std::array<unsigned char, 1024 * 1024> buffer{};
+    while (true)
+    {
+        const ssize_t count = read(descriptor, buffer.data(), buffer.size());
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0)
+        {
+            EVP_MD_CTX_free(context);
+            throw std::runtime_error("cannot read plugin file descriptor while hashing");
+        }
+        if (count == 0) break;
+        if (EVP_DigestUpdate(context, buffer.data(), static_cast<std::size_t>(count)) != 1)
+        {
+            EVP_MD_CTX_free(context);
+            throw std::runtime_error("cannot update plugin SHA-256 digest");
+        }
+    }
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    if (EVP_DigestFinal_ex(context, digest, &length) != 1)
+    {
+        EVP_MD_CTX_free(context);
+        throw std::runtime_error("cannot finalize plugin SHA-256 digest");
+    }
+    EVP_MD_CTX_free(context);
+    if (lseek(descriptor, 0, SEEK_SET) < 0) throw std::runtime_error("cannot rewind plugin file descriptor");
+    std::ostringstream out;
+    for (unsigned int index = 0; index < length; ++index)
+        out << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[index]);
+    return out.str();
+}
+
 std::vector<unsigned char> ReadRegularFile(const fs::path &path)
 {
     const int descriptor = OpenRegularFile(path);
@@ -536,19 +577,17 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
         std::vector<unsigned char> artifactBytes;
         try
         {
-            artifactBytes = ReadDescriptor(descriptor);
+            const std::string actualHash = Sha256Descriptor(descriptor);
+            if (actualHash != expectedHash)
+                throw std::runtime_error("plugin artifact hash mismatch: " + artifactPath.string());
+            if (entryLanguage == "python") artifactBytes = ReadDescriptor(descriptor);
         }
         catch (...)
         {
             close(descriptor);
             throw;
         }
-        const std::string actualHash = Sha256(artifactBytes);
-        if (actualHash != expectedHash)
-        {
-            close(descriptor);
-            throw std::runtime_error("plugin artifact hash mismatch: " + artifactPath.string());
-        }
+        const std::string actualHash = expectedHash;
 
         if (!language.empty() && entryLanguage != language)
         {

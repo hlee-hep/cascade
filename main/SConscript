@@ -6,6 +6,10 @@ Import("env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "li
 all_objs = core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj
 
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libCascade.so",
+    r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../src:\$$ORIGIN/../utils:\$$ORIGIN/../AnalysisManager:\$$ORIGIN/../ParamManager:\$$ORIGIN/../PlotManager",
+])
 for obj in all_objs:
     if str(obj).endswith(".so"):
         libname = os.path.basename(obj.name)[3:-3]

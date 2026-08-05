@@ -113,6 +113,31 @@ class CrashModule final : public IAnalysisModule
     void Finalize() override {}
 };
 
+class BlockingModule final : public IAnalysisModule
+{
+  public:
+    std::atomic<bool> Started{false};
+    std::atomic<bool> MayFinish{false};
+
+    BlockingModule()
+    {
+        m_Basename = "BlockingModule";
+        m_CodeVersionHash = "test";
+        m_Param.Set("force_run", true);
+    }
+    void Description() const override {}
+
+  protected:
+    bool UsesAnalysisManagers() const override { return false; }
+    void Init() override {}
+    void Execute() override
+    {
+        Started.store(true);
+        while (!MayFinish.load()) std::this_thread::yield();
+    }
+    void Finalize() override {}
+};
+
 void TestLifecycle()
 {
     LifecycleModule success;
@@ -156,6 +181,23 @@ void TestLifecycle()
     assert(commitResult.Status == ModuleStatus::Failed);
     assert(commitResult.Phase == ModulePhase::Commit);
     assert(commitResult.HasException());
+
+    BlockingModule blocking;
+    std::thread running([&]() { assert(blocking.Run().Succeeded()); });
+    while (!blocking.Started.load()) std::this_thread::yield();
+    bool liveMutationRejected = false;
+    try
+    {
+        blocking.GetParamManager().Set("force_run", false);
+    }
+    catch (const std::runtime_error &)
+    {
+        liveMutationRejected = true;
+    }
+    assert(liveMutationRejected);
+    blocking.MayFinish.store(true);
+    running.join();
+    blocking.GetParamManager().Set("force_run", false);
 }
 
 void TestCacheManagerService()
@@ -181,6 +223,33 @@ void TestCacheManagerService()
     assert(CacheManager::ListSnapshots(root.string()).size() == 2);
     assert(CacheManager::Prune(root.string(), "first", true).size() == 1);
     assert(CacheManager::ListSnapshots(root.string()).size() == 1);
+
+    setenv("CASCADE_CACHE_MAX_SNAPSHOTS", "2", 1);
+    CacheManager::AddHash("bounded", "one", root.string());
+    CacheManager::AddHash("bounded", "two", root.string());
+    CacheManager::AddHash("bounded", "three", root.string());
+    const auto bounded = CacheManager::ListSnapshots(root.string(), "bounded");
+    assert(bounded.size() == 2);
+    assert(!CacheManager::Lookup("bounded", "one", root.string()));
+    assert(CacheManager::Lookup("bounded", "three", root.string()));
+    unsetenv("CASCADE_CACHE_MAX_SNAPSHOTS");
+
+    const auto symlinkTarget = root / "outside.yaml";
+    {
+        std::ofstream output(symlinkTarget);
+        output << "schema_version: 1\nsnapshots: []\n";
+    }
+    std::filesystem::create_symlink(symlinkTarget, root / "linked.yaml");
+    bool symlinkRejected = false;
+    try
+    {
+        CacheManager::ListSnapshots(root.string(), "linked");
+    }
+    catch (const std::exception &)
+    {
+        symlinkRejected = true;
+    }
+    assert(symlinkRejected);
     std::filesystem::remove_all(root);
 }
 
@@ -337,7 +406,32 @@ void TestControllerContracts()
     }
     assert(duplicateRejected);
     assert(controller.RunAModule("instance").Status == ModuleStatus::Done);
-    assert(controller.RunAModuleIsolated("instance").Status == ModuleStatus::Done);
+    bool unverifiedIsolationRejected = false;
+    try
+    {
+        controller.RunAModuleIsolated("instance");
+    }
+    catch (const std::runtime_error &error)
+    {
+        unverifiedIsolationRejected = std::string(error.what()).find("verified plugin") != std::string::npos;
+    }
+    assert(unverifiedIsolationRejected);
+
+    const auto isolatedOutput = std::filesystem::temp_directory_path() / "cascade-exec-worker";
+    const auto isolatedCache = std::filesystem::temp_directory_path() / "cascade-exec-worker-cache";
+    std::filesystem::remove_all(isolatedOutput);
+    std::filesystem::remove_all(isolatedCache);
+    auto workerModule = controller.RegisterModule("WorkerTestModule", "worker-instance");
+    workerModule->SetOutputDirectory(isolatedOutput.string());
+    workerModule->SetCacheDirectory(isolatedCache.string());
+    const auto workerResult = controller.RunAModuleIsolated(workerModule);
+    assert(workerResult.Succeeded());
+    {
+        std::ifstream output(isolatedOutput / "worker-result.txt");
+        std::string contents;
+        output >> contents;
+        assert(contents == "exec-worker");
+    }
     const auto workflowPath =
         std::filesystem::temp_directory_path() / "cascade-controller-workflow-provenance.json";
     controller.SaveProvenance(workflowPath.string());
@@ -348,30 +442,6 @@ void TestControllerContracts()
         input >> manifest;
         assert(manifest.at("schema") == "cascade.workflow-run");
         assert(!manifest.at("module_manifests").empty());
-    }
-
-    const std::string crashClassName = "CascadeControllerCrashModule";
-    const auto currentClasses = AnalysisModuleRegistry::Get().ListModules();
-    if (std::find(currentClasses.begin(), currentClasses.end(), crashClassName) == currentClasses.end())
-        AnalysisModuleRegistry::Get().Register(crashClassName, []() { return std::make_unique<CrashModule>(); });
-    const auto crashOutput = std::filesystem::temp_directory_path() / "cascade-isolated-crash";
-    std::filesystem::remove_all(crashOutput);
-    std::filesystem::create_directories(crashOutput);
-    {
-        std::ofstream original(crashOutput / "crash-result.txt");
-        original << "old";
-    }
-    auto crash = controller.RegisterModule(crashClassName, "crash");
-    crash->SetOutputDirectory(crashOutput.string());
-    const auto crashResult = controller.RunAModuleIsolated("crash");
-    assert(crashResult.Status == ModuleStatus::Failed);
-    assert(crashResult.Phase == ModulePhase::Execute);
-    assert(crashResult.Message.find("signal") != std::string::npos);
-    {
-        std::ifstream restored(crashOutput / "crash-result.txt");
-        std::string contents;
-        restored >> contents;
-        assert(contents == "old");
     }
 
     bool missingRejected = false;
@@ -511,6 +581,39 @@ void TestParamRoundTrip()
     flat.Register<int>("count", 0);
     flat.LoadJSONFile(flatJsonPath.string());
     assert(flat.Get<int>("count") == 9);
+
+    ParamManager concurrent;
+    concurrent.Register<int>("value", 0);
+    std::atomic<bool> paramFailure{false};
+    std::vector<std::thread> paramThreads;
+    for (int threadIndex = 0; threadIndex < 8; ++threadIndex)
+        paramThreads.emplace_back(
+            [&, threadIndex]()
+            {
+                try
+                {
+                    for (int iteration = 0; iteration < 2000; ++iteration)
+                    {
+                        concurrent.Set("value", threadIndex * 2000 + iteration);
+                        (void)concurrent.Get<int>("value");
+                        if ((iteration % 100) == 0) (void)concurrent.DumpJSON();
+                    }
+                }
+                catch (...)
+                {
+                    paramFailure.store(true);
+                }
+            });
+    for (auto &thread : paramThreads)
+        thread.join();
+    assert(!paramFailure.load());
+    assert(concurrent.TypeOf("value") == "int");
+
+    ParamManager copied = concurrent;
+    ParamManager moved = std::move(copied);
+    assert(moved.TypeOf("value") == "int");
+    assert(moved.Get<int>("value") >= 0);
+    moved.Set("value", 1);
 }
 
 void TestAnalysisConfigExpressions()

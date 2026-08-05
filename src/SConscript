@@ -2,6 +2,10 @@ import os
 Import("env", "lib_param_obj")
 
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libAMCM.so",
+    r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../ParamManager:\$$ORIGIN/../utils",
+])
 libname = os.path.basename(lib_param_obj[0].name)[3:-3]
 modenv.Append(LIBPATH=[os.path.dirname(str(lib_param_obj[0]))])
 modenv.Append(LIBS=[libname])

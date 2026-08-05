@@ -6,6 +6,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <mutex>
 #include <type_traits>
 #include <unordered_map>
 #include <variant>
@@ -20,6 +21,8 @@ using MixedVector = std::vector<MixedElement>;
 // ===== ParamValue =====
 using ParamValue =
     std::variant<std::monostate, bool, int, long, long long, double, std::string, std::vector<int>, std::vector<double>, std::vector<std::string>, MixedVector>;
+
+class IAnalysisModule;
 
 // ===== traits =====
 template <typename T>
@@ -97,6 +100,8 @@ class __attribute__((visibility("default"))) ParamManager
     };
 
   private:
+    mutable std::recursive_mutex m_Mutex;
+    bool m_Frozen = false;
     std::unordered_map<std::string, ParamValue> m_RawValues;
     std::unordered_map<std::string, std::string> m_Descriptions;
 
@@ -105,10 +110,15 @@ class __attribute__((visibility("default"))) ParamManager
     ParamValue CoerceToRegisteredType_(const std::string &key, const ParamValue &value) const;
     json ToJsonInternal_() const;
     YAML::Node ToYamlInternal_() const;
+    void Freeze();
+    void Thaw();
+    friend class IAnalysisModule;
 
     template <typename T> void UpdateExisting_(const std::string &key, const T &value, const std::string &desc = "")
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         static_assert(g_isParamValueV<T>, "[ParamManager] Unsupported type.");
+        if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
         it->second = CoerceToRegisteredType_(key, ParamValue(value));
@@ -117,11 +127,16 @@ class __attribute__((visibility("default"))) ParamManager
 
   public:
     ParamManager();
-
+    ParamManager(const ParamManager &other);
+    ParamManager &operator=(const ParamManager &other);
+    ParamManager(ParamManager &&other);
+    ParamManager &operator=(ParamManager &&other);
     // ===== Registration & access =====
     template <typename T> void Register(const std::string &key, const T &value, const std::string &desc = "")
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         static_assert(g_isParamValueV<T>, "[ParamManager] Unsupported type.");
+        if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
         if (m_RawValues.count(key)) throw std::runtime_error("ParamManager: key already registered: " + key);
         m_RawValues[key] = value;
         if (!desc.empty()) m_Descriptions[key] = desc;
@@ -131,6 +146,7 @@ class __attribute__((visibility("default"))) ParamManager
 
     template <typename T> T Get(const std::string &key) const
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         static_assert(g_isParamValueV<T>, "[ParamManager] Requested type not in ParamValue.");
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key not found: " + key);
@@ -140,9 +156,14 @@ class __attribute__((visibility("default"))) ParamManager
             return std::get<T>(it->second);
     }
 
-    bool Has(const std::string &key) const { return m_RawValues.count(key) > 0; }
+    bool Has(const std::string &key) const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+        return m_RawValues.count(key) > 0;
+    }
     std::string TypeOf(const std::string &key) const
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key not found: " + key);
         return std::visit([](const auto &value) { return ::TypeName<std::decay_t<decltype(value)>>(); }, it->second);
@@ -150,6 +171,7 @@ class __attribute__((visibility("default"))) ParamManager
 
     ParamProxy operator[](const std::string &key)
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
         return ParamProxy(*this, key);
@@ -157,6 +179,7 @@ class __attribute__((visibility("default"))) ParamManager
 
     ConstParamProxy operator[](const std::string &key) const
     {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
         return ConstParamProxy(*this, key);
@@ -173,10 +196,19 @@ class __attribute__((visibility("default"))) ParamManager
     std::string DumpJSON(int indent = 2) const;
 
     void SetParamsFromYAML(const YAML::Node &node);
+    void SetParamsFromJSON(const std::string &document);
 
     void SetParamVariant(const std::string &key, const ParamValue &v) { UpdateExisting_(key, v); }
     void RegisterCommon();
 
-    const auto &RawValues() const { return m_RawValues; }
-    const auto &Descriptions() const { return m_Descriptions; }
+    std::unordered_map<std::string, ParamValue> RawValues() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+        return m_RawValues;
+    }
+    std::unordered_map<std::string, std::string> Descriptions() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+        return m_Descriptions;
+    }
 };

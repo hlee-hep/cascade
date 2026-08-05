@@ -388,8 +388,9 @@ print(controller.get_list_available_module_metadata())
   trusted packages with a replacement key.
 
 Plugin signatures establish publisher trust and file integrity. They do not make
-plugin code safe. C++ plugins execute with the process's privileges; subprocess
-isolation contains crashes but is not a security sandbox.
+plugin code safe. C++ plugins execute with the process's privileges; the clean
+`exec()` worker avoids inherited runtime locks and contains crashes, but it is not
+a filesystem, network, or privilege sandbox.
 
 ## Release checklist
 

@@ -11,6 +11,10 @@ dict_cxx = os.path.join(builddir, "ParamManagerDict.cxx")
 pcm = os.path.join(builddir, "ParamManagerDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libParamManager.rootmap")
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libParamManager.so",
+    r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../utils",
+])
 modenv.Append(LIBS=["utils"])
 modenv.Append(LIBPATH=[utilsdir])
 

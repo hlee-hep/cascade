@@ -2,6 +2,7 @@
 #include "Provenance.hh"
 #include "AnalysisModuleRegistry.hh"
 #include "InterruptManager.hh"
+#include "IsolatedWorker.hh"
 #include "Logger.hh"
 #include "PluginABI.hh"
 #include "PluginPaths.hh"
@@ -13,10 +14,14 @@
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <spawn.h>
 #include <set>
 #include <thread>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
@@ -31,14 +36,6 @@ std::vector<fs::path> CppPluginRoots()
     for (const auto &root : PluginPaths::Roots("cpp")) roots.emplace_back(root);
     return roots;
 }
-
-struct IsolatedRunHeader
-{
-    std::uint32_t Magic = 0x43534344;
-    std::int32_t Status = static_cast<std::int32_t>(ModuleStatus::Failed);
-    std::int32_t Phase = static_cast<std::int32_t>(ModulePhase::Execute);
-    std::uint32_t MessageSize = 0;
-};
 
 bool WriteAll(int descriptor, const void *data, std::size_t size)
 {
@@ -77,7 +74,31 @@ RunResult ExternalFailure(ModuleStatus status, const std::string &message)
     if (status == ModuleStatus::Failed) result.Exception = std::make_exception_ptr(std::runtime_error(message));
     return result;
 }
+
+std::string WorkerExecutable(const std::string &language)
+{
+    const char *variable = language == "python" ? "CASCADE_PYTHON_WORKER" : "CASCADE_CPP_WORKER";
+    if (const char *configured = std::getenv(variable); configured && *configured) return configured;
+    const fs::path candidate = fs::path(PluginPaths::RuntimePrefix()) / "bin" /
+                               (language == "python" ? "cascade-python-worker" : "cascade-worker");
+    if (access(candidate.c_str(), X_OK) == 0) return candidate.string();
+    return language == "python" ? "cascade-python-worker" : "cascade-worker";
+}
+
+double IsolatedTimeoutSeconds()
+{
+    const char *configured = std::getenv("CASCADE_ISOLATED_TIMEOUT_SECONDS");
+    if (!configured || !*configured) return 0.0;
+    char *end = nullptr;
+    errno = 0;
+    const double value = std::strtod(configured, &end);
+    if (errno != 0 || end == configured || *end != '\0' || value < 0.0)
+        throw std::runtime_error("CASCADE_ISOLATED_TIMEOUT_SECONDS must be a non-negative number");
+    return value;
+}
 } // namespace
+
+extern char **environ;
 
 AMCM::AMCM() : AMCM(PluginTrustPolicy::Verified) {}
 
@@ -97,6 +118,7 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
         throw std::runtime_error("Module requires a signed plugin under the active trust policy: " + base);
     auto mod = AnalysisModuleRegistry::Get().Create(base);
     if (origin && mod->BaseName() != base) AnalysisModuleRegistry::Get().SetPluginOrigin(mod->BaseName(), *origin);
+    mod->SetPluginOrigin(origin);
     mod->SetName(instanceName);
     auto ptr = std::shared_ptr<IAnalysisModule>(std::move(mod));
     std::lock_guard<std::recursive_mutex> registrationLock(m_RegistrationMutex);
@@ -241,94 +263,127 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
 {
     module = ValidateModuleHandle_(module);
     const std::string name = module->Name();
+    const std::string language = module->GetRuntimeLanguage();
+    if (language != "cpp" && language != "python")
+        throw std::runtime_error("Unsupported isolated module runtime: " + language);
+    const auto origin = module->GetPluginOrigin();
+    if (!origin)
+        throw std::runtime_error("Isolated execution requires a module loaded from a verified plugin: " + module->BaseName());
+    const double timeoutSeconds = IsolatedTimeoutSeconds();
+    const std::string executable = WorkerExecutable(language);
+    const nlohmann::json parameters = nlohmann::json::parse(module->DumpParamsToJSON());
 
-    LOG_INFO("CONTROL", "Running module " << name << " in a subprocess");
+    LOG_INFO("CONTROL", "Running module " << name << " in an exec worker");
     module->PrepareExternalRun();
 
-    int channel[2];
-    if (pipe(channel) != 0)
+    nlohmann::json request = {
+        {"schema", 1},
+        {"module", module->BaseName()},
+        {"instance", name},
+        {"runtime", language},
+        {"params", parameters},
+        {"cache_directory", module->GetCacheDirectory()},
+        {"output_directory", module->GetOutputDirectory()},
+        {"run_id", module->GetRunId()},
+        {"require_signed", m_TrustPolicy == PluginTrustPolicy::RequireSigned},
+        {"manifest_sha256", origin->ManifestSha256},
+        {"artifact_sha256", origin->ArtifactSha256},
+    };
+    const std::string payload = request.dump();
+
+    int input = memfd_create("cascade-isolated-request", MFD_CLOEXEC);
+    int channel[2] = {-1, -1};
+    if (input < 0 || !WriteAll(input, payload.data(), payload.size()) || lseek(input, 0, SEEK_SET) < 0 ||
+        pipe2(channel, O_CLOEXEC) != 0)
     {
         const std::string message = "Cannot create isolated execution channel: " + std::string(std::strerror(errno));
+        if (input >= 0) close(input);
         RunResult result = module->AdoptExternalRunResult(ExternalFailure(ModuleStatus::Failed, message));
         RecordRun_(module, result);
         return result;
     }
 
-    const pid_t child = fork();
-    if (child < 0)
-    {
-        const std::string message = "Cannot fork isolated module: " + std::string(std::strerror(errno));
-        close(channel[0]);
-        close(channel[1]);
-        RunResult result = module->AdoptExternalRunResult(ExternalFailure(ModuleStatus::Failed, message));
-        RecordRun_(module, result);
-        return result;
-    }
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    int resultDescriptor = 10;
+    while (resultDescriptor == input || resultDescriptor == channel[0] || resultDescriptor == channel[1])
+        ++resultDescriptor;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawnattr_init(&attributes);
+    posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, channel[1], resultDescriptor);
+    posix_spawn_file_actions_addclose(&actions, input);
+    posix_spawn_file_actions_addclose(&actions, channel[0]);
+    posix_spawn_file_actions_addclose(&actions, channel[1]);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attributes, 0);
 
-    if (child == 0)
-    {
-        close(channel[0]);
-        signal(SIGSEGV, SIG_DFL);
-        signal(SIGABRT, SIG_DFL);
-        signal(SIGBUS, SIG_DFL);
-        signal(SIGILL, SIG_DFL);
-        signal(SIGFPE, SIG_DFL);
-        RunResult childResult;
-        try
-        {
-            childResult = module->RunPreparedExternal();
-        }
-        catch (const std::exception &error)
-        {
-            childResult = ExternalFailure(ModuleStatus::Failed, error.what());
-        }
-        catch (...)
-        {
-            childResult = ExternalFailure(ModuleStatus::Failed, "Unknown exception escaped isolated module runner");
-        }
-        if (childResult.Message.size() > 4096) childResult.Message.resize(4096);
-        IsolatedRunHeader header;
-        header.Status = static_cast<std::int32_t>(childResult.Status);
-        header.Phase = static_cast<std::int32_t>(childResult.Phase);
-        header.MessageSize = static_cast<std::uint32_t>(childResult.Message.size());
-        const bool written = WriteAll(channel[1], &header, sizeof(header)) &&
-                             WriteAll(channel[1], childResult.Message.data(), childResult.Message.size());
-        close(channel[1]);
-        _exit(written ? 0 : 125);
-    }
-
+    const std::string resultDescriptorText = std::to_string(resultDescriptor);
+    char *workerArguments[] = {const_cast<char *>(executable.c_str()),
+                               const_cast<char *>(resultDescriptorText.c_str()), nullptr};
+    pid_t child = -1;
+    const int spawnError = posix_spawnp(&child, executable.c_str(), &actions, &attributes, workerArguments, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    close(input);
     close(channel[1]);
+    if (spawnError != 0)
+    {
+        const std::string message = "Cannot start isolated worker '" + executable + "': " + std::string(std::strerror(spawnError));
+        close(channel[0]);
+        RunResult result = module->AdoptExternalRunResult(ExternalFailure(ModuleStatus::Failed, message));
+        RecordRun_(module, result);
+        return result;
+    }
+
     int childStatus = 0;
+    bool waitFailed = false;
     bool cancellationSent = false;
     int cancellationPolls = 0;
+    bool timedOut = false;
+    const auto startedAt = std::chrono::steady_clock::now();
     while (true)
     {
         const pid_t waited = waitpid(child, &childStatus, WNOHANG);
         if (waited == child) break;
         if (waited < 0 && errno != EINTR)
         {
-            childStatus = 0;
+            waitFailed = true;
             break;
         }
-        if (module->IsCancellationRequested())
+        if (timeoutSeconds > 0.0 &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - startedAt).count() >= timeoutSeconds)
+        {
+            kill(-child, SIGKILL);
+            timedOut = true;
+        }
+        else if (module->IsCancellationRequested())
         {
             if (!cancellationSent)
             {
-                kill(child, SIGTERM);
+                kill(-child, SIGTERM);
                 cancellationSent = true;
             }
             else if (++cancellationPolls >= 50)
             {
-                kill(child, SIGKILL);
+                kill(-child, SIGKILL);
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     RunResult externalResult;
-    if (cancellationSent)
+    if (timedOut)
+    {
+        externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module exceeded its configured timeout");
+    }
+    else if (cancellationSent)
     {
         externalResult = ExternalFailure(ModuleStatus::Interrupted, "Isolated module was cancelled");
+    }
+    else if (waitFailed)
+    {
+        externalResult = ExternalFailure(ModuleStatus::Failed, "Failed while waiting for isolated worker");
     }
     else if (WIFSIGNALED(childStatus))
     {
@@ -338,7 +393,8 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
     else
     {
         IsolatedRunHeader header;
-        if (!ReadAll(channel[0], &header, sizeof(header)) || header.Magic != 0x43534344 || header.MessageSize > 4096)
+        if (!ReadAll(channel[0], &header, sizeof(header)) || header.Magic != kCascadeWorkerResultMagic ||
+            header.MessageSize > kCascadeWorkerMaxMessageSize)
         {
             externalResult = ExternalFailure(ModuleStatus::Failed, "Isolated module exited without a valid result");
         }

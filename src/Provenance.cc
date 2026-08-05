@@ -12,6 +12,7 @@
 #include <cctype>
 #include <ctime>
 #include <cstdlib>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -21,6 +22,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -127,7 +129,32 @@ std::string HashFile(const fs::path &path)
     return output.str();
 }
 
-ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &recordedPath)
+enum class ArtifactHashMode
+{
+    Full,
+    Metadata,
+    None
+};
+
+ArtifactHashMode ConfiguredArtifactHashMode()
+{
+    const char *configured = std::getenv("CASCADE_PROVENANCE_HASH_MODE");
+    const std::string value = configured && *configured ? configured : "full";
+    if (value == "full") return ArtifactHashMode::Full;
+    if (value == "metadata") return ArtifactHashMode::Metadata;
+    if (value == "none") return ArtifactHashMode::None;
+    throw std::runtime_error("CASCADE_PROVENANCE_HASH_MODE must be full, metadata, or none");
+}
+
+long long ModifiedAt(const fs::path &path)
+{
+    std::error_code error;
+    const auto time = fs::last_write_time(path, error);
+    return error ? 0 : time.time_since_epoch().count();
+}
+
+ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &recordedPath,
+                                   ArtifactHashMode hashMode)
 {
     ArtifactProvenance artifact;
     artifact.Path = recordedPath;
@@ -146,7 +173,7 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
         if (!error)
         {
             artifact.Size = target.size();
-            artifact.Sha256 = Sha256(target);
+            if (hashMode != ArtifactHashMode::None) artifact.Sha256 = Sha256(target);
         }
         return artifact;
     }
@@ -154,7 +181,7 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
     {
         artifact.Kind = "file";
         artifact.Size = fs::file_size(source);
-        artifact.Sha256 = HashFile(source);
+        if (hashMode == ArtifactHashMode::Full) artifact.Sha256 = HashFile(source);
         return artifact;
     }
     if (!fs::is_directory(status))
@@ -164,6 +191,7 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
     }
 
     artifact.Kind = "directory";
+    if (hashMode == ArtifactHashMode::None) return artifact;
     std::vector<fs::path> entries;
     for (fs::recursive_directory_iterator iterator(source), end; iterator != end; ++iterator)
         entries.push_back(iterator->path());
@@ -176,7 +204,7 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
         if (error) continue;
         if (fs::is_directory(entryStatus))
         {
-            fingerprint << "d\0" << relative << '\0';
+            fingerprint << "d\0" << relative << '\0' << ModifiedAt(entry) << '\0';
         }
         else if (fs::is_symlink(entryStatus))
         {
@@ -189,7 +217,9 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
         {
             const auto size = fs::file_size(entry);
             artifact.Size += size;
-            fingerprint << "f\0" << relative << '\0' << HashFile(entry) << '\0' << size << '\0';
+            fingerprint << "f\0" << relative << '\0';
+            if (hashMode == ArtifactHashMode::Full) fingerprint << HashFile(entry);
+            fingerprint << '\0' << size << '\0' << ModifiedAt(entry) << '\0';
         }
     }
     artifact.Sha256 = Sha256(fingerprint.str());
@@ -282,24 +312,44 @@ void AtomicWrite(const fs::path &path, const std::string &content)
 {
     if (path.empty()) throw std::invalid_argument("Provenance manifest path cannot be empty.");
     if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
-    const fs::path temporary = path.string() + ".tmp." + std::to_string(getpid());
+    const fs::path parent = path.parent_path().empty() ? fs::current_path() : path.parent_path();
+    std::string pattern = (parent / (path.filename().string() + ".tmp.XXXXXX")).string();
+    std::vector<char> temporary(pattern.begin(), pattern.end());
+    temporary.push_back('\0');
+    const int descriptor = mkstemp(temporary.data());
+    if (descriptor < 0) throw std::system_error(errno, std::generic_category(), "Cannot create provenance temporary file");
+    bool descriptorOpen = true;
+    try
     {
-        std::ofstream output(temporary, std::ios::trunc);
-        if (!output) throw std::runtime_error("Cannot write provenance manifest: " + temporary.string());
-        output << content;
-        output.flush();
-        if (!output) throw std::runtime_error("Failed while writing provenance manifest: " + temporary.string());
+        std::size_t offset = 0;
+        while (offset < content.size())
+        {
+            const ssize_t written = write(descriptor, content.data() + offset, content.size() - offset);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0)
+                throw std::system_error(errno ? errno : EIO, std::generic_category(), "Cannot write provenance manifest");
+            offset += static_cast<std::size_t>(written);
+        }
+        if (fchmod(descriptor, 0600) != 0 || fsync(descriptor) != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot flush provenance manifest");
+        const int closeResult = close(descriptor);
+        descriptorOpen = false;
+        if (closeResult != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot close provenance manifest");
+        if (rename(temporary.data(), path.c_str()) != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot publish provenance manifest");
+        const int directory = open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (directory >= 0)
+        {
+            fsync(directory);
+            close(directory);
+        }
     }
-    std::error_code error;
-    fs::rename(temporary, path, error);
-    if (!error) return;
-    fs::remove(path, error);
-    error.clear();
-    fs::rename(temporary, path, error);
-    if (error)
+    catch (...)
     {
-        fs::remove(temporary);
-        throw std::system_error(error, "Cannot publish provenance manifest");
+        if (descriptorOpen) close(descriptor);
+        unlink(temporary.data());
+        throw;
     }
 }
 } // namespace
@@ -433,13 +483,15 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     manifest.Message = result.Message;
     manifest.ManifestPath = AbsoluteString(manifestPath);
 
+    const ArtifactHashMode hashMode = ConfiguredArtifactHashMode();
     for (const auto &input : active.Inputs)
-        manifest.Inputs.push_back(CaptureArtifact(input, input.string()));
+        manifest.Inputs.push_back(CaptureArtifact(input, input.string(), hashMode));
     for (const auto &[finalPath, stagedPath] : stagedOutputs)
     {
         std::error_code error;
         auto relative = fs::relative(finalPath, outputDirectory, error);
-        manifest.Outputs.push_back(CaptureArtifact(stagedPath, error ? finalPath.string() : relative.generic_string()));
+        manifest.Outputs.push_back(
+            CaptureArtifact(stagedPath, error ? finalPath.string() : relative.generic_string(), hashMode));
     }
     return manifest;
 }

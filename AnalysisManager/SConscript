@@ -11,6 +11,10 @@ dict_cxx = os.path.join(builddir, "AnalysisManagerDict.cxx")
 pcm = os.path.join(builddir, "AnalysisManagerDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libAnalysisManager.rootmap")
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libAnalysisManager.so",
+    r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../utils",
+])
 modenv.Append(LIBS=["utils"])
 modenv.Append(LIBPATH=[utilsdir])
 

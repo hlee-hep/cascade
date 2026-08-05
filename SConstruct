@@ -109,7 +109,14 @@ def run_tests(target, source, env):
         "TMPDIR": "/tmp",
         "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
     }
-    subprocess.check_call([test_binary], env=test_environment)
+    subprocess.check_call(
+        [test_binary],
+        env={
+            **test_environment,
+            "CASCADE_CPP_WORKER": os.path.abspath("build/bin/cascade-worker"),
+            "CASCADE_PLUGIN_DIR": os.path.abspath("build/test-plugins"),
+        },
+    )
     for python_source in (
         "python/py_amcm.py",
         "python/plt_plot_manager.py",
@@ -124,13 +131,58 @@ def run_tests(target, source, env):
         with open(source_path, "r", encoding="utf-8") as source_file:
             compile(source_file.read(), source_path, "exec")
     for test_source in sorted(str(path) for path in Glob("tests/test_*.py")):
+        python_test_environment = test_environment
+        if test_source.endswith("test_python_worker_e2e.py"):
+            python_test_environment = {
+                **test_environment,
+                "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
+                "CASCADE_PLUGIN_DIR": os.path.abspath("build/test-plugins"),
+                "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
+                "PYTHONPATH": os.path.abspath("build/test-runtime"),
+            }
         subprocess.check_call(
             [sys.executable, "-m", "unittest", test_source],
-            env=test_environment,
+            env=python_test_environment,
         )
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
     with open(str(target[0]), "w") as stamp:
         stamp.write("ok\n")
+    return 0
+
+def generate_test_plugin_manifest(target, source, env):
+    import hashlib
+    import json
+    modules = []
+    for node in source:
+        artifact = os.path.abspath(str(node))
+        digest = hashlib.sha256()
+        with open(artifact, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if artifact.endswith(".py"):
+            modules.append({
+                "name": "WorkerTestPythonModule",
+                "language": "python",
+                "path": os.path.basename(artifact),
+                "sha256": digest.hexdigest(),
+                "classes": ["WorkerTestPythonModule"],
+            })
+        else:
+            modules.append({
+                "name": "WorkerTestModule",
+                "language": "cpp",
+                "path": os.path.basename(artifact),
+                "sha256": digest.hexdigest(),
+            })
+    document = {
+        "schema": 2,
+        "package": "worker-test",
+        "modules": modules,
+    }
+    os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
+    with open(str(target[0]), "w", encoding="utf-8") as output:
+        json.dump(document, output, indent=2, sort_keys=True)
+        output.write("\n")
     return 0
 
 vars = Variables()
@@ -162,9 +214,9 @@ pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 env.ParseConfig('root-config --cflags --libs')
 env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
 env.AppendUnique(CXXFLAGS=["-std=c++17", "-O2", "-fvisibility=default"])
+env.AppendUnique(LINKFLAGS=["-Wl,--enable-new-dtags"])
 env.Append(CPPPATH=pybind_includes)
 env.Append(LIBS=["ssl","crypto"])
-env.Append(RPATH=[env['LIBDIR']])
 VariantDir("build/src", "src", duplicate=0)
 VariantDir("build/utils", "utils", duplicate=0)
 VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
@@ -237,6 +289,31 @@ pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
     "env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj"
 ])
 
+# Isolated execution workers use exec(), so they must be real standalone entry points.
+worker_env = env.Clone()
+worker_env.Replace(RPATH=[])
+worker_env.AppendUnique(
+    LIBPATH=[
+        os.path.join(TOP, "build", "src"),
+        os.path.join(TOP, "build", "utils"),
+        os.path.join(TOP, "build", "AnalysisManager"),
+        os.path.join(TOP, "build", "ParamManager"),
+        os.path.join(TOP, "build", "PlotManager"),
+    ],
+    LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
+    LINKFLAGS=[
+        r"-Wl,-rpath=\$$ORIGIN/../lib:\$$ORIGIN/../src:\$$ORIGIN/../utils:\$$ORIGIN/../AnalysisManager:\$$ORIGIN/../ParamManager:\$$ORIGIN/../PlotManager",
+    ],
+)
+cpp_worker = worker_env.Program("build/bin/cascade-worker", "tools/CascadeWorker.cc")
+Depends(cpp_worker, core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj)
+cpp_worker_install = env.Install(env["BINDIR"], cpp_worker)
+
+python_worker = env.InstallAs("build/bin/cascade-python-worker", "python/cascade_worker")
+env.AddPostAction(python_worker, make_executable)
+python_worker_install = env.InstallAs(os.path.join(env["BINDIR"], "cascade-python-worker"), python_worker)
+env.AddPostAction(python_worker_install, make_executable)
+
 # pyinstall
 cascade_dir = env['PYTHONDIR']
 cascade_files = Glob("python/*.py")
@@ -285,8 +362,8 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct
-build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj
+install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct + cpp_worker_install + python_worker_install
+build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj + cpp_worker + python_worker
 
 install_targets = SCons.Util.unique(install_targets)
 build_targets = SCons.Util.unique(build_targets)
@@ -316,10 +393,49 @@ test_env.Append(
     ],
     LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
 )
+test_plugin_env = test_env.Clone()
+test_plugin_env.AppendUnique(LINKFLAGS=[r"-Wl,-rpath=\$$ORIGIN/../../../src:\$$ORIGIN/../../../utils:\$$ORIGIN/../../../AnalysisManager:\$$ORIGIN/../../../ParamManager:\$$ORIGIN/../../../PlotManager"])
+test_plugin = test_plugin_env.SharedLibrary(
+    "build/test-plugins/worker-test/WorkerTestModule",
+    "tests/fixtures/WorkerTestModule.cc",
+)
+Depends(test_plugin, build_targets)
+test_python_plugin = env.Install(
+    "build/test-plugins/worker-test",
+    "tests/fixtures/WorkerTestPythonModule.py",
+)
+test_plugin_manifest = env.Command(
+    "build/test-plugins/worker-test/plugin_manifest.json",
+    test_plugin + test_python_plugin,
+    generate_test_plugin_manifest,
+)
+
+test_runtime_dir = os.path.join("build", "test-runtime", "cascade")
+test_runtime_python = env.Install(test_runtime_dir, Glob("python/*.py"))
+test_runtime_pymodule = env.Install(
+    os.path.join(test_runtime_dir, "pymodule"),
+    "modules/python/base_module.py",
+)
+test_runtime_pymodule_init = env.Command(
+    os.path.join(test_runtime_dir, "pymodule", "__init__.py"),
+    test_runtime_pymodule,
+    generate_init_py,
+)
+test_runtime_init = env.Command(
+    os.path.join(test_runtime_dir, "__init__.py"),
+    test_runtime_python,
+    generate_init_py_head,
+)
+test_runtime_extension = env.Command(
+    os.path.join(test_runtime_dir, "_cascade.so"),
+    pybind_obj,
+    create_symlink,
+)
+test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_init + test_runtime_extension
 core_test_object = test_env.Object("build/tests/test_core.o", "tests/test_core.cc")
 core_test = test_env.Program("build/tests/test_core", [core_test_object])
-Depends(core_test, build_targets)
-test_stamp = env.Command("build/tests/.passed", core_test, run_tests)
+Depends(core_test, build_targets + test_plugin_manifest + test_runtime)
+test_stamp = env.Command("build/tests/.passed", [core_test, test_plugin_manifest] + test_runtime, run_tests)
 AlwaysBuild(test_stamp)
 env.Alias("test", test_stamp)
 

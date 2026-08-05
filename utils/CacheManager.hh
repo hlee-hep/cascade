@@ -6,8 +6,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <system_error>
 #include <vector>
 #include <yaml-cpp/yaml.h>
@@ -113,34 +115,106 @@ class CacheManager
 
     static inline void WriteDocument(const std::string &path, const YAML::Node &document)
     {
-        const std::string temporary = path + ".tmp." + std::to_string(getpid());
+        const std::filesystem::path destination(path);
+        std::string pattern = (destination.parent_path() / (destination.filename().string() + ".tmp.XXXXXX")).string();
+        std::vector<char> temporary(pattern.begin(), pattern.end());
+        temporary.push_back('\0');
+        const int descriptor = mkstemp(temporary.data());
+        if (descriptor < 0) throw std::system_error(errno, std::generic_category(), "Cannot create cache temporary file");
+        const std::string payload = YAML::Dump(document);
+        bool descriptorOpen = true;
         try
         {
+            std::size_t offset = 0;
+            while (offset < payload.size())
             {
-                std::ofstream output(temporary, std::ios::trunc);
-                if (!output) throw std::runtime_error("Cannot write cache file: " + temporary);
-                output << document;
-                output.flush();
-                if (!output) throw std::runtime_error("Failed while writing cache file: " + temporary);
+                const ssize_t written = write(descriptor, payload.data() + offset, payload.size() - offset);
+                if (written < 0 && errno == EINTR) continue;
+                if (written <= 0) throw std::system_error(errno ? errno : EIO, std::generic_category(), "Cannot write cache file");
+                offset += static_cast<std::size_t>(written);
             }
-            chmod(temporary.c_str(), 0600);
-            std::filesystem::rename(temporary, path);
+            if (fchmod(descriptor, 0600) != 0 || fsync(descriptor) != 0)
+                throw std::system_error(errno, std::generic_category(), "Cannot flush cache file");
+            const int closeResult = close(descriptor);
+            descriptorOpen = false;
+            if (closeResult != 0) throw std::system_error(errno, std::generic_category(), "Cannot close cache file");
+            if (rename(temporary.data(), path.c_str()) != 0)
+                throw std::system_error(errno, std::generic_category(), "Cannot replace cache file");
+            const int directory = open(destination.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (directory >= 0)
+            {
+                fsync(directory);
+                close(directory);
+            }
         }
         catch (...)
         {
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
+            if (descriptorOpen) close(descriptor);
+            unlink(temporary.data());
             throw;
         }
     }
 
+    static inline YAML::Node ReadDocumentFile(const std::string &path, bool missingAllowed)
+    {
+        int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+        flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+        flags |= O_NOFOLLOW;
+#endif
+        const int descriptor = open(path.c_str(), flags);
+        if (descriptor < 0)
+        {
+            if (missingAllowed && errno == ENOENT) return EmptyDocument();
+            throw std::system_error(errno, std::generic_category(), "Cannot open cache file");
+        }
+        struct stat metadata{};
+        if (fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode))
+        {
+            const int error = errno ? errno : EINVAL;
+            close(descriptor);
+            throw std::system_error(error, std::generic_category(), "Cache path is not a regular file");
+        }
+        std::string payload;
+        char buffer[8192];
+        while (true)
+        {
+            const ssize_t count = read(descriptor, buffer, sizeof(buffer));
+            if (count < 0 && errno == EINTR) continue;
+            if (count < 0)
+            {
+                const int error = errno;
+                close(descriptor);
+                throw std::system_error(error, std::generic_category(), "Cannot read cache file");
+            }
+            if (count == 0) break;
+            payload.append(buffer, static_cast<std::size_t>(count));
+        }
+        close(descriptor);
+        std::istringstream input(payload);
+        return ReadDocument(input, path);
+    }
+
+    static inline std::size_t MaxSnapshots()
+    {
+        const char *configured = std::getenv("CASCADE_CACHE_MAX_SNAPSHOTS");
+        if (!configured || !*configured) return 256;
+        std::size_t parsed = 0;
+        const std::string value(configured);
+        if (!value.empty() && value.front() == '-')
+            throw std::runtime_error("CASCADE_CACHE_MAX_SNAPSHOTS must be a non-negative integer");
+        const unsigned long long limit = std::stoull(value, &parsed);
+        if (parsed != value.size()) throw std::runtime_error("CASCADE_CACHE_MAX_SNAPSHOTS must be a non-negative integer");
+        return static_cast<std::size_t>(limit);
+    }
+
     static inline std::vector<CacheSnapshot> ReadSnapshots(const std::string &path, const std::string &moduleName)
     {
-        if (!std::filesystem::is_regular_file(path)) return {};
+        if (!std::filesystem::exists(std::filesystem::path(path).parent_path())) return {};
         FileLock lock(path + ".lock", LOCK_SH);
-        std::ifstream input(path);
-        if (!input) return {};
-        const YAML::Node document = ReadDocument(input, path);
+        const YAML::Node document = ReadDocumentFile(path, true);
         std::vector<CacheSnapshot> snapshots;
         for (const auto &entry : document["snapshots"])
             snapshots.push_back({moduleName,
@@ -166,17 +240,22 @@ class CacheManager
 
     static inline bool IsHashCached(const std::string &moduleName, const std::string &hash, const std::string &cacheDirectory)
     {
+        return Lookup(moduleName, hash, cacheDirectory).has_value();
+    }
+
+    static inline std::optional<CacheSnapshot> Lookup(const std::string &moduleName, const std::string &hash,
+                                                      const std::string &cacheDirectory)
+    {
         for (const auto &snapshot : ReadSnapshots(CachePath(moduleName, cacheDirectory), moduleName))
-            if (snapshot.Hash == hash) return true;
-        return false;
+            if (snapshot.Hash == hash) return snapshot;
+        return std::nullopt;
     }
 
     static inline std::string FindProvenance(const std::string &moduleName, const std::string &hash,
                                              const std::string &cacheDirectory)
     {
-        for (const auto &snapshot : ReadSnapshots(CachePath(moduleName, cacheDirectory), moduleName))
-            if (snapshot.Hash == hash) return snapshot.Provenance;
-        return {};
+        const auto snapshot = Lookup(moduleName, hash, cacheDirectory);
+        return snapshot ? snapshot->Provenance : std::string();
     }
 
     static inline void AddHash(const std::string &moduleName, const std::string &hash)
@@ -190,9 +269,7 @@ class CacheManager
         const std::string path = CachePath(moduleName, cacheDirectory);
         std::filesystem::create_directories(cacheDirectory);
         FileLock lock(path + ".lock", LOCK_EX);
-        YAML::Node document = EmptyDocument();
-        std::ifstream input(path);
-        if (input) document = ReadDocument(input, path);
+        YAML::Node document = ReadDocumentFile(path, true);
         for (auto entry : document["snapshots"])
         {
             if (entry["hash"].as<std::string>() != hash) continue;
@@ -207,6 +284,15 @@ class CacheManager
         entry["hash"] = hash;
         entry["provenance"] = provenancePath;
         document["snapshots"].push_back(entry);
+        const std::size_t limit = MaxSnapshots();
+        if (limit > 0 && document["snapshots"].size() > limit)
+        {
+            YAML::Node bounded = EmptyDocument();
+            const std::size_t first = document["snapshots"].size() - limit;
+            for (std::size_t index = first; index < document["snapshots"].size(); ++index)
+                bounded["snapshots"].push_back(document["snapshots"][index]);
+            document = std::move(bounded);
+        }
         WriteDocument(path, document);
     }
 
@@ -215,9 +301,7 @@ class CacheManager
         const std::string path = CachePath(moduleName, cacheDirectory);
         std::filesystem::create_directories(cacheDirectory);
         FileLock lock(path + ".lock", LOCK_EX);
-        std::ifstream input(path);
-        if (!input) return;
-        const YAML::Node existing = ReadDocument(input, path);
+        const YAML::Node existing = ReadDocumentFile(path, true);
         YAML::Node document = EmptyDocument();
         for (const auto &entry : existing["snapshots"])
             if (entry["hash"].as<std::string>() != hash) document["snapshots"].push_back(entry);
@@ -259,9 +343,7 @@ class CacheManager
         {
             if (!std::filesystem::is_regular_file(path)) continue;
             FileLock lock(path.string() + ".lock", LOCK_EX);
-            std::ifstream input(path);
-            if (!input) continue;
-            const YAML::Node existing = ReadDocument(input, path.string());
+            const YAML::Node existing = ReadDocumentFile(path.string(), false);
             YAML::Node document = EmptyDocument();
             const std::string recordedModule = moduleName.empty() ? path.stem().string() : moduleName;
             for (const auto &entry : existing["snapshots"])

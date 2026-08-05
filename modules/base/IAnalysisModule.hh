@@ -30,15 +30,28 @@ class IAnalysisModule
 
     RunResult Run() { return RunImpl_(false); }
 
-    void PrepareExternalRun()
+    void PrepareExternalRun() { PrepareExternalRunWithId(""); }
+
+    void PrepareExternalRunWithId(const std::string &runId)
     {
         std::lock_guard<std::recursive_mutex> runLock(m_RunMutex);
         if (m_ExternalRunReserved || m_Context.IsActive()) throw std::runtime_error("Module run is already active: " + Name());
-        m_Context.BeginRun(Name(), BaseName());
-        ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), RuntimeLanguage(), true);
-        ConfigureProvenance();
-        m_ExternalRunReserved = true;
-        SetStatus(ModuleStatus::Initializing);
+        m_Param.Freeze();
+        try
+        {
+            m_Context.BeginRunWithId(Name(), BaseName(), runId);
+            ProvenanceRecorder::BeginModuleRun(m_Context.RunId(), Name(), BaseName(), RuntimeLanguage(), true);
+            ConfigureProvenance();
+            m_ExternalRunReserved = true;
+            SetStatus(ModuleStatus::Initializing);
+        }
+        catch (...)
+        {
+            ProvenanceRecorder::DiscardModuleRun(m_Context.RunId());
+            m_Context.RollbackRun();
+            m_Param.Thaw();
+            throw;
+        }
     }
 
     RunResult RunPreparedExternal() { return RunImpl_(true); }
@@ -47,6 +60,11 @@ class IAnalysisModule
     {
         std::lock_guard<std::recursive_mutex> runLock(m_RunMutex);
         if (!m_ExternalRunReserved) throw std::runtime_error("Module has no reserved external run: " + Name());
+        struct ParameterThaw
+        {
+            ParamManager &Parameters;
+            ~ParameterThaw() { Parameters.Thaw(); }
+        } parameterThaw{m_Param};
         m_ExternalRunReserved = false;
         m_Context.CleanupExternalRun();
         if (result.Failed() && !result.Exception)
@@ -64,7 +82,15 @@ class IAnalysisModule
         if (m_ExternalRunReserved != externalPrepared)
             throw std::runtime_error(externalPrepared ? "Module has no reserved external run: " + Name()
                                                       : "Module is reserved for isolated execution: " + Name());
-        if (externalPrepared) m_ExternalRunReserved = false;
+        if (externalPrepared)
+            m_ExternalRunReserved = false;
+        else
+            m_Param.Freeze();
+        struct ParameterThaw
+        {
+            ParamManager &Parameters;
+            ~ParameterThaw() { Parameters.Thaw(); }
+        } parameterThaw{m_Param};
         if (UsesAnalysisManagers())
         {
             std::lock_guard<std::mutex> managerLock(m_ManagerMutex);
@@ -190,7 +216,7 @@ class IAnalysisModule
     virtual ModuleMetadata GetMetadata() const
     {
         ModuleMetadata info;
-        info.Name = m_Basename;
+        info.Name = BaseName();
         info.Version = CascadeVersionString();
         return info;
     }
@@ -201,13 +227,46 @@ class IAnalysisModule
         return m_Param.DumpJSON();
     }
 
-    void SetName(const std::string &name) { m_Name = name; }
-    void SetBaseName(const std::string &name) { m_Basename = name; }
-    void SetCodeHash(const std::string &hash) { m_CodeVersionHash = hash; }
-    void SetPluginOrigin(std::optional<PluginOrigin> origin) { m_PluginOrigin = std::move(origin); }
-    std::string Name() const { return m_Name; }
-    std::string BaseName() const { return m_Basename; }
-    std::string GetCodeHash() const { return m_CodeVersionHash; }
+    void SetName(const std::string &name)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        m_Name = name;
+    }
+    void SetBaseName(const std::string &name)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        m_Basename = name;
+    }
+    void SetCodeHash(const std::string &hash)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        m_CodeVersionHash = hash;
+    }
+    void SetPluginOrigin(std::optional<PluginOrigin> origin)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        m_PluginOrigin = std::move(origin);
+    }
+    std::optional<PluginOrigin> GetPluginOrigin() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        return m_PluginOrigin;
+    }
+    std::string Name() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        return m_Name;
+    }
+    std::string BaseName() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        return m_Basename;
+    }
+    std::string GetCodeHash() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        return m_CodeVersionHash;
+    }
     std::string GetRuntimeLanguage() const { return RuntimeLanguage(); }
     ExecutionContext &GetExecutionContext() { return m_Context; }
     const ExecutionContext &GetExecutionContext() const { return m_Context; }
@@ -261,6 +320,11 @@ class IAnalysisModule
     {
         std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
         m_Param.LoadJSONFile(path);
+    }
+    void SetParamsFromJSON(const std::string &document)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RunMutex);
+        m_Param.SetParamsFromJSON(document);
     }
     void SaveParamsToYAML(const std::string &path)
     {
@@ -317,9 +381,10 @@ class IAnalysisModule
     virtual std::string AnalysisSnapshotState() const
     {
         std::lock_guard<std::mutex> lock(m_ManagerMutex);
-        std::stringstream state;
-        for (const auto &[name, manager] : m_Managers) state << name << manager->SnapshotState();
-        return state.str();
+        nlohmann::json state = nlohmann::json::array();
+        for (const auto &[name, manager] : m_Managers)
+            state.push_back({{"name", name}, {"state", nlohmann::json::parse(manager->SnapshotState())}});
+        return state.dump();
     }
 
     void RegisterAnalysisManager(const std::string &name = "main")
@@ -444,8 +509,9 @@ class IAnalysisModule
 
     std::string ComputeSnapshotHash_() const
     {
+        const std::string artifactHash = m_PluginOrigin ? m_PluginOrigin->ArtifactSha256 : std::string();
         return SnapshotHasher::ComputeSerialized(m_Param, m_Basename, m_CodeVersionHash,
-                                                 AnalysisSnapshotState(), m_Context.SnapshotState());
+                                                 AnalysisSnapshotState(), m_Context.SnapshotState(), artifactHash);
     }
 
     CheckDecision RunCheck_()
@@ -469,13 +535,12 @@ class IAnalysisModule
             return {true, ""};
         }
 
-        bool dupl = CacheManager::IsHashCached(m_Basename, m_Hash, m_Context.CacheDirectory().string());
-        if (dupl)
+        const auto cached = CacheManager::Lookup(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+        if (cached)
         {
-            ProvenanceRecorder::SetCacheSource(
-                m_Context.RunId(), CacheManager::FindProvenance(m_Basename, m_Hash, m_Context.CacheDirectory().string()));
+            ProvenanceRecorder::SetCacheSource(m_Context.RunId(), cached->Provenance);
             LOG_INFO(Name(), "Matching snapshot is already cached.");
         }
-        return {!dupl, dupl ? "snapshot already cached" : ""};
+        return {!cached, cached ? "snapshot already cached" : ""};
     }
 };

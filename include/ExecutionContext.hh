@@ -85,6 +85,8 @@ class ExecutionContext
     ExecutionContext();
 
     void BeginRun(const std::string &instanceName, const std::string &moduleName);
+    void BeginRunWithId(const std::string &instanceName, const std::string &moduleName,
+                        const std::string &requestedRunId);
     void CompleteRun();
     void RollbackRun() noexcept;
     void CleanupExternalRun() noexcept;

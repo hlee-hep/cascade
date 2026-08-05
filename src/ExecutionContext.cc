@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
@@ -286,9 +287,17 @@ std::string ExecutionContext::MakeRunId_(const std::string &instanceName, const 
 
 void ExecutionContext::BeginRun(const std::string &instanceName, const std::string &moduleName)
 {
+    BeginRunWithId(instanceName, moduleName, "");
+}
+
+void ExecutionContext::BeginRunWithId(const std::string &instanceName, const std::string &moduleName,
+                                      const std::string &requestedRunId)
+{
     std::lock_guard<std::mutex> lock(m_Mutex);
     if (m_Active) throw std::runtime_error("ExecutionContext: a run is already active.");
-    m_RunId = MakeRunId_(instanceName, moduleName);
+    if (!requestedRunId.empty() && SafeName(requestedRunId) != requestedRunId)
+        throw std::invalid_argument("ExecutionContext: requested run id contains unsupported characters.");
+    m_RunId = requestedRunId.empty() ? MakeRunId_(instanceName, moduleName) : requestedRunId;
     m_Cancellation.Reset();
     m_Outputs.Begin(m_OutputDirectory, m_RunId);
     m_Active = true;
@@ -365,7 +374,7 @@ std::string ExecutionContext::RunId() const
 std::string ExecutionContext::SnapshotState() const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    return "output_dir=" + m_OutputDirectory.string();
+    return nlohmann::json{{"schema_version", 2}, {"output_directory", m_OutputDirectory.string()}}.dump();
 }
 
 bool ExecutionContext::IsActive() const

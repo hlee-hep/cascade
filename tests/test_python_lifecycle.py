@@ -357,21 +357,15 @@ class LifecycleTests(unittest.TestCase):
         adopted = module.adopt_external_run_result(result)
         self.assertTrue(adopted.succeeded())
 
-    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
-    def test_cpp_controller_runs_python_module_isolated(self):
+    def test_controller_rejects_non_plugin_module_isolation(self):
         module = Module()
         module.set_name("python-isolated")
         module.set_output_directory(pathlib.Path(self.tempdir.name) / "outputs")
         module.set_cache_directory(pathlib.Path(self.tempdir.name) / "cache")
         controller = sys.modules["cascade._cascade"].AMCM()
         controller.register_module_handle(module)
-        result = controller.run_module_isolated(module)
-        self.assertEqual(result.status, base.ModuleStatus.DONE)
-        manifest = json.loads(
-            pathlib.Path(module.get_last_provenance_path()).read_text(encoding="utf-8")
-        )
-        self.assertEqual(manifest["runtime"]["language"], "python")
-        self.assertTrue(manifest["execution"]["isolated"])
+        with self.assertRaisesRegex(RuntimeError, "verified plugin"):
+            controller.run_module_isolated(module)
 
     @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
     def test_parent_recovers_output_after_isolated_crash(self):

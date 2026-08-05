@@ -5,6 +5,8 @@ PlotManager_deprecated/
 include/json.hpp
 .sconsign.dblite
 compile_commands.json
+*.o
+*.os
 __pycache__/
 *.py[cod]
 .codex/

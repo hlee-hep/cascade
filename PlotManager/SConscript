@@ -11,6 +11,10 @@ dict_cxx = os.path.join(builddir, "PlotManagerDict.cxx")
 pcm = os.path.join(builddir, "PlotManagerDict_rdict.pcm")
 rootmap = os.path.join(builddir, "libPlotManager.rootmap")
 modenv = env.Clone()
+modenv.AppendUnique(LINKFLAGS=[
+    "-Wl,-soname,libPlotManager.so",
+    r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../utils",
+])
 modenv.Append(LIBS=["utils"])
 modenv.Append(LIBPATH=[utilsdir])
 
