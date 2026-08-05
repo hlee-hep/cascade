@@ -67,5 +67,6 @@ class PluginVerifier
                                                const std::string &trustStore,
                                                PluginTrustPolicy policy = PluginTrustPolicy::Verified,
                                                const std::string &language = "",
-                                               const std::string &trustedKey = "");
+                                               const std::string &trustedKey = "",
+                                               const std::string &moduleIdentity = "");
 };

@@ -17,6 +17,7 @@ class AMCM
   public:
     AMCM();
     explicit AMCM(PluginTrustPolicy trustPolicy);
+    AMCM(PluginTrustPolicy trustPolicy, bool discoverPlugins);
 
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base);
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instanceName);
@@ -46,6 +47,7 @@ class AMCM
                                 const std::string &toKey);
     DAGRunResult RunDAG(bool failFast = true);
     void LoadPlugins(const std::string &path);
+    void LoadPluginPackage(const std::string &manifestPath, const std::string &moduleName);
 
   private:
     std::map<std::string, std::shared_ptr<IAnalysisModule>> m_Modules;

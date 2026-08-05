@@ -268,6 +268,7 @@ class IAnalysisModule
         return m_CodeVersionHash;
     }
     std::string GetRuntimeLanguage() const { return RuntimeLanguage(); }
+    bool RequiresRootSerialization() const { return UsesAnalysisManagers() || RuntimeLanguage() == "python"; }
     ExecutionContext &GetExecutionContext() { return m_Context; }
     const ExecutionContext &GetExecutionContext() const { return m_Context; }
     void SetCacheDirectory(const std::string &path)

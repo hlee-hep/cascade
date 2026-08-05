@@ -200,5 +200,6 @@ class AnalysisManager
 
     std::chrono::steady_clock::time_point m_StartTime;
     std::atomic<double> m_Progress{0.0};
+    std::atomic<long long> m_LastProgressReportNs{0};
     void UpdateProgress_(double p);
 };

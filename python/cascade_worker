@@ -27,12 +27,15 @@ def main():
         if request.get("schema") != 1:
             raise RuntimeError("Unsupported isolated worker request schema")
 
-        from cascade.py_amcm import _load_python_plugin_index, py_amcm
+        from cascade.py_amcm import (
+            _load_targeted_python_plugin_info,
+            py_amcm,
+        )
 
         require_signed = bool(request.get("require_signed", False))
-        info = _load_python_plugin_index(require_signed).get(request["module"])
-        if info is None:
-            raise RuntimeError(f"Python plugin module not found: {request['module']}")
+        info = _load_targeted_python_plugin_info(
+            request["manifest_path"], request["module"], require_signed
+        )
         origin = info["origin"]
         if (
             origin["manifest_sha256"] != request["manifest_sha256"]
@@ -40,10 +43,10 @@ def main():
         ):
             raise RuntimeError(
                 "Plugin changed between isolated execution validation and worker startup"
-            )
+        )
 
-        controller = py_amcm(require_signed=require_signed)
-        handle = controller.register_module(request["module"], request["instance"])
+        controller = py_amcm(require_signed=require_signed, discover_plugins=False)
+        handle = controller._register_python_plugin_info(info, request["instance"])
         module = handle._module
         module.set_cache_directory(request["cache_directory"])
         module.set_output_directory(request["output_directory"])

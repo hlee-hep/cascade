@@ -64,6 +64,9 @@ ParamManager &ParamManager::operator=(const ParamManager &other)
     if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
     m_RawValues = other.m_RawValues;
     m_Descriptions = other.m_Descriptions;
+    std::atomic_store_explicit(&m_FrozenValues,
+                               std::shared_ptr<const std::unordered_map<std::string, ParamValue>>{},
+                               std::memory_order_release);
     return *this;
 }
 
@@ -72,6 +75,9 @@ ParamManager::ParamManager(ParamManager &&other)
     std::lock_guard<std::recursive_mutex> lock(other.m_Mutex);
     m_RawValues = std::move(other.m_RawValues);
     m_Descriptions = std::move(other.m_Descriptions);
+    std::atomic_store_explicit(&m_FrozenValues,
+                               std::shared_ptr<const std::unordered_map<std::string, ParamValue>>{},
+                               std::memory_order_release);
     m_Frozen = false;
 }
 
@@ -82,12 +88,17 @@ ParamManager &ParamManager::operator=(ParamManager &&other)
     if (m_Frozen) throw std::runtime_error("ParamManager: parameters are immutable during module execution.");
     m_RawValues = std::move(other.m_RawValues);
     m_Descriptions = std::move(other.m_Descriptions);
+    std::atomic_store_explicit(&m_FrozenValues,
+                               std::shared_ptr<const std::unordered_map<std::string, ParamValue>>{},
+                               std::memory_order_release);
     return *this;
 }
 
 void ParamManager::Freeze()
 {
     std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+    auto snapshot = std::make_shared<const std::unordered_map<std::string, ParamValue>>(m_RawValues);
+    std::atomic_store_explicit(&m_FrozenValues, std::move(snapshot), std::memory_order_release);
     m_Frozen = true;
 }
 
@@ -95,6 +106,9 @@ void ParamManager::Thaw()
 {
     std::lock_guard<std::recursive_mutex> lock(m_Mutex);
     m_Frozen = false;
+    std::atomic_store_explicit(&m_FrozenValues,
+                               std::shared_ptr<const std::unordered_map<std::string, ParamValue>>{},
+                               std::memory_order_release);
 }
 
 ParamValue ParamManager::ConvertFromYaml_(const YAML::Node &value)

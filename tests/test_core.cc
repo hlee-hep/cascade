@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -332,6 +333,43 @@ void TestOutputTransactions()
     }
     assert(overlapRejected);
     overlapping.Rollback();
+
+    OutputTransaction firstPublisher;
+    OutputTransaction secondPublisher;
+    firstPublisher.Begin(outputDirectory, "publisher-one");
+    secondPublisher.Begin(outputDirectory, "publisher-two");
+    const auto firstStaged = firstPublisher.Stage("shared.txt");
+    const auto secondStaged = secondPublisher.Stage("shared.txt");
+    {
+        std::ofstream output(firstStaged);
+        output << "first";
+    }
+    {
+        std::ofstream output(secondStaged);
+        output << "second";
+    }
+    firstPublisher.Commit();
+    std::atomic<bool> secondCommitStarted{false};
+    std::atomic<bool> secondCommitFinished{false};
+    std::thread secondCommit(
+        [&]()
+        {
+            secondCommitStarted.store(true);
+            secondPublisher.Commit();
+            secondCommitFinished.store(true);
+        });
+    while (!secondCommitStarted.load()) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!secondCommitFinished.load());
+    firstPublisher.Complete();
+    secondCommit.join();
+    secondPublisher.Complete();
+    {
+        std::ifstream output(outputDirectory / "shared.txt");
+        std::string contents;
+        output >> contents;
+        assert(contents == "second");
+    }
 
     const auto outsideDirectory = std::filesystem::temp_directory_path() / "cascade-output-outside";
     std::filesystem::remove_all(outsideDirectory);
@@ -982,6 +1020,43 @@ void TestDagValidationAndReset()
     assert(rejected);
 }
 
+void TestDagExecutionLanes()
+{
+    setenv("CASCADE_DAG_MAX_WORKERS", "4", 1);
+    std::atomic<int> entered{0};
+    std::atomic<bool> overlapped{false};
+    DAGManager parallel;
+    auto concurrentTask = [&]()
+    {
+        if (entered.fetch_add(1) + 1 == 2) overlapped.store(true);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (entered.load() < 2 && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    };
+    parallel.AddNode("left", {}, concurrentTask, DAGExecutionLane::Parallel);
+    parallel.AddNode("right", {}, concurrentTask, DAGExecutionLane::Parallel);
+    assert(parallel.Execute().Succeeded());
+    assert(overlapped.load());
+
+    std::atomic<int> activeRoots{0};
+    std::atomic<int> maximumRoots{0};
+    DAGManager roots;
+    auto rootTask = [&]()
+    {
+        const int active = activeRoots.fetch_add(1) + 1;
+        int observed = maximumRoots.load();
+        while (active > observed && !maximumRoots.compare_exchange_weak(observed, active))
+        {
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        activeRoots.fetch_sub(1);
+    };
+    roots.AddNode("root-left", {}, rootTask, DAGExecutionLane::Root);
+    roots.AddNode("root-right", {}, rootTask, DAGExecutionLane::Root);
+    assert(roots.Execute().Succeeded());
+    assert(maximumRoots.load() == 1);
+    unsetenv("CASCADE_DAG_MAX_WORKERS");
+}
+
 void TestPluginTrustPolicy()
 {
     const std::string className = "CascadeVerifiedPolicyModule";
@@ -1080,6 +1155,29 @@ void TestPluginVerifierService()
     assert(discovery.Errors.empty());
     assert(discovery.Packages.size() == 1);
 
+    {
+        std::ofstream output(package / "unused.py");
+        output << "unused";
+    }
+    manifest["modules"].push_back({{"name", "unused_module"},
+                                   {"language", "python"},
+                                   {"path", "unused.py"},
+                                   {"sha256", std::string(64, '0')},
+                                   {"classes", {"UnusedModule"}}});
+    {
+        std::ofstream output(package / "plugin_manifest.json");
+        output << manifest.dump(2) << '\n';
+    }
+    const auto targeted = PluginVerifier::VerifyPackage(package.string(), trustStore.string(),
+                                                        PluginTrustPolicy::Verified, "python", "", "ExampleModule");
+    assert(targeted.Artifacts.size() == 1);
+    assert(targeted.Artifacts.front().Classes == std::vector<std::string>{"ExampleModule"});
+    manifest["modules"].erase(manifest["modules"].end() - 1);
+    {
+        std::ofstream output(package / "plugin_manifest.json");
+        output << manifest.dump(2) << '\n';
+    }
+
     const fs::path prefix = root / "prefix";
     fs::create_directories(prefix);
     const fs::path config = root / "config.json";
@@ -1149,6 +1247,7 @@ int main()
     TestPlotDoesNotMutateInputs();
     TestRdfSnapshotRunsOneEventLoop();
     TestDagValidationAndReset();
+    TestDagExecutionLanes();
     std::filesystem::remove_all(runtimeRoot);
     return 0;
 }

@@ -169,9 +169,11 @@ Use a stable code hash supplied by the plugin build. Make external dataset and
 calibration identifiers explicit parameters. Otherwise the cache cannot recognize
 that an input changed.
 
-Cache files are locked for concurrent access and replaced atomically. Output file
-names are not globally locked: concurrent modules must not target the same final
-path.
+Cache files are locked for concurrent access and replaced atomically. Final output
+paths use inter-process locks from promotion through cache recording and transaction
+completion, preventing concurrent publishers from corrupting each other's rollback
+state. Concurrent modules should still use distinct final paths because the last
+successful publisher wins.
 
 ## Cancellation
 
@@ -217,9 +219,11 @@ result = controller.run_module_isolated("module_instance")
 ```
 
 The parent reserves the run and staging directory, then starts a clean worker with
-`exec()`. The worker rediscovers the installed plugin, verifies that its manifest
-and artifact hashes still match, reconstructs the module, and executes the normal
-lifecycle. A bounded status message returns through a pipe. The parent converts:
+`exec()`. The worker reopens the selected package manifest, verifies only the
+requested module artifact and its signature policy, confirms that the hashes still
+match, reconstructs the module, and executes the normal lifecycle. It does not scan
+or load unrelated installed packages. A bounded status message returns through a
+pipe. The parent converts:
 
 - fatal signals;
 - abnormal exit;
@@ -251,19 +255,32 @@ size where throughput matters more than content fingerprints. Cache histories ke
 256 snapshots per module by default; override that with
 `CASCADE_CACHE_MAX_SNAPSHOTS` (`0` means unlimited).
 
+Full hashes are streamed in 1 MiB chunks and reused within the process when the
+file device, inode, size, modification time, and change time are unchanged. This
+avoids repeated reads when independent modules track the same immutable input. The
+cache holds 1024 identities by default; set
+`CASCADE_PROVENANCE_HASH_CACHE_ENTRIES=0` to disable it or choose another bound.
+
 ## Concurrency
 
 - A module instance serializes its own runs.
 - Module parameters are frozen from run reservation through completion; concurrent
-  reads are safe and writes fail instead of changing a live snapshot.
+  reads use an immutable snapshot and writes fail instead of changing a live run.
 - Different module instances may run concurrently.
 - Registry/controller metadata is protected for concurrent access.
 - DAG structure cannot be mutated while execution is active.
-- Modules remain responsible for external resource conflicts and ROOT operations
-  that are not thread-safe.
+- In-process `AnalysisManager` modules share one process-wide ROOT execution lane.
+- Isolated nodes and C++ modules without analysis managers use bounded DAG worker
+  lanes. In-process Python nodes share the ROOT-safe serial lane.
+- `CASCADE_DAG_MAX_WORKERS` bounds a DAG's concurrent work and defaults to detected
+  hardware concurrency.
 
 Give concurrently executable modules distinct output paths and avoid shared mutable
 globals.
+
+Progress state is updated for every callback, while terminal rendering is throttled
+to once every 200 ms. Set `CASCADE_PROGRESS_INTERVAL_MS=0` to render every update or
+choose a different non-negative interval.
 
 ## Provenance and run-log compatibility
 

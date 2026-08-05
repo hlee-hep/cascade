@@ -1,10 +1,19 @@
 # DAG execution
 
-`DAGManager` is a deterministic, sequential dependency executor. It validates
-the complete graph before running, records every node state, propagates failures
-to dependent nodes, and returns a `DAGRunResult`.
+`DAGManager` is a bounded dependency scheduler. It validates the complete graph
+before running, records every node state, propagates failures to dependent nodes,
+and returns a `DAGRunResult`.
 
-It is not a parallel scheduler or distributed workflow engine.
+Controller-managed modules are assigned execution lanes automatically:
+
+- in-process modules using `AnalysisManager` enter the process-wide ROOT lane;
+- in-process Python modules share the ROOT-safe serial lane because of the GIL and unknown global state;
+- C++ modules that override `UsesAnalysisManagers()` to return `false` may run in parallel;
+- isolated modules may run concurrently in separate worker processes.
+
+Only one in-process ROOT module runs at a time, including across controller
+instances. Set `CASCADE_DAG_MAX_WORKERS` to a positive integer to bound concurrent
+ROOT-free and isolated work. The default is the detected hardware concurrency.
 
 ## Module DAGs from Python
 
@@ -81,7 +90,8 @@ result = controller.run_dag(fail_fast=True)
 ```
 
 When a node fails, all of its pending descendants become `Blocked`; unrelated
-nodes remain `Pending`.
+nodes that have not started remain `Pending`. Work already dispatched in the same
+concurrent batch is allowed to finish.
 
 To finish independent branches:
 
@@ -169,16 +179,17 @@ DAGManager dag;
 
 dag.AddNode("download", {}, [] {
     DownloadDataset();
-});
+}, DAGExecutionLane::Parallel);
 dag.AddNode("index", {"download"}, [] {
     BuildIndex();
-});
+}, DAGExecutionLane::Parallel);
 
 const auto result = dag.Execute(false);
 ```
 
 A callback signals failure by throwing. The exception message is stored in the
-node result.
+node result. Generic callbacks default to `DAGExecutionLane::Serial`, preserving
+exclusive deterministic execution unless a lane is selected explicitly.
 
 ## Generic data links
 
@@ -226,9 +237,10 @@ dot -Tpng pipeline.dot -o pipeline.png
 
 ## Operational limits
 
-- Independent nodes are still executed sequentially.
-- There is no automatic timeout, backoff, retry count, or resource allocation.
-- Execution order is dependency-first and deterministic by node name where no
-  dependency determines an order.
+- Scheduling is local and bounded; it is not a distributed executor.
+- There is no automatic backoff or retry count. Isolated-module timeouts remain
+  controlled by `CASCADE_ISOLATED_TIMEOUT_SECONDS`.
+- Ready-node selection is deterministic, but completion order for parallel lanes
+  is intentionally not deterministic.
 - Output path collisions remain a module-design error.
 - External side effects are not covered by the module output transaction.

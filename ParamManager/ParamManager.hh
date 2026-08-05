@@ -4,9 +4,11 @@
 #include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
-#include <mutex>
 #include <type_traits>
 #include <unordered_map>
 #include <variant>
@@ -103,6 +105,7 @@ class __attribute__((visibility("default"))) ParamManager
     mutable std::recursive_mutex m_Mutex;
     bool m_Frozen = false;
     std::unordered_map<std::string, ParamValue> m_RawValues;
+    std::shared_ptr<const std::unordered_map<std::string, ParamValue>> m_FrozenValues;
     std::unordered_map<std::string, std::string> m_Descriptions;
 
     ParamValue ConvertFromYaml_(const YAML::Node &val);
@@ -146,6 +149,17 @@ class __attribute__((visibility("default"))) ParamManager
 
     template <typename T> T Get(const std::string &key) const
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen)
+        {
+            static_assert(g_isParamValueV<T>, "[ParamManager] Requested type not in ParamValue.");
+            const auto it = frozen->find(key);
+            if (it == frozen->end()) throw std::runtime_error("ParamManager: key not found: " + key);
+            if constexpr (std::is_same_v<T, ParamValue>)
+                return it->second;
+            else
+                return std::get<T>(it->second);
+        }
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         static_assert(g_isParamValueV<T>, "[ParamManager] Requested type not in ParamValue.");
         auto it = m_RawValues.find(key);
@@ -158,11 +172,20 @@ class __attribute__((visibility("default"))) ParamManager
 
     bool Has(const std::string &key) const
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen) return frozen->count(key) > 0;
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         return m_RawValues.count(key) > 0;
     }
     std::string TypeOf(const std::string &key) const
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen)
+        {
+            const auto it = frozen->find(key);
+            if (it == frozen->end()) throw std::runtime_error("ParamManager: key not found: " + key);
+            return std::visit([](const auto &value) { return ::TypeName<std::decay_t<decltype(value)>>(); }, it->second);
+        }
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key not found: " + key);
@@ -203,6 +226,8 @@ class __attribute__((visibility("default"))) ParamManager
 
     std::unordered_map<std::string, ParamValue> RawValues() const
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen) return *frozen;
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         return m_RawValues;
     }

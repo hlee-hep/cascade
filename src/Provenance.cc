@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cctype>
 #include <ctime>
@@ -22,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <tuple>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -47,6 +49,69 @@ std::map<std::string, ActiveRun> g_ActiveRuns;
 std::map<std::string, ModuleRunManifest> g_ModuleRuns;
 std::map<std::string, std::string> g_LastRunByInstance;
 std::atomic<unsigned long long> g_WorkflowCounter{0};
+
+struct FileIdentity
+{
+    std::uintmax_t Device = 0;
+    std::uintmax_t Inode = 0;
+    std::uintmax_t Size = 0;
+    long long ModifiedSeconds = 0;
+    long long ModifiedNanoseconds = 0;
+    long long ChangedSeconds = 0;
+    long long ChangedNanoseconds = 0;
+
+    bool operator<(const FileIdentity &other) const
+    {
+        return std::tie(Device, Inode, Size, ModifiedSeconds, ModifiedNanoseconds, ChangedSeconds, ChangedNanoseconds) <
+               std::tie(other.Device, other.Inode, other.Size, other.ModifiedSeconds, other.ModifiedNanoseconds,
+                        other.ChangedSeconds, other.ChangedNanoseconds);
+    }
+    bool operator==(const FileIdentity &other) const
+    {
+        return Device == other.Device && Inode == other.Inode && Size == other.Size &&
+               ModifiedSeconds == other.ModifiedSeconds && ModifiedNanoseconds == other.ModifiedNanoseconds &&
+               ChangedSeconds == other.ChangedSeconds && ChangedNanoseconds == other.ChangedNanoseconds;
+    }
+};
+
+std::mutex g_ArtifactHashMutex;
+std::map<FileIdentity, std::string> g_ArtifactHashes;
+
+FileIdentity IdentityOf(const struct stat &metadata)
+{
+    FileIdentity identity;
+    identity.Device = static_cast<std::uintmax_t>(metadata.st_dev);
+    identity.Inode = static_cast<std::uintmax_t>(metadata.st_ino);
+    identity.Size = static_cast<std::uintmax_t>(metadata.st_size);
+#if defined(__APPLE__)
+    identity.ModifiedSeconds = metadata.st_mtimespec.tv_sec;
+    identity.ModifiedNanoseconds = metadata.st_mtimespec.tv_nsec;
+    identity.ChangedSeconds = metadata.st_ctimespec.tv_sec;
+    identity.ChangedNanoseconds = metadata.st_ctimespec.tv_nsec;
+#else
+    identity.ModifiedSeconds = metadata.st_mtim.tv_sec;
+    identity.ModifiedNanoseconds = metadata.st_mtim.tv_nsec;
+    identity.ChangedSeconds = metadata.st_ctim.tv_sec;
+    identity.ChangedNanoseconds = metadata.st_ctim.tv_nsec;
+#endif
+    return identity;
+}
+
+std::size_t ArtifactHashCacheEntries()
+{
+    static const std::size_t limit = []()
+    {
+        const char *configured = std::getenv("CASCADE_PROVENANCE_HASH_CACHE_ENTRIES");
+        if (!configured || !*configured) return static_cast<std::size_t>(1024);
+        const std::string value(configured);
+        if (value.front() == '-') throw std::runtime_error("CASCADE_PROVENANCE_HASH_CACHE_ENTRIES must be non-negative");
+        std::size_t parsed = 0;
+        const auto result = std::stoull(value, &parsed);
+        if (parsed != value.size()) throw std::runtime_error("CASCADE_PROVENANCE_HASH_CACHE_ENTRIES must be non-negative");
+        return static_cast<std::size_t>(result);
+    }();
+    return limit;
+}
 
 bool SensitiveKey(std::string key)
 {
@@ -90,43 +155,91 @@ std::string AbsoluteString(const fs::path &path)
 
 std::string HashFile(const fs::path &path)
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot read artifact for hashing: " + path.string());
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    const int descriptor = open(path.c_str(), flags);
+    if (descriptor < 0) throw std::system_error(errno, std::generic_category(), "Cannot read artifact for hashing");
+    struct stat before{};
+    if (fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode))
+    {
+        const int error = errno ? errno : EINVAL;
+        close(descriptor);
+        throw std::system_error(error, std::generic_category(), "Cannot inspect artifact for hashing");
+    }
+    const FileIdentity identity = IdentityOf(before);
+    const std::size_t cacheLimit = ArtifactHashCacheEntries();
+    if (cacheLimit > 0)
+    {
+        std::lock_guard<std::mutex> lock(g_ArtifactHashMutex);
+        const auto cached = g_ArtifactHashes.find(identity);
+        if (cached != g_ArtifactHashes.end())
+        {
+            close(descriptor);
+            return cached->second;
+        }
+    }
     EVP_MD_CTX *context = EVP_MD_CTX_new();
-    if (!context) throw std::runtime_error("Cannot allocate SHA-256 context.");
+    if (!context)
+    {
+        close(descriptor);
+        throw std::runtime_error("Cannot allocate SHA-256 context.");
+    }
     if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1)
     {
         EVP_MD_CTX_free(context);
+        close(descriptor);
         throw std::runtime_error("Cannot initialize SHA-256 context.");
     }
     std::array<char, 1024 * 1024> buffer{};
-    while (input)
+    while (true)
     {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const auto count = input.gcount();
-        if (count > 0 && EVP_DigestUpdate(context, buffer.data(), static_cast<std::size_t>(count)) != 1)
+        const ssize_t count = read(descriptor, buffer.data(), buffer.size());
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0)
         {
             EVP_MD_CTX_free(context);
+            const int error = errno;
+            close(descriptor);
+            throw std::system_error(error, std::generic_category(), "Failed while hashing artifact");
+        }
+        if (count == 0) break;
+        if (EVP_DigestUpdate(context, buffer.data(), static_cast<std::size_t>(count)) != 1)
+        {
+            EVP_MD_CTX_free(context);
+            close(descriptor);
             throw std::runtime_error("Cannot update SHA-256 digest.");
         }
     }
-    if (!input.eof())
+    struct stat after{};
+    if (fstat(descriptor, &after) != 0 || !(IdentityOf(after) == identity))
     {
         EVP_MD_CTX_free(context);
-        throw std::runtime_error("Failed while hashing artifact: " + path.string());
+        close(descriptor);
+        throw std::runtime_error("Artifact changed while it was being hashed: " + path.string());
     }
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digestLength = 0;
     if (EVP_DigestFinal_ex(context, digest, &digestLength) != 1)
     {
         EVP_MD_CTX_free(context);
+        close(descriptor);
         throw std::runtime_error("Cannot finalize SHA-256 digest.");
     }
     EVP_MD_CTX_free(context);
+    close(descriptor);
     std::ostringstream output;
     for (unsigned int index = 0; index < digestLength; ++index)
         output << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[index]);
-    return output.str();
+    const std::string result = output.str();
+    if (cacheLimit > 0)
+    {
+        std::lock_guard<std::mutex> lock(g_ArtifactHashMutex);
+        while (g_ArtifactHashes.size() >= cacheLimit && !g_ArtifactHashes.empty()) g_ArtifactHashes.erase(g_ArtifactHashes.begin());
+        g_ArtifactHashes[identity] = result;
+    }
+    return result;
 }
 
 enum class ArtifactHashMode

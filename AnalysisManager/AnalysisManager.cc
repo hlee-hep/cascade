@@ -10,6 +10,7 @@
 #include <TSystem.h>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <dlfcn.h>
 #include <filesystem>
@@ -97,6 +98,20 @@ std::string CanonicalBranchType(const std::string &type)
 }
 
 bool IsSupportedBranchType(const std::string &type) { return !CanonicalBranchType(type).empty(); }
+
+long long ProgressReportIntervalNs()
+{
+    static const long long interval = []()
+    {
+        const char *configured = std::getenv("CASCADE_PROGRESS_INTERVAL_MS");
+        if (!configured || !*configured) return 200000000LL;
+        char *end = nullptr;
+        const long long milliseconds = std::strtoll(configured, &end, 10);
+        if (end == configured || *end != '\0' || milliseconds < 0) return 200000000LL;
+        return milliseconds * 1000000LL;
+    }();
+    return interval;
+}
 
 void ValidateSchemaVersion(const YAML::Node &root, ConfigValidationResult &result)
 {
@@ -1308,10 +1323,23 @@ std::ofstream AnalysisManager::OpenOutputFile(const std::string &filename, const
 void AnalysisManager::UpdateProgress_(double p)
 {
     auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - m_StartTime).count();
-    double eta = (p > 0.0f && p < 1.0f) ? elapsed * (1.0f / p - 1.0f) : -1.0f;
     const double progress = std::clamp(p, 0.0, 1.0);
     m_Progress.store(progress);
+    const long long nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    const long long intervalNs = ProgressReportIntervalNs();
+    if (progress < 1.0 && intervalNs > 0)
+    {
+        long long previous = m_LastProgressReportNs.load(std::memory_order_relaxed);
+        if (nowNs - previous < intervalNs ||
+            !m_LastProgressReportNs.compare_exchange_strong(previous, nowNs, std::memory_order_relaxed))
+            return;
+    }
+    else
+    {
+        m_LastProgressReportNs.store(nowNs, std::memory_order_relaxed);
+    }
+    double elapsed = std::chrono::duration<double>(now - m_StartTime).count();
+    double eta = (progress > 0.0 && progress < 1.0) ? elapsed * (1.0 / progress - 1.0) : -1.0;
     Logger::Get().PrintProgressBar("AnalysisManager", progress, elapsed, eta);
 }
 

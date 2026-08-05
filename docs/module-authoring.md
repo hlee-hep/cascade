@@ -89,11 +89,12 @@ void SelectionModule::Init()
 void SelectionModule::Execute()
 {
     auto *manager = Am();
+    const double weight = m_Param.Get<double>("weight");
     for (Long64_t index = 0; index < manager->GetEntryCount(); ++index)
     {
         if (IsCancellationRequested()) return;
         manager->LoadEvent(index);
-        if (manager->PassesAllCuts()) manager->FillHistograms(m_Param.Get<double>("weight"));
+        if (manager->PassesAllCuts()) manager->FillHistograms(weight);
     }
 }
 
@@ -111,6 +112,11 @@ void SelectionModule::OnFailure(ModulePhase phase, const std::string &message)
 The framework creates the `main` analysis manager before `Init`. Use `Am()` for it.
 Call `RegisterAnalysisManager("name")` only when a module needs additional isolated
 manager state.
+
+Parameters are frozen and published as an immutable snapshot for the complete run,
+so concurrent reads do not take the configuration mutex. Still copy scalar or
+vector parameters into local variables before very hot event loops to avoid repeated
+key lookup and value copying.
 
 ## Python module
 

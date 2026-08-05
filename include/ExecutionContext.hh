@@ -70,8 +70,11 @@ class OutputTransaction
     std::filesystem::path m_StagingRoot;
     std::map<std::filesystem::path, std::filesystem::path> m_StagedOutputs;
     std::vector<Promotion> m_Promotions;
+    std::vector<int> m_OutputLockDescriptors;
     State m_State = State::Idle;
 
+    void AcquireOutputLocks_();
+    void ReleaseOutputLocks_() noexcept;
     void RollbackUnlocked_() noexcept;
     std::filesystem::path JournalPath_() const;
     void WriteJournal_() const;

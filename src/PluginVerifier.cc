@@ -468,7 +468,8 @@ void PluginVerifier::ValidateStagedTree(const std::string &packageDirectory)
 
 VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDirectory, const std::string &trustStore,
                                                     PluginTrustPolicy policy, const std::string &language,
-                                                    const std::string &trustedKey)
+                                                    const std::string &trustedKey,
+                                                    const std::string &moduleIdentity)
 {
     const fs::path packageDir = fs::absolute(packageDirectory).lexically_normal();
     PackageReadLock packageLock(packageDir);
@@ -520,6 +521,7 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
 
     std::vector<std::string> paths;
     std::vector<std::string> identities;
+    bool requestedModuleFound = moduleIdentity.empty();
     for (const auto &entry : manifest.at("modules"))
     {
         if (!entry.is_object()) throw std::runtime_error("manifest module entry must be an object");
@@ -564,6 +566,12 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
             identities.push_back(name);
         }
 
+        const bool selected = moduleIdentity.empty() ||
+                              (entryLanguage == "python"
+                                   ? std::find(classes.begin(), classes.end(), moduleIdentity) != classes.end()
+                                   : name == moduleIdentity);
+        if (selected) requestedModuleFound = true;
+
         const fs::path artifactPath = packageDir / relative;
         if (!fs::is_regular_file(artifactPath) || !IsContainedPath(packageDir, artifactPath) ||
             HasSymlinkComponent(packageDir, artifactPath))
@@ -572,6 +580,8 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
             (artifactPath.filename().string().size() < 9 ||
              artifactPath.filename().string().rfind("Module.so") != artifactPath.filename().string().size() - 9))
             throw std::runtime_error("C++ plugin filename must end with Module.so: " + artifactPath.string());
+
+        if (!selected || (!language.empty() && entryLanguage != language)) continue;
 
         int descriptor = OpenRegularFile(artifactPath);
         std::vector<unsigned char> artifactBytes;
@@ -589,11 +599,6 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
         }
         const std::string actualHash = expectedHash;
 
-        if (!language.empty() && entryLanguage != language)
-        {
-            close(descriptor);
-            continue;
-        }
         VerifiedPluginArtifact artifact;
         artifact.Name = name;
         artifact.Language = entryLanguage;
@@ -613,5 +618,7 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
     }
     std::sort(result.Artifacts.begin(), result.Artifacts.end(),
               [](const auto &left, const auto &right) { return left.Path < right.Path; });
+    if (!requestedModuleFound || (!moduleIdentity.empty() && result.Artifacts.empty()))
+        throw std::runtime_error("plugin package does not provide requested module: " + moduleIdentity);
     return result;
 }

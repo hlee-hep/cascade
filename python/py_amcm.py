@@ -74,6 +74,73 @@ def _plugin_cache_key(plugin_roots, require_signed=False):
     )
 
 
+def _python_artifact_entries(package, artifact, package_dir):
+    safe_package = "".join(
+        character if character.isalnum() or character == "_" else "_"
+        for character in package.package
+    )
+    package_token = package.manifest_sha256[:12]
+    source_token = artifact.sha256[:12]
+    module_name = (
+        f"cascade.pyplugin.{safe_package}_{package_token}."
+        f"{os.path.splitext(os.path.basename(artifact.path))[0]}_{source_token}"
+    )
+    origin = {
+        "package": package.package,
+        "trust": _status_text(package.trust),
+        "manifest_path": package.manifest_path,
+        "manifest_sha256": package.manifest_sha256,
+        "artifact_sha256": artifact.sha256,
+        "signer_fingerprint": package.signer_fingerprint or None,
+    }
+    return {
+        class_name: {
+            "module": module_name,
+            "class": class_name,
+            "path": artifact.path,
+            "package_dir": package_dir,
+            "manifest": package.manifest_path,
+            "trusted_key": package.trusted_key_path or None,
+            "sha256": artifact.sha256,
+            "source_bytes": artifact.source,
+            "origin": origin,
+        }
+        for class_name in artifact.classes
+    }
+
+
+def _load_targeted_python_plugin_info(
+    manifest_path, class_name, require_signed=False
+):
+    manifest_path = os.path.realpath(manifest_path)
+    if os.path.basename(manifest_path) != "plugin_manifest.json":
+        raise RuntimeError(
+            "Targeted plugin load requires a plugin_manifest.json path"
+        )
+    package_dir = os.path.dirname(manifest_path)
+    plugin_root = os.path.dirname(package_dir)
+    policy = (
+        PluginTrustPolicy.RequireSigned
+        if require_signed
+        else PluginTrustPolicy.Verified
+    )
+    package = PluginVerifier.verify_package(
+        package_dir,
+        _default_trust_store(plugin_root),
+        policy,
+        "python",
+        "",
+        class_name,
+    )
+    if os.path.realpath(package.manifest_path) != manifest_path:
+        raise RuntimeError("Targeted plugin manifest changed during verification")
+    for artifact in package.artifacts:
+        entries = _python_artifact_entries(package, artifact, package_dir)
+        if class_name in entries:
+            return entries[class_name]
+    raise RuntimeError(f"Python plugin module not found: {class_name}")
+
+
 def _load_python_plugin_index(require_signed=False):
     global _PYPLUGIN_CACHE, _PYPLUGIN_CACHE_KEY
     plugin_roots = _python_plugin_roots()
@@ -89,41 +156,16 @@ def _load_python_plugin_index(require_signed=False):
     for package in discovery.packages:
         root = os.path.dirname(package.manifest_path)
         for artifact in package.artifacts:
-            safe_package = "".join(
-                character if character.isalnum() or character == "_" else "_"
-                for character in package.package
-            )
-            package_token = package.manifest_sha256[:12]
-            source_token = artifact.sha256[:12]
-            modname = (
-                f"cascade.pyplugin.{safe_package}_{package_token}."
-                f"{os.path.splitext(os.path.basename(artifact.path))[0]}_{source_token}"
-            )
-            for class_name in artifact.classes:
+            for class_name, entry in _python_artifact_entries(
+                package, artifact, root
+            ).items():
                 if class_name in index:
                     previous = index[class_name]
                     raise RuntimeError(
                         "Duplicate python plugin module name "
                         f"{class_name}: {previous['path']} and {artifact.path}"
                     )
-                index[class_name] = {
-                    "module": modname,
-                    "class": class_name,
-                    "path": artifact.path,
-                    "package_dir": root,
-                    "manifest": package.manifest_path,
-                    "trusted_key": package.trusted_key_path or None,
-                    "sha256": artifact.sha256,
-                    "source_bytes": artifact.source,
-                    "origin": {
-                        "package": package.package,
-                        "trust": _status_text(package.trust),
-                        "manifest_path": package.manifest_path,
-                        "manifest_sha256": package.manifest_sha256,
-                        "artifact_sha256": artifact.sha256,
-                        "signer_fingerprint": package.signer_fingerprint or None,
-                    },
-                }
+                index[class_name] = entry
 
     _PYPLUGIN_CACHE = index
     _PYPLUGIN_CACHE_KEY = cache_key
@@ -170,19 +212,15 @@ class _ModuleHandle:
 
 
 class py_amcm:
-    def __init__(self, require_signed=False):
+    def __init__(self, require_signed=False, discover_plugins=True):
         self.require_signed = bool(require_signed)
         policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
-        self.ctrl = AMCM(policy)
+        self.ctrl = AMCM(policy, bool(discover_plugins))
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
         init_interrupt()
 
-    def _register_python_plugin(self, class_name, instance_name):
-        index = _load_python_plugin_index(self.require_signed)
-        info = index.get(class_name)
-        if not info:
-            raise RuntimeError(f"Module not found: {class_name}")
+    def _register_python_plugin_info(self, info, instance_name):
         mod = _import_python_plugin(info)
         cls = getattr(mod, info["class"])
         module_obj = cls()
@@ -194,6 +232,13 @@ class py_amcm:
         handle = _ModuleHandle(self.ctrl, module_obj, "python")
         log(log_level.INFO, "CONTROL", f"Module {module_obj.get_basename()} is registered as {instance_name}")
         return handle
+
+    def _register_python_plugin(self, class_name, instance_name):
+        index = _load_python_plugin_index(self.require_signed)
+        info = index.get(class_name)
+        if not info:
+            raise RuntimeError(f"Module not found: {class_name}")
+        return self._register_python_plugin_info(info, instance_name)
 
     def register_module(self, class_name, name=None):
         if name is None:

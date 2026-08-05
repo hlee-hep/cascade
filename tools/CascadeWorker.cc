@@ -56,7 +56,9 @@ int main(int argc, char **argv)
         if (request.value("schema", 0) != 1) throw std::runtime_error("Unsupported isolated worker request schema");
 
         const bool requireSigned = request.value("require_signed", false);
-        AMCM controller(requireSigned ? PluginTrustPolicy::RequireSigned : PluginTrustPolicy::Verified);
+        AMCM controller(requireSigned ? PluginTrustPolicy::RequireSigned : PluginTrustPolicy::Verified, false);
+        controller.LoadPluginPackage(request.at("manifest_path").get<std::string>(),
+                                     request.at("module").get<std::string>());
         auto module = controller.RegisterModule(request.at("module").get<std::string>(),
                                                 request.at("instance").get<std::string>());
         const auto origin = module->GetPluginOrigin();

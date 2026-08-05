@@ -15,6 +15,14 @@ enum class DAGNodeStatus
     Blocked
 };
 
+enum class DAGExecutionLane
+{
+    Serial,
+    Parallel,
+    Root,
+    Isolated
+};
+
 inline const char *ToString(DAGNodeStatus status)
 {
     switch (status)
@@ -74,11 +82,13 @@ class DAGManager
         std::string Name;
         std::vector<std::string> Dependencies;
         Task Action;
+        DAGExecutionLane Lane = DAGExecutionLane::Serial;
         DAGNodeStatus Status = DAGNodeStatus::Pending;
         std::string Message;
     };
 
-    void AddNode(const std::string &name, const std::vector<std::string> &dependencies, Task task);
+    void AddNode(const std::string &name, const std::vector<std::string> &dependencies, Task task,
+                 DAGExecutionLane lane = DAGExecutionLane::Serial);
     void AddDataLink(const std::string &fromNode, const std::string &toNode, const std::string &label, DataTransfer transfer);
     void Validate() const;
     DAGRunResult Execute(bool failFast = true);

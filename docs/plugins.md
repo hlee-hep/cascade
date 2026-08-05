@@ -224,6 +224,11 @@ artifact, ABI, and signature validation. The configuration is not a trusted
 module cache. `CASCADE_PLUGIN_DIR`, `CASCADE_PYPLUGIN_DIR`, and
 `CASCADE_PLUGIN_TRUST_STORE` remain temporary compatibility overrides.
 
+Normal controller startup performs this full discovery. An isolated worker receives
+the already selected manifest path and identity, then revalidates only that package
+and requested artifact before loading it. Isolation therefore keeps the trust check
+without paying a full-prefix scan for every node.
+
 ## Installed layout
 
 C++ and Python artifacts have separate manifests:

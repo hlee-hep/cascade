@@ -307,14 +307,16 @@ PYBIND11_MODULE(_cascade, m)
                     { py::gil_scoped_release release; PluginVerifier::ValidateStagedTree(path); })
         .def_static("verify_package",
                     [](const std::string &packageDirectory, const std::string &trustStore, PluginTrustPolicy policy,
-                       const std::string &language, const std::string &trustedKey)
+                       const std::string &language, const std::string &trustedKey,
+                       const std::string &moduleIdentity)
                     {
                         py::gil_scoped_release release;
-                        return PluginVerifier::VerifyPackage(packageDirectory, trustStore, policy, language, trustedKey);
+                        return PluginVerifier::VerifyPackage(packageDirectory, trustStore, policy, language, trustedKey,
+                                                             moduleIdentity);
                     },
                     py::arg("package_directory"), py::arg("trust_store"),
                     py::arg("policy") = PluginTrustPolicy::Verified, py::arg("language") = "",
-                    py::arg("trusted_key") = "");
+                    py::arg("trusted_key") = "", py::arg("module_identity") = "");
     py::class_<PluginLayout>(m, "PluginLayout")
         .def_readonly("prefix", &PluginLayout::Prefix)
         .def_readonly("cpp", &PluginLayout::Cpp)
@@ -655,7 +657,8 @@ PYBIND11_MODULE(_cascade, m)
                     py::arg("module_manifests"), py::arg("path") = "")
         .def_static("discard_module_run", &ProvenanceRecorder::DiscardModuleRun);
     py::class_<AMCM>(m, "AMCM")
-        .def(py::init<PluginTrustPolicy>(), py::arg("trust_policy") = PluginTrustPolicy::Verified)
+        .def(py::init<PluginTrustPolicy, bool>(), py::arg("trust_policy") = PluginTrustPolicy::Verified,
+             py::arg("discover_plugins") = true)
         .def("register_module",
              [](AMCM &self, const std::string &base)
              {
@@ -849,6 +852,11 @@ PYBIND11_MODULE(_cascade, m)
         .value("Succeeded", DAGNodeStatus::Succeeded)
         .value("Failed", DAGNodeStatus::Failed)
         .value("Blocked", DAGNodeStatus::Blocked);
+    py::enum_<DAGExecutionLane>(m, "DAGExecutionLane")
+        .value("Serial", DAGExecutionLane::Serial)
+        .value("Parallel", DAGExecutionLane::Parallel)
+        .value("Root", DAGExecutionLane::Root)
+        .value("Isolated", DAGExecutionLane::Isolated);
     py::class_<DAGNodeResult>(m, "DAGNodeResult")
         .def_readonly("name", &DAGNodeResult::Name)
         .def_readonly("status", &DAGNodeResult::Status)
@@ -867,11 +875,14 @@ PYBIND11_MODULE(_cascade, m)
         .def_readonly("label", &DAGDataLinkInfo::Label);
     py::class_<DAGManager>(m, "DAGManager")
         .def("add_node",
-             [](DAGManager &dag, const std::string &name, const std::vector<std::string> &dependencies, std::function<void()> task)
+             [](DAGManager &dag, const std::string &name, const std::vector<std::string> &dependencies,
+                std::function<void()> task, DAGExecutionLane lane)
              {
                  py::gil_scoped_release release;
-                 dag.AddNode(name, dependencies, std::move(task));
-             })
+                 dag.AddNode(name, dependencies, std::move(task), lane);
+             },
+             py::arg("name"), py::arg("dependencies"), py::arg("task"),
+             py::arg("lane") = DAGExecutionLane::Serial)
         .def("add_data_link",
              [](DAGManager &dag, const std::string &fromNode, const std::string &toNode, const std::string &label,
                 std::function<void()> transfer)
@@ -1031,6 +1042,7 @@ PYBIND11_MODULE(_cascade, m)
         .def("get_last_run_result", &IAnalysisModule::GetLastRunResult)
         .def("get_code_hash", &IAnalysisModule::GetCodeHash)
         .def("get_runtime_language", &IAnalysisModule::GetRuntimeLanguage)
+        .def("requires_root_serialization", &IAnalysisModule::RequiresRootSerialization)
         .def("set_cache_directory", [](IAnalysisModule &module, const py::object &path)
              { module.SetCacheDirectory(PythonPathText(path)); })
         .def("set_output_directory", [](IAnalysisModule &module, const py::object &path)

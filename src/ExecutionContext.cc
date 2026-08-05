@@ -2,7 +2,9 @@
 
 #include "InterruptManager.hh"
 #include "Logger.hh"
+#include "sha256.hh"
 
+#include <cerrno>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -12,6 +14,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -88,6 +93,60 @@ fs::path OutputTransaction::Stage(const fs::path &finalPath)
     return staged;
 }
 
+void OutputTransaction::AcquireOutputLocks_()
+{
+    if (!m_OutputLockDescriptors.empty()) throw std::logic_error("OutputTransaction: output locks are already held.");
+    const fs::path lockDirectory = m_OutputRoot / ".cascade" / "locks" / "outputs";
+    fs::create_directories(lockDirectory);
+    try
+    {
+        for (const auto &[final, _] : m_StagedOutputs)
+        {
+            const fs::path lockPath = lockDirectory / (Sha256(final.string()) + ".lock");
+            int flags = O_CREAT | O_RDWR;
+#ifdef O_CLOEXEC
+            flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+            flags |= O_NOFOLLOW;
+#endif
+            const int descriptor = open(lockPath.c_str(), flags, 0600);
+            if (descriptor < 0)
+                throw std::system_error(errno, std::generic_category(), "OutputTransaction: cannot open output lock");
+            struct stat metadata{};
+            if (fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode))
+            {
+                const int error = errno ? errno : EINVAL;
+                close(descriptor);
+                throw std::system_error(error, std::generic_category(), "OutputTransaction: invalid output lock");
+            }
+            while (flock(descriptor, LOCK_EX) != 0)
+            {
+                if (errno == EINTR) continue;
+                const int error = errno;
+                close(descriptor);
+                throw std::system_error(error, std::generic_category(), "OutputTransaction: cannot lock output");
+            }
+            m_OutputLockDescriptors.push_back(descriptor);
+        }
+    }
+    catch (...)
+    {
+        ReleaseOutputLocks_();
+        throw;
+    }
+}
+
+void OutputTransaction::ReleaseOutputLocks_() noexcept
+{
+    for (auto iterator = m_OutputLockDescriptors.rbegin(); iterator != m_OutputLockDescriptors.rend(); ++iterator)
+    {
+        flock(*iterator, LOCK_UN);
+        close(*iterator);
+    }
+    m_OutputLockDescriptors.clear();
+}
+
 void OutputTransaction::Commit()
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -95,6 +154,7 @@ void OutputTransaction::Commit()
 
     try
     {
+        AcquireOutputLocks_();
         for (const auto &[final, staged] : m_StagedOutputs)
         {
             if (!fs::exists(staged)) throw std::runtime_error("OutputTransaction: staged output was not created: " + staged.string());
@@ -141,6 +201,7 @@ void OutputTransaction::Complete()
     m_StagedOutputs.clear();
     m_Promotions.clear();
     m_State = State::Completed;
+    ReleaseOutputLocks_();
 }
 
 void OutputTransaction::RollbackUnlocked_() noexcept
@@ -177,6 +238,7 @@ void OutputTransaction::RollbackUnlocked_() noexcept
     }
     m_StagedOutputs.clear();
     m_Promotions.clear();
+    ReleaseOutputLocks_();
     if (m_State != State::Idle && m_State != State::Completed) m_State = State::RolledBack;
 }
 
