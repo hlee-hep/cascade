@@ -28,8 +28,8 @@
 #include <spawn.h>
 #include <set>
 #include <thread>
-#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
@@ -40,6 +40,17 @@ extern char **environ;
 namespace
 {
 namespace fs = std::filesystem;
+
+int CreateAnonymousRequestFile()
+{
+#if defined(__linux__) && defined(SYS_memfd_create)
+    constexpr unsigned int closeOnExec = 0x0001U;
+    return static_cast<int>(syscall(SYS_memfd_create, "cascade-isolated-request", closeOnExec));
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 std::vector<fs::path> CppPluginRoots()
 {
@@ -581,7 +592,7 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
     };
     const std::string payload = request.dump();
 
-    int input = memfd_create("cascade-isolated-request", MFD_CLOEXEC);
+    int input = CreateAnonymousRequestFile();
     int channel[2] = {-1, -1};
     if (input < 0 || !WriteAll(input, payload.data(), payload.size()) || lseek(input, 0, SEEK_SET) < 0 ||
         pipe2(channel, O_CLOEXEC) != 0)
