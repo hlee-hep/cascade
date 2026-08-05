@@ -537,6 +537,10 @@ void TestProvenanceCacheLink()
 
 void TestCacheIntegrityValidation()
 {
+    const char *configuredInputHashMode = std::getenv("CASCADE_INPUT_HASH_MODE");
+    const bool hadConfiguredInputHashMode = configuredInputHashMode && *configuredInputHashMode;
+    const std::string originalInputHashMode = hadConfiguredInputHashMode ? configuredInputHashMode : "";
+    unsetenv("CASCADE_INPUT_HASH_MODE");
     const auto root = std::filesystem::temp_directory_path() / "cascade-cache-integrity";
     const auto output = root / "output";
     const auto cache = root / "cache";
@@ -556,6 +560,14 @@ void TestCacheIntegrityValidation()
     first.SetCacheDirectory(cache.string());
     first.GetParamManager().Set("input", inputPath.string());
     assert(first.Run().Status == ModuleStatus::Done);
+    {
+        std::ifstream input(first.GetLastProvenancePath());
+        nlohmann::json manifest;
+        input >> manifest;
+        const auto &tracked = manifest.at("artifacts").at("inputs").at(0);
+        assert(tracked.at("sha256").is_null());
+        assert(tracked.at("identity").at("inode").get<std::uintmax_t>() != 0);
+    }
 
     TrackedInputModule cached;
     cached.SetName("tracked-cached");
@@ -577,6 +589,25 @@ void TestCacheIntegrityValidation()
     changed.GetParamManager().Set("input", inputPath.string());
     assert(changed.Run().Status == ModuleStatus::Done);
     assert(TrackedInputModule::Executions.load() == 2);
+
+    setenv("CASCADE_INPUT_HASH_MODE", "full", 1);
+    TrackedInputModule strict;
+    strict.SetName("tracked-strict");
+    strict.SetOutputDirectory(output.string());
+    strict.SetCacheDirectory(cache.string());
+    strict.GetParamManager().Set("input", inputPath.string());
+    assert(strict.Run().Status == ModuleStatus::Done);
+    assert(TrackedInputModule::Executions.load() == 3);
+    {
+        std::ifstream input(strict.GetLastProvenancePath());
+        nlohmann::json manifest;
+        input >> manifest;
+        assert(manifest.at("artifacts").at("inputs").at(0).at("sha256").get<std::string>().size() == 64);
+    }
+    if (hadConfiguredInputHashMode)
+        setenv("CASCADE_INPUT_HASH_MODE", originalInputHashMode.c_str(), 1);
+    else
+        unsetenv("CASCADE_INPUT_HASH_MODE");
 
     TransactionModule outputFirst(false, "OutputIntegrityModule");
     outputFirst.SetName("output-first");

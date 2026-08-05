@@ -297,6 +297,11 @@ provenance. Changing a tracked file therefore invalidates a matching cache entry
 Output artifacts registered with the staging helper are captured automatically
 and revalidated before a cached run is skipped.
 
+The default tracked-input policy is metadata-only and is suitable for large ROOT
+files. Set `CASCADE_INPUT_HASH_MODE=full` when byte-for-byte identity is required,
+or `auto` to SHA-256 files no larger than 64 MiB. Do not encode this distinction by
+file extension; the same C++ policy serves C++ and Python modules.
+
 Direct writes, network calls, database updates, and messages sent to external
 services are not transactional.
 

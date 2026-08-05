@@ -250,6 +250,43 @@ enum class ArtifactHashMode
     None
 };
 
+enum class InputHashMode
+{
+    Metadata,
+    Full,
+    Auto
+};
+
+InputHashMode ConfiguredInputHashMode()
+{
+    const char *configured = std::getenv("CASCADE_INPUT_HASH_MODE");
+    const std::string value = configured && *configured ? configured : "metadata";
+    if (value == "metadata") return InputHashMode::Metadata;
+    if (value == "full") return InputHashMode::Full;
+    if (value == "auto") return InputHashMode::Auto;
+    throw std::runtime_error("CASCADE_INPUT_HASH_MODE must be metadata, full, or auto");
+}
+
+ArtifactHashMode InputArtifactHashMode(const fs::path &path)
+{
+    switch (ConfiguredInputHashMode())
+    {
+    case InputHashMode::Metadata:
+        return ArtifactHashMode::Metadata;
+    case InputHashMode::Full:
+        return ArtifactHashMode::Full;
+    case InputHashMode::Auto:
+    {
+        std::error_code error;
+        if (fs::is_regular_file(path, error) && !error && fs::file_size(path, error) <= 64ULL * 1024ULL * 1024ULL &&
+            !error)
+            return ArtifactHashMode::Full;
+        return ArtifactHashMode::Metadata;
+    }
+    }
+    return ArtifactHashMode::Metadata;
+}
+
 ArtifactHashMode ConfiguredArtifactHashMode()
 {
     const char *configured = std::getenv("CASCADE_PROVENANCE_HASH_MODE");
@@ -587,7 +624,7 @@ std::string ProvenanceRecorder::InputSnapshotState(const std::string &runId)
     std::sort(inputs.begin(), inputs.end());
     json state = json::array();
     for (const auto &input : inputs)
-        state.push_back(ArtifactJson(CaptureArtifact(input, AbsoluteString(input), ArtifactHashMode::Full)));
+        state.push_back(ArtifactJson(CaptureArtifact(input, AbsoluteString(input), InputArtifactHashMode(input))));
     return state.dump();
 }
 
@@ -644,15 +681,15 @@ ModuleRunManifest ProvenanceRecorder::BuildModuleRun(
     manifest.Message = result.Message;
     manifest.ManifestPath = AbsoluteString(manifestPath);
 
-    const ArtifactHashMode hashMode = ConfiguredArtifactHashMode();
+    const ArtifactHashMode outputHashMode = ConfiguredArtifactHashMode();
     for (const auto &input : active.Inputs)
-        manifest.Inputs.push_back(CaptureArtifact(input, input.string(), hashMode));
+        manifest.Inputs.push_back(CaptureArtifact(input, input.string(), InputArtifactHashMode(input)));
     for (const auto &[finalPath, stagedPath] : stagedOutputs)
     {
         std::error_code error;
         auto relative = fs::relative(finalPath, outputDirectory, error);
         manifest.Outputs.push_back(
-            CaptureArtifact(stagedPath, error ? finalPath.string() : relative.generic_string(), hashMode));
+            CaptureArtifact(stagedPath, error ? finalPath.string() : relative.generic_string(), outputHashMode));
     }
     return manifest;
 }

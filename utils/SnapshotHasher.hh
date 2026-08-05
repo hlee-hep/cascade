@@ -19,7 +19,7 @@ class SnapshotHasher
     {
         const json document = {
             {"schema", "cascade.snapshot"},
-            {"schema_version", 3},
+            {"schema_version", 4},
             {"module", moduleName},
             {"parameters", json::parse(pm.DumpJSON())},
             {"analysis_state", analysisState},

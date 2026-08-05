@@ -142,5 +142,9 @@ completed manifest, snapshot hash, output root, and every recorded output. Stabl
 file identities avoid rehashing unchanged outputs; changed identities fall back to
 content validation.
 
+Tracked input identity defaults to filesystem metadata so large ROOT files are not
+read solely to make a cache decision. `CASCADE_INPUT_HASH_MODE=full` records and
+uses SHA-256 instead, while `auto` hashes regular inputs up to 64 MiB.
+
 Legacy hash-only C++ YAML sequences and Python JSON lists are read and upgraded
 when the cache is next written.

@@ -153,7 +153,8 @@ The snapshot is derived from:
 - registered parameter values;
 - registered `AnalysisManager` state;
 - code-version hash;
-- execution state affecting output identity.
+- execution state affecting output identity;
+- tracked input identity according to `CASCADE_INPUT_HASH_MODE`.
 
 Python modules may extend deterministic state with `snapshot_state()`.
 
@@ -176,8 +177,14 @@ and transaction completion. A directory output conflicts with every output below
 it, while sibling files may still commit concurrently. Concurrent modules should
 still use distinct final paths because the last successful publisher wins.
 
-`TrackInput`/`track_input` artifacts are part of the snapshot hash. A cache entry
-is accepted only when its completed provenance manifest matches the snapshot and
+`TrackInput`/`track_input` artifacts are part of the snapshot hash. Input hashing
+defaults to `CASCADE_INPUT_HASH_MODE=metadata`, recording device, inode, size,
+nanosecond modification time, and change time without reading the complete file.
+Use `full` for SHA-256 content identity or `auto` to hash regular files up to
+64 MiB and use metadata for larger inputs. This policy is shared by C++ and Python
+modules and applies to tracked-input provenance as well.
+
+A cache entry is accepted only when its completed provenance manifest matches the snapshot and
 output root and its recorded outputs still match their committed identities or
 content hashes. Missing, replaced, or corrupted output invalidates the entry and
 causes a normal rerun. Cache index and module-provenance reads are capped at
@@ -268,10 +275,11 @@ Optional positive worker limits are `CASCADE_WORKER_MEMORY_LIMIT_MB`,
 contains crashes but still permits ordinary filesystem and network access and is
 not a complete security sandbox.
 
-Provenance hashing defaults to `CASCADE_PROVENANCE_HASH_MODE=full`. Use `metadata`
-to avoid reading complete artifacts, or `none` to record only existence, kind, and
-size where throughput matters more than content fingerprints. Cache histories keep
-256 snapshots per module by default; override that with
+Output provenance hashing defaults to `CASCADE_PROVENANCE_HASH_MODE=full`. Use
+`metadata` to avoid reading complete output artifacts, or `none` to record only
+existence, kind, and size where throughput matters more than content fingerprints.
+Tracked inputs use the separate `CASCADE_INPUT_HASH_MODE` policy above. Cache
+histories keep 256 snapshots per module by default; override that with
 `CASCADE_CACHE_MAX_SNAPSHOTS` (`0` means unlimited).
 
 Full hashes are streamed in 1 MiB chunks and reused within the process when the
