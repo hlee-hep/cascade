@@ -188,6 +188,8 @@ class IAnalysisModule
             const auto stagedManifest = m_Context.StageOutput(provenancePath);
             ProvenanceRecorder::WriteModuleRun(manifest, stagedManifest);
             m_Context.Outputs().Commit();
+            ProvenanceRecorder::RefreshOutputIdentities(manifest, m_Context.OutputDirectory());
+            ProvenanceRecorder::WriteModuleRun(manifest, provenancePath);
             CacheManager::AddHash(m_Basename, m_Hash, m_Context.CacheDirectory().string(), provenancePath);
             try
             {
@@ -512,7 +514,8 @@ class IAnalysisModule
     {
         const std::string artifactHash = m_PluginOrigin ? m_PluginOrigin->ArtifactSha256 : std::string();
         return SnapshotHasher::ComputeSerialized(m_Param, m_Basename, m_CodeVersionHash,
-                                                 AnalysisSnapshotState(), m_Context.SnapshotState(), artifactHash);
+                                                 AnalysisSnapshotState(), m_Context.SnapshotState(), artifactHash,
+                                                 ProvenanceRecorder::InputSnapshotState(m_Context.RunId()));
     }
 
     CheckDecision RunCheck_()
@@ -536,7 +539,17 @@ class IAnalysisModule
             return {true, ""};
         }
 
-        const auto cached = CacheManager::Lookup(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+        auto cached = CacheManager::Lookup(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+        if (cached)
+        {
+            std::string reason;
+            if (!ProvenanceRecorder::ValidateCachedRun(cached->Provenance, m_Hash, m_Context.OutputDirectory(), &reason))
+            {
+                LOG_WARN(Name(), "Discarding stale snapshot cache entry: " << reason);
+                CacheManager::RemoveHash(m_Basename, m_Hash, m_Context.CacheDirectory().string());
+                cached.reset();
+            }
+        }
         if (cached)
         {
             ProvenanceRecorder::SetCacheSource(m_Context.RunId(), cached->Provenance);

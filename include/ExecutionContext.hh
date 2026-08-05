@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -53,6 +54,8 @@ class OutputTransaction
         std::filesystem::path Final;
         std::filesystem::path Staged;
         std::filesystem::path Backup;
+        std::uintmax_t PromotedDevice = 0;
+        std::uintmax_t PromotedInode = 0;
         bool HadOriginal = false;
     };
 
@@ -73,7 +76,8 @@ class OutputTransaction
     std::vector<int> m_OutputLockDescriptors;
     State m_State = State::Idle;
 
-    void AcquireOutputLocks_();
+    void AcquireOutputLocks_(const std::vector<std::filesystem::path> &finalPaths);
+    bool AcquireRecoveryLocks_(const std::vector<Promotion> &promotions) noexcept;
     void ReleaseOutputLocks_() noexcept;
     void RollbackUnlocked_() noexcept;
     std::filesystem::path JournalPath_() const;

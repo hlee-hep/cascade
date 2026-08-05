@@ -229,6 +229,17 @@ the already selected manifest path and identity, then revalidates only that pack
 and requested artifact before loading it. Isolation therefore keeps the trust check
 without paying a full-prefix scan for every node.
 
+Unsigned packages accepted by the default `Verified` policy must be owned by the
+current user or root and their plugin root, package directory, manifest, and selected
+artifact must not be group/world writable. Signed packages derive trust from the
+verified manifest signature. Runtime reads are bounded to 4 MiB for manifests,
+1 MiB for public keys/signatures, and 64 MiB for Python source artifacts.
+
+Python discovery caches a verified index per controller. Metadata listing parses
+literal `METADATA`, `VERSION`, `SUMMARY`, and `TAGS` class constants without
+executing plugin source; pass the explicit instantiation option only when dynamic
+metadata is required.
+
 ## Installed layout
 
 C++ and Python artifacts have separate manifests:
@@ -394,8 +405,8 @@ print(controller.get_list_available_module_metadata())
 
 Plugin signatures establish publisher trust and file integrity. They do not make
 plugin code safe. C++ plugins execute with the process's privileges; the clean
-`exec()` worker avoids inherited runtime locks and contains crashes, but it is not
-a filesystem, network, or privilege sandbox.
+`exec()` worker avoids inherited runtime locks, applies resource-limit hooks and
+`no_new_privs`, and contains crashes, but it is not a filesystem or network sandbox.
 
 ## Release checklist
 

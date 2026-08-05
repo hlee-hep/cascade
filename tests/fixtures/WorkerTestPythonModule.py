@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+import sys
 
 from cascade.pymodule import base_module
 
@@ -21,6 +23,9 @@ class WorkerTestPythonModule(base_module):
         pass
 
     def execute(self):
+        if os.environ.get("CASCADE_TEST_ASSERT_ISOLATED_PYTHON") == "1":
+            if "PYTHONPATH" in os.environ or not sys.flags.isolated:
+                raise RuntimeError("Python worker did not start with an isolated import path")
         Path(self.stage_output("python-worker-result.txt")).write_text(
             "python-exec-worker", encoding="utf-8"
         )

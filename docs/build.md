@@ -89,6 +89,10 @@ ${PREFIX}/
 
 ROOT dictionary `.pcm` and `.rootmap` files are installed beside their libraries.
 
+Release builds enable stack-protector and fortified libc checks and link with
+RELRO, immediate symbol binding, and a non-executable stack. The native isolated
+worker is also built as PIE.
+
 ## Runtime environment
 
 For a non-system prefix:

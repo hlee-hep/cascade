@@ -26,6 +26,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 namespace
@@ -89,6 +91,29 @@ class TransactionModule final : public IAnalysisModule
   private:
     bool m_FailAfterWrite;
 };
+
+class TrackedInputModule final : public IAnalysisModule
+{
+  public:
+    TrackedInputModule()
+    {
+        m_Basename = "TrackedInputModule";
+        m_CodeVersionHash = "test";
+        m_Param.Set("force_run", false);
+        m_Param.Register<std::string>("input", "");
+    }
+
+    void Description() const override {}
+    static std::atomic<int> Executions;
+
+  protected:
+    void Init() override { TrackInput(m_Param.Get<std::string>("input")); }
+    void Execute() override { Executions.fetch_add(1); }
+    void Finalize() override {}
+    bool UsesAnalysisManagers() const override { return false; }
+};
+
+std::atomic<int> TrackedInputModule::Executions{0};
 
 class CrashModule final : public IAnalysisModule
 {
@@ -251,6 +276,23 @@ void TestCacheManagerService()
         symlinkRejected = true;
     }
     assert(symlinkRejected);
+
+    const auto oversizedCache = root / "oversized.yaml";
+    {
+        std::ofstream output(oversizedCache, std::ios::binary);
+        output.seekp(16 * 1024 * 1024);
+        output.put('\n');
+    }
+    bool oversizedCacheRejected = false;
+    try
+    {
+        CacheManager::ListSnapshots(root.string(), "oversized");
+    }
+    catch (const std::runtime_error &error)
+    {
+        oversizedCacheRejected = std::string(error.what()).find("16 MiB") != std::string::npos;
+    }
+    assert(oversizedCacheRejected);
     std::filesystem::remove_all(root);
 }
 
@@ -371,6 +413,75 @@ void TestOutputTransactions()
         assert(contents == "second");
     }
 
+    OutputTransaction directoryPublisher;
+    OutputTransaction childPublisher;
+    directoryPublisher.Begin(outputDirectory, "directory-publisher");
+    childPublisher.Begin(outputDirectory, "child-publisher");
+    const auto directoryStaged = directoryPublisher.Stage("shared-directory");
+    const auto childStaged = childPublisher.Stage("shared-directory/item.txt");
+    std::filesystem::create_directories(directoryStaged);
+    {
+        std::ofstream output(directoryStaged / "initial.txt");
+        output << "directory";
+    }
+    {
+        std::ofstream output(childStaged);
+        output << "child";
+    }
+    directoryPublisher.Commit();
+    std::atomic<bool> childCommitStarted{false};
+    std::atomic<bool> childCommitFinished{false};
+    std::thread childCommit(
+        [&]()
+        {
+            childCommitStarted.store(true);
+            childPublisher.Commit();
+            childCommitFinished.store(true);
+        });
+    while (!childCommitStarted.load()) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!childCommitFinished.load());
+    directoryPublisher.Complete();
+    childCommit.join();
+    childPublisher.Complete();
+    assert(std::filesystem::is_regular_file(outputDirectory / "shared-directory" / "initial.txt"));
+    assert(std::filesystem::is_regular_file(outputDirectory / "shared-directory" / "item.txt"));
+
+    OutputTransaction crashedPublisher;
+    crashedPublisher.Begin(outputDirectory, "crashed-publisher");
+    const auto crashedStaged = crashedPublisher.Stage("recovered.txt");
+    {
+        std::ofstream output(crashedStaged);
+        output << "crashed";
+    }
+    const pid_t publisherChild = fork();
+    assert(publisherChild >= 0);
+    if (publisherChild == 0)
+    {
+        crashedPublisher.Commit();
+        _exit(0);
+    }
+    int publisherStatus = 0;
+    assert(waitpid(publisherChild, &publisherStatus, 0) == publisherChild);
+    assert(WIFEXITED(publisherStatus) && WEXITSTATUS(publisherStatus) == 0);
+
+    OutputTransaction newerPublisher;
+    newerPublisher.Begin(outputDirectory, "newer-publisher");
+    const auto newerStaged = newerPublisher.Stage("recovered.txt");
+    {
+        std::ofstream output(newerStaged);
+        output << "newer";
+    }
+    newerPublisher.Commit();
+    newerPublisher.Complete();
+    crashedPublisher.CleanupExternalRun();
+    {
+        std::ifstream output(outputDirectory / "recovered.txt");
+        std::string contents;
+        output >> contents;
+        assert(contents == "newer");
+    }
+
     const auto outsideDirectory = std::filesystem::temp_directory_path() / "cascade-output-outside";
     std::filesystem::remove_all(outsideDirectory);
     std::filesystem::create_directories(outsideDirectory);
@@ -424,6 +535,73 @@ void TestProvenanceCacheLink()
     assert(manifest.at("parameters").at("api_token") == "***");
 }
 
+void TestCacheIntegrityValidation()
+{
+    const auto root = std::filesystem::temp_directory_path() / "cascade-cache-integrity";
+    const auto output = root / "output";
+    const auto cache = root / "cache";
+    const auto inputPath = root / "input.txt";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream input(inputPath);
+        input << "first";
+    }
+    const auto originalTime = std::filesystem::last_write_time(inputPath);
+    TrackedInputModule::Executions.store(0);
+
+    TrackedInputModule first;
+    first.SetName("tracked-first");
+    first.SetOutputDirectory(output.string());
+    first.SetCacheDirectory(cache.string());
+    first.GetParamManager().Set("input", inputPath.string());
+    assert(first.Run().Status == ModuleStatus::Done);
+
+    TrackedInputModule cached;
+    cached.SetName("tracked-cached");
+    cached.SetOutputDirectory(output.string());
+    cached.SetCacheDirectory(cache.string());
+    cached.GetParamManager().Set("input", inputPath.string());
+    assert(cached.Run().Status == ModuleStatus::Skipped);
+    assert(TrackedInputModule::Executions.load() == 1);
+
+    {
+        std::ofstream input(inputPath, std::ios::trunc);
+        input << "other";
+    }
+    std::filesystem::last_write_time(inputPath, originalTime);
+    TrackedInputModule changed;
+    changed.SetName("tracked-changed");
+    changed.SetOutputDirectory(output.string());
+    changed.SetCacheDirectory(cache.string());
+    changed.GetParamManager().Set("input", inputPath.string());
+    assert(changed.Run().Status == ModuleStatus::Done);
+    assert(TrackedInputModule::Executions.load() == 2);
+
+    TransactionModule outputFirst(false, "OutputIntegrityModule");
+    outputFirst.SetName("output-first");
+    outputFirst.SetOutputDirectory(output.string());
+    outputFirst.SetCacheDirectory(cache.string());
+    outputFirst.GetParamManager().Set("force_run", false);
+    assert(outputFirst.Run().Status == ModuleStatus::Done);
+    {
+        std::ofstream corrupted(output / "result.txt", std::ios::trunc);
+        corrupted << "bad";
+    }
+    TransactionModule outputChanged(false, "OutputIntegrityModule");
+    outputChanged.SetName("output-changed");
+    outputChanged.SetOutputDirectory(output.string());
+    outputChanged.SetCacheDirectory(cache.string());
+    outputChanged.GetParamManager().Set("force_run", false);
+    assert(outputChanged.Run().Status == ModuleStatus::Done);
+    {
+        std::ifstream restored(output / "result.txt");
+        std::string contents;
+        restored >> contents;
+        assert(contents == "new");
+    }
+}
+
 void TestControllerContracts()
 {
     const std::string className = "CascadeControllerTestModule";
@@ -470,6 +648,62 @@ void TestControllerContracts()
         output >> contents;
         assert(contents == "exec-worker");
     }
+
+    const char *configuredWorker = std::getenv("CASCADE_CPP_WORKER");
+    assert(configuredWorker && *configuredWorker);
+    const std::string originalWorker(configuredWorker);
+    auto hardenedModule = controller.RegisterModule("WorkerTestModule", "hardened-worker-instance");
+    hardenedModule->SetOutputDirectory(isolatedOutput.string());
+    hardenedModule->SetCacheDirectory(isolatedCache.string());
+    setenv("CASCADE_CPP_WORKER", "relative-worker", 1);
+    bool relativeWorkerRejected = false;
+    try
+    {
+        controller.RunAModuleIsolated(hardenedModule);
+    }
+    catch (const std::runtime_error &error)
+    {
+        relativeWorkerRejected = std::string(error.what()).find("absolute path") != std::string::npos;
+    }
+    assert(relativeWorkerRejected);
+
+    const auto customWorker = isolatedOutput / "untrusted-worker";
+    const auto leakedEnvironment = isolatedOutput / "worker-environment-leaked";
+    {
+        std::ofstream script(customWorker);
+        script << "#!/usr/bin/python3\n"
+               << "import os, time\n"
+               << "if 'LD_PRELOAD' in os.environ:\n"
+               << "    open('" << leakedEnvironment.string() << "', 'w').close()\n"
+               << "if os.fork() == 0:\n"
+               << "    time.sleep(1)\n"
+               << "    os._exit(0)\n"
+               << "os._exit(0)\n";
+    }
+    assert(chmod(customWorker.c_str(), 0777) == 0);
+    setenv("CASCADE_CPP_WORKER", customWorker.string().c_str(), 1);
+    bool writableWorkerRejected = false;
+    try
+    {
+        controller.RunAModuleIsolated(hardenedModule);
+    }
+    catch (const std::runtime_error &error)
+    {
+        writableWorkerRejected = std::string(error.what()).find("writable") != std::string::npos;
+    }
+    assert(writableWorkerRejected);
+
+    assert(chmod(customWorker.c_str(), 0700) == 0);
+    setenv("LD_PRELOAD", "/cascade/nonexistent-preload.so", 1);
+    const auto workerStarted = std::chrono::steady_clock::now();
+    const auto invalidWorkerResult = controller.RunAModuleIsolated(hardenedModule);
+    const auto workerElapsed = std::chrono::steady_clock::now() - workerStarted;
+    unsetenv("LD_PRELOAD");
+    setenv("CASCADE_CPP_WORKER", originalWorker.c_str(), 1);
+    assert(invalidWorkerResult.Status == ModuleStatus::Failed);
+    assert(workerElapsed < std::chrono::milliseconds(750));
+    assert(!std::filesystem::exists(leakedEnvironment));
+
     const auto workflowPath =
         std::filesystem::temp_directory_path() / "cascade-controller-workflow-provenance.json";
     controller.SaveProvenance(workflowPath.string());
@@ -513,7 +747,7 @@ void TestControllerContracts()
     for (auto &thread : registrationThreads)
         thread.join();
     assert(!concurrentRegistrationFailed.load());
-    assert(controller.ListRegisteredModules().size() == 6);
+    assert(controller.ListRegisteredModules().size() == 7);
 
     std::atomic<bool> concurrentRunFailed{false};
     std::vector<std::thread> runThreads;
@@ -1037,6 +1271,27 @@ void TestDagExecutionLanes()
     assert(parallel.Execute().Succeeded());
     assert(overlapped.load());
 
+    std::atomic<bool> slowFinished{false};
+    std::atomic<bool> dependentStartedBeforeSlowFinished{false};
+    DAGManager eventDriven;
+    eventDriven.AddNode(
+        "fast", {}, []() { std::this_thread::sleep_for(std::chrono::milliseconds(20)); },
+        DAGExecutionLane::Parallel);
+    eventDriven.AddNode(
+        "slow", {},
+        [&]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            slowFinished.store(true);
+        },
+        DAGExecutionLane::Parallel);
+    eventDriven.AddNode(
+        "dependent", {"fast"},
+        [&]() { dependentStartedBeforeSlowFinished.store(!slowFinished.load()); },
+        DAGExecutionLane::Parallel);
+    assert(eventDriven.Execute().Succeeded());
+    assert(dependentStartedBeforeSlowFinished.load());
+
     std::atomic<int> activeRoots{0};
     std::atomic<int> maximumRoots{0};
     DAGManager roots;
@@ -1155,6 +1410,20 @@ void TestPluginVerifierService()
     assert(discovery.Errors.empty());
     assert(discovery.Packages.size() == 1);
 
+    assert(chmod(package.c_str(), 0777) == 0);
+    bool writableUnsignedPackageRejected = false;
+    try
+    {
+        PluginVerifier::VerifyPackage(package.string(), trustStore.string(), PluginTrustPolicy::Verified,
+                                      "python");
+    }
+    catch (const std::runtime_error &error)
+    {
+        writableUnsignedPackageRejected = std::string(error.what()).find("writable") != std::string::npos;
+    }
+    assert(chmod(package.c_str(), 0755) == 0);
+    assert(writableUnsignedPackageRejected);
+
     {
         std::ofstream output(package / "unused.py");
         output << "unused";
@@ -1238,6 +1507,7 @@ int main()
     TestCacheManagerService();
     TestOutputTransactions();
     TestProvenanceCacheLink();
+    TestCacheIntegrityValidation();
     TestControllerContracts();
     TestPluginTrustPolicy();
     TestPluginVerifierService();

@@ -2,6 +2,7 @@ from cascade.pymodule import base_module
 from cascade._cascade import AMCM, IAnalysisModule, PluginPaths, PluginTrustPolicy, PluginVerifier
 from cascade import init_interrupt, is_interrupted, log, log_level
 import cascade
+import ast
 import importlib
 import json
 import os
@@ -216,9 +217,15 @@ class py_amcm:
         self.require_signed = bool(require_signed)
         policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
         self.ctrl = AMCM(policy, bool(discover_plugins))
+        self._python_index_cache = None
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
         init_interrupt()
+
+    def _python_index(self):
+        if self._python_index_cache is None:
+            self._python_index_cache = _load_python_plugin_index(self.require_signed)
+        return self._python_index_cache
 
     def _register_python_plugin_info(self, info, instance_name):
         mod = _import_python_plugin(info)
@@ -234,7 +241,7 @@ class py_amcm:
         return handle
 
     def _register_python_plugin(self, class_name, instance_name):
-        index = _load_python_plugin_index(self.require_signed)
+        index = self._python_index()
         info = index.get(class_name)
         if not info:
             raise RuntimeError(f"Module not found: {class_name}")
@@ -254,7 +261,7 @@ class py_amcm:
         if instance_name in self.ctrl.get_list_registered_modules():
             raise RuntimeError(f"Module instance already registered: {instance_name}")
         cpp_modules = set(self.ctrl.get_list_available_modules())
-        py_modules = set(_load_python_plugin_index(self.require_signed).keys())
+        py_modules = set(self._python_index().keys())
         if class_name in cpp_modules and class_name in py_modules:
             raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
         if class_name in cpp_modules:
@@ -270,7 +277,7 @@ class py_amcm:
         modname = module_obj.__class__.__module__
         if not modname.startswith("cascade.pyplugin."):
             raise RuntimeError(f"Python module {modname} is not a verified cascade.pyplugin module; refusing to register it.")
-        info = _load_python_plugin_index(self.require_signed).get(module_obj.__class__.__name__)
+        info = self._python_index().get(module_obj.__class__.__name__)
         if not info or os.path.realpath(info["path"]) != os.path.realpath(sys.modules[modname].__file__):
             raise RuntimeError(f"Python module {module_obj.__class__.__name__} is not present in the verified plugin index.")
         module_obj.set_name(name)
@@ -300,7 +307,7 @@ class py_amcm:
 
     def get_list_available_modules(self):
         cpp_modules = set(self.ctrl.get_list_available_modules())
-        py_modules = set(_load_python_plugin_index(self.require_signed).keys())
+        py_modules = set(self._python_index().keys())
         duplicates = sorted(cpp_modules & py_modules)
         if duplicates:
             raise RuntimeError(f"Duplicate module names across C++ and Python plugins: {duplicates}")
@@ -320,27 +327,30 @@ class py_amcm:
             return metadata
 
         cpp_names = {entry["name"] for entry in metadata}
-        for class_name, info in _load_python_plugin_index(self.require_signed).items():
+        for class_name, info in self._python_index().items():
             if class_name in cpp_names:
                 raise RuntimeError(f"Duplicate module name across C++ and Python plugins: {class_name}")
+            plugin_info = None
+            static_fields = {}
             try:
-                mod = _import_python_plugin(info)
-                obj = getattr(mod, class_name)
-            except Exception as error:
-                log(
-                    log_level.WARN,
-                    "PLUGIN",
-                    f"Cannot load metadata for {class_name}: {error}",
+                tree = ast.parse(info.get("source_bytes", b""), filename=info["path"])
+                class_node = next(
+                    node
+                    for node in tree.body
+                    if isinstance(node, ast.ClassDef) and node.name == class_name
                 )
-                metadata.append({
-                    "name": class_name,
-                    "version": "",
-                    "summary": "metadata unavailable",
-                    "tags": [],
-                    "language": "python",
-                })
-                continue
-            plugin_info = getattr(obj, "METADATA", None)
+                for statement in class_node.body:
+                    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                        continue
+                    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                    value = statement.value
+                    for target in targets:
+                        if not isinstance(target, ast.Name) or target.id not in {"METADATA", "VERSION", "SUMMARY", "TAGS"}:
+                            continue
+                        static_fields[target.id] = ast.literal_eval(value)
+                plugin_info = static_fields.get("METADATA")
+            except (StopIteration, SyntaxError, ValueError, TypeError):
+                plugin_info = None
             if isinstance(plugin_info, dict):
                 metadata.append({
                     "name": plugin_info.get("name", class_name),
@@ -351,6 +361,7 @@ class py_amcm:
                 })
             elif instantiate_python:
                 try:
+                    obj = getattr(_import_python_plugin(info), class_name)
                     plugin_info = obj().get_metadata()
                 except Exception:
                     plugin_info = None
@@ -363,12 +374,11 @@ class py_amcm:
                         "language": "python",
                     })
             else:
-                import cascade
                 metadata.append({
                     "name": class_name,
-                    "version": getattr(obj, "VERSION", getattr(cascade, "__version__", "")),
-                    "summary": getattr(obj, "SUMMARY", ""),
-                    "tags": list(getattr(obj, "TAGS", [])),
+                    "version": static_fields.get("VERSION", getattr(cascade, "__version__", "")),
+                    "summary": static_fields.get("SUMMARY", ""),
+                    "tags": list(static_fields.get("TAGS", [])),
                     "language": "python",
                 })
         return metadata

@@ -194,6 +194,12 @@ class __attribute__((visibility("default"))) ParamManager
 
     ParamProxy operator[](const std::string &key)
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen)
+        {
+            if (!frozen->count(key)) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
+            return ParamProxy(*this, key);
+        }
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
@@ -202,6 +208,12 @@ class __attribute__((visibility("default"))) ParamManager
 
     ConstParamProxy operator[](const std::string &key) const
     {
+        const auto frozen = std::atomic_load_explicit(&m_FrozenValues, std::memory_order_acquire);
+        if (frozen)
+        {
+            if (!frozen->count(key)) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");
+            return ConstParamProxy(*this, key);
+        }
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);
         auto it = m_RawValues.find(key);
         if (it == m_RawValues.end()) throw std::runtime_error("ParamManager: key '" + key + "' is not registered.");

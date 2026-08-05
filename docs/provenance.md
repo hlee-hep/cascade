@@ -137,7 +137,10 @@ snapshots:
 
 The cache remains a fast execution decision index. The manifest is the descriptive
 record. On a cache hit, the new skipped-run manifest points to the completed run
-that supplied the cached snapshot.
+that supplied the cached snapshot. Before accepting the hit, Cascade validates the
+completed manifest, snapshot hash, output root, and every recorded output. Stable
+file identities avoid rehashing unchanged outputs; changed identities fall back to
+content validation.
 
 Legacy hash-only C++ YAML sequences and Python JSON lists are read and upgraded
 when the cache is next written.

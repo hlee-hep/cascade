@@ -9,6 +9,7 @@
 #include "PluginPaths.hh"
 #include "PluginVerifier.hh"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -23,9 +24,13 @@
 #include <set>
 #include <thread>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
+#include <vector>
+
+extern char **environ;
 
 namespace
 {
@@ -79,11 +84,87 @@ RunResult ExternalFailure(ModuleStatus status, const std::string &message)
 std::string WorkerExecutable(const std::string &language)
 {
     const char *variable = language == "python" ? "CASCADE_PYTHON_WORKER" : "CASCADE_CPP_WORKER";
-    if (const char *configured = std::getenv(variable); configured && *configured) return configured;
-    const fs::path candidate = fs::path(PluginPaths::RuntimePrefix()) / "bin" /
-                               (language == "python" ? "cascade-python-worker" : "cascade-worker");
-    if (access(candidate.c_str(), X_OK) == 0) return candidate.string();
-    return language == "python" ? "cascade-python-worker" : "cascade-worker";
+    fs::path candidate;
+    if (const char *configured = std::getenv(variable); configured && *configured)
+    {
+        candidate = configured;
+        if (!candidate.is_absolute()) throw std::runtime_error(std::string(variable) + " must be an absolute path");
+    }
+    else
+    {
+        candidate = fs::path(PluginPaths::RuntimePrefix()) / "bin" /
+                    (language == "python" ? "cascade-python-worker" : "cascade-worker");
+    }
+    std::error_code error;
+    const fs::path resolved = fs::canonical(candidate, error);
+    if (error || !fs::is_regular_file(resolved) || access(resolved.c_str(), X_OK) != 0)
+        throw std::runtime_error("Cannot locate an executable isolated worker at " + candidate.string());
+    struct stat metadata{};
+    if (lstat(resolved.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
+        throw std::runtime_error("Cannot inspect isolated worker " + resolved.string());
+    if (metadata.st_uid != geteuid() && metadata.st_uid != 0)
+        throw std::runtime_error("Isolated worker is owned by another user: " + resolved.string());
+    if ((metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        throw std::runtime_error("Isolated worker is group/world writable: " + resolved.string());
+    return resolved.string();
+}
+
+struct SpawnEnvironment
+{
+    std::vector<std::string> Entries;
+    std::vector<char *> Pointers;
+};
+
+SpawnEnvironment SanitizedWorkerEnvironment(const std::string &pythonRuntime)
+{
+    static constexpr std::array<const char *, 8> blocked = {
+        "LD_PRELOAD", "LD_AUDIT", "PYTHONHOME", "PYTHONINSPECT",
+        "PYTHONSTARTUP", "PYTHONBREAKPOINT", "PYTHONUSERBASE", "GCONV_PATH"};
+    SpawnEnvironment result;
+    for (char **entry = environ; entry && *entry; ++entry)
+    {
+        const std::string value(*entry);
+        const auto separator = value.find('=');
+        const std::string key = value.substr(0, separator);
+        if (!pythonRuntime.empty() && (key == "PYTHONPATH" || key == "CASCADE_PYTHON_RUNTIME_DIR")) continue;
+        if (std::find_if(blocked.begin(), blocked.end(), [&](const char *candidate) { return key == candidate; }) !=
+            blocked.end())
+            continue;
+        result.Entries.push_back(value);
+    }
+    if (!pythonRuntime.empty()) result.Entries.push_back("CASCADE_PYTHON_RUNTIME_DIR=" + pythonRuntime);
+    result.Pointers.reserve(result.Entries.size() + 1);
+    for (auto &entry : result.Entries)
+        result.Pointers.push_back(entry.data());
+    result.Pointers.push_back(nullptr);
+    return result;
+}
+
+std::string PythonRuntimeDirectory()
+{
+    fs::path candidate;
+    if (const char *configured = std::getenv("CASCADE_PYTHON_RUNTIME_DIR"); configured && *configured)
+    {
+        candidate = configured;
+        if (!candidate.is_absolute())
+            throw std::runtime_error("CASCADE_PYTHON_RUNTIME_DIR must be an absolute path");
+    }
+    else
+    {
+        candidate = fs::path(PluginPaths::RuntimePrefix()) / "lib";
+    }
+    std::error_code error;
+    const fs::path resolved = fs::canonical(candidate, error);
+    if (error || !fs::is_directory(resolved))
+        throw std::runtime_error("Cannot locate the isolated Python runtime at " + candidate.string());
+    struct stat metadata{};
+    if (lstat(resolved.c_str(), &metadata) != 0 || !S_ISDIR(metadata.st_mode))
+        throw std::runtime_error("Cannot inspect isolated Python runtime " + resolved.string());
+    if (metadata.st_uid != geteuid() && metadata.st_uid != 0)
+        throw std::runtime_error("Isolated Python runtime is owned by another user: " + resolved.string());
+    if ((metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        throw std::runtime_error("Isolated Python runtime is group/world writable: " + resolved.string());
+    return resolved.string();
 }
 
 double IsolatedTimeoutSeconds()
@@ -214,8 +295,6 @@ void LoadVerifiedCppPackages(const std::vector<VerifiedPluginPackage> &packages)
     }
 }
 } // namespace
-
-extern char **environ;
 
 AMCM::AMCM() : AMCM(PluginTrustPolicy::Verified) {}
 
@@ -395,6 +474,7 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
         throw std::runtime_error("Isolated execution requires a module loaded from a verified plugin: " + module->BaseName());
     const double timeoutSeconds = IsolatedTimeoutSeconds();
     const std::string executable = WorkerExecutable(language);
+    const std::string pythonRuntime = language == "python" ? PythonRuntimeDirectory() : std::string();
     const nlohmann::json parameters = nlohmann::json::parse(module->DumpParamsToJSON());
 
     LOG_INFO("CONTROL", "Running module " << name << " in an exec worker");
@@ -446,8 +526,10 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
     const std::string resultDescriptorText = std::to_string(resultDescriptor);
     char *workerArguments[] = {const_cast<char *>(executable.c_str()),
                                const_cast<char *>(resultDescriptorText.c_str()), nullptr};
+    auto workerEnvironment = SanitizedWorkerEnvironment(pythonRuntime);
     pid_t child = -1;
-    const int spawnError = posix_spawnp(&child, executable.c_str(), &actions, &attributes, workerArguments, environ);
+    const int spawnError = posix_spawn(&child, executable.c_str(), &actions, &attributes, workerArguments,
+                                       workerEnvironment.Pointers.data());
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attributes);
     close(input);
@@ -517,6 +599,15 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
     }
     else
     {
+        const int channelFlags = fcntl(channel[0], F_GETFL, 0);
+        if (channelFlags < 0 || fcntl(channel[0], F_SETFL, channelFlags | O_NONBLOCK) != 0)
+        {
+            externalResult = ExternalFailure(ModuleStatus::Failed, "Cannot make isolated result channel non-blocking");
+            close(channel[0]);
+            RunResult result = module->AdoptExternalRunResult(std::move(externalResult));
+            RecordRun_(module, result);
+            return result;
+        }
         IsolatedRunHeader header;
         if (!ReadAll(channel[0], &header, sizeof(header)) || header.Magic != kCascadeWorkerResultMagic ||
             header.MessageSize > kCascadeWorkerMaxMessageSize)

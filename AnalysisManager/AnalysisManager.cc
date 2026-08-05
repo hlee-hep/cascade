@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <regex>
 #include <sstream>
+#include <sys/stat.h>
 using namespace logger;
 
 namespace
@@ -1349,18 +1350,27 @@ std::map<std::string, std::string> AnalysisManager::ListCutExpressions() const {
 
 std::string AnalysisManager::SnapshotState() const
 {
-    namespace fs = std::filesystem;
     nlohmann::json inputs = nlohmann::json::array();
     for (const auto &file : m_InputFiles)
     {
-        std::error_code error;
-        const auto size = fs::file_size(file, error);
         nlohmann::json input = {{"path", file}};
-        if (!error)
+        struct stat metadata{};
+        if (stat(file.c_str(), &metadata) == 0 && S_ISREG(metadata.st_mode))
         {
-            const auto modified = fs::last_write_time(file, error);
-            input["size"] = size;
-            if (!error) input["mtime"] = modified.time_since_epoch().count();
+            input["device"] = static_cast<std::uintmax_t>(metadata.st_dev);
+            input["inode"] = static_cast<std::uintmax_t>(metadata.st_ino);
+            input["size"] = static_cast<std::uintmax_t>(metadata.st_size);
+#if defined(__APPLE__)
+            input["mtime_seconds"] = metadata.st_mtimespec.tv_sec;
+            input["mtime_nanoseconds"] = metadata.st_mtimespec.tv_nsec;
+            input["ctime_seconds"] = metadata.st_ctimespec.tv_sec;
+            input["ctime_nanoseconds"] = metadata.st_ctimespec.tv_nsec;
+#else
+            input["mtime_seconds"] = metadata.st_mtim.tv_sec;
+            input["mtime_nanoseconds"] = metadata.st_mtim.tv_nsec;
+            input["ctime_seconds"] = metadata.st_ctim.tv_sec;
+            input["ctime_nanoseconds"] = metadata.st_ctim.tv_nsec;
+#endif
         }
         inputs.push_back(std::move(input));
     }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +31,8 @@ struct CacheSnapshot
 class CacheManager
 {
   private:
+    static constexpr std::uintmax_t kMaximumCacheFileBytes = 16 * 1024 * 1024;
+
     class FileLock
     {
       public:
@@ -176,6 +179,11 @@ class CacheManager
             const int error = errno ? errno : EINVAL;
             close(descriptor);
             throw std::system_error(error, std::generic_category(), "Cache path is not a regular file");
+        }
+        if (metadata.st_size < 0 || static_cast<std::uintmax_t>(metadata.st_size) > kMaximumCacheFileBytes)
+        {
+            close(descriptor);
+            throw std::runtime_error("Cascade cache file exceeds the 16 MiB limit: " + path);
         }
         std::string payload;
         char buffer[8192];

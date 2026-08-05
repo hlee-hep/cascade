@@ -90,8 +90,10 @@ result = controller.run_dag(fail_fast=True)
 ```
 
 When a node fails, all of its pending descendants become `Blocked`; unrelated
-nodes that have not started remain `Pending`. Work already dispatched in the same
-concurrent batch is allowed to finish.
+nodes that have not started remain `Pending`. Work already dispatched is allowed
+to finish. The scheduler is completion-driven: when one node finishes, newly ready
+dependents can start immediately without waiting for unrelated nodes from the same
+ready set.
 
 To finish independent branches:
 

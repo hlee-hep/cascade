@@ -17,6 +17,12 @@ struct ArtifactProvenance
     std::string Kind;
     std::string Sha256;
     std::uintmax_t Size = 0;
+    std::uintmax_t Device = 0;
+    std::uintmax_t Inode = 0;
+    std::int64_t ModifiedSeconds = 0;
+    std::int64_t ModifiedNanoseconds = 0;
+    std::int64_t ChangedSeconds = 0;
+    std::int64_t ChangedNanoseconds = 0;
     bool Exists = false;
 };
 
@@ -99,6 +105,7 @@ class ProvenanceRecorder
     static void BeginModuleRun(const std::string &runId, const std::string &instanceName, const std::string &moduleName,
                                const std::string &language, bool isolated);
     static void TrackInput(const std::string &runId, const std::filesystem::path &path);
+    static std::string InputSnapshotState(const std::string &runId);
     static void SetCacheSource(const std::string &runId, const std::string &manifestPath);
     static void SetPluginOrigin(const std::string &runId, const std::optional<PluginOrigin> &origin);
 
@@ -111,6 +118,9 @@ class ProvenanceRecorder
 
     static void WriteModuleRun(const ModuleRunManifest &manifest, const std::filesystem::path &path);
     static ModuleRunManifest LoadModuleRun(const std::filesystem::path &path);
+    static bool ValidateCachedRun(const std::filesystem::path &path, const std::string &expectedSnapshotHash,
+                                  const std::filesystem::path &outputDirectory, std::string *reason = nullptr);
+    static void RefreshOutputIdentities(ModuleRunManifest &manifest, const std::filesystem::path &outputDirectory);
     static void StoreModuleRun(const ModuleRunManifest &manifest);
     static void DiscardModuleRun(const std::string &runId);
     static std::optional<ModuleRunManifest> FindModuleRun(const std::string &runId);

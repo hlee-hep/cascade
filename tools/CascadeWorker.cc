@@ -1,12 +1,22 @@
 #include "AMCM.hh"
 #include "IsolatedWorker.hh"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
+#include <dirent.h>
+#include <fcntl.h>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <unistd.h>
+#include <vector>
 
 namespace
 {
@@ -40,6 +50,56 @@ RunResult Failure(const std::string &message)
     return {ModuleStatus::Failed, ModulePhase::Execute, message,
             std::make_exception_ptr(std::runtime_error(message))};
 }
+
+void ApplyResourceLimit(const char *variable, int resource, rlim_t scale)
+{
+    const char *configured = std::getenv(variable);
+    if (!configured || !*configured) return;
+    std::size_t parsed = 0;
+    const std::string text(configured);
+    if (text.front() == '-') throw std::runtime_error(std::string(variable) + " must be a positive integer");
+    const unsigned long long value = std::stoull(text, &parsed);
+    if (parsed != text.size() || value == 0 || value > std::numeric_limits<rlim_t>::max() / scale)
+        throw std::runtime_error(std::string(variable) + " must be a positive integer");
+    struct rlimit limit{};
+    if (getrlimit(resource, &limit) != 0) throw std::runtime_error(std::string("Cannot read resource limit ") + variable);
+    const rlim_t requested = static_cast<rlim_t>(value) * scale;
+    limit.rlim_cur = limit.rlim_max == RLIM_INFINITY ? requested : std::min(requested, limit.rlim_max);
+    if (setrlimit(resource, &limit) != 0) throw std::runtime_error(std::string("Cannot apply resource limit ") + variable);
+}
+
+void HardenWorkerProcess(int resultDescriptor)
+{
+    umask(0077);
+    const int descriptorFlags = fcntl(resultDescriptor, F_GETFD, 0);
+    if (descriptorFlags < 0 || fcntl(resultDescriptor, F_SETFD, descriptorFlags | FD_CLOEXEC) != 0)
+        throw std::runtime_error("Cannot protect isolated worker result descriptor");
+#if defined(__linux__)
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+        throw std::runtime_error("Cannot enable no_new_privs for isolated worker");
+#endif
+    DIR *directory = opendir("/proc/self/fd");
+    if (directory)
+    {
+        const int directoryDescriptor = dirfd(directory);
+        std::vector<int> descriptors;
+        while (const dirent *entry = readdir(directory))
+        {
+            char *end = nullptr;
+            const long descriptor = std::strtol(entry->d_name, &end, 10);
+            if (!end || *end != '\0' || descriptor < 3 || descriptor == resultDescriptor || descriptor == directoryDescriptor)
+                continue;
+            descriptors.push_back(static_cast<int>(descriptor));
+        }
+        closedir(directory);
+        for (const int descriptor : descriptors)
+            close(descriptor);
+    }
+    ApplyResourceLimit("CASCADE_WORKER_MEMORY_LIMIT_MB", RLIMIT_AS, 1024ULL * 1024ULL);
+    ApplyResourceLimit("CASCADE_WORKER_FILE_SIZE_LIMIT_MB", RLIMIT_FSIZE, 1024ULL * 1024ULL);
+    ApplyResourceLimit("CASCADE_WORKER_MAX_PROCESSES", RLIMIT_NPROC, 1);
+    ApplyResourceLimit("CASCADE_WORKER_MAX_OPEN_FILES", RLIMIT_NOFILE, 1);
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -51,6 +111,7 @@ int main(int argc, char **argv)
         if (argc != 2) throw std::runtime_error("Isolated worker requires a result descriptor");
         resultDescriptor = std::stoi(argv[1]);
         if (resultDescriptor < 3) throw std::runtime_error("Invalid isolated worker result descriptor");
+        HardenWorkerProcess(resultDescriptor);
         nlohmann::json request;
         std::cin >> request;
         if (request.value("schema", 0) != 1) throw std::runtime_error("Unsupported isolated worker request schema");

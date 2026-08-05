@@ -2,14 +2,13 @@
 #include "ExecutionResources.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
-#include <future>
 #include <memory>
-#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -61,7 +60,7 @@ class TaskPool
                 {
                     while (true)
                     {
-                        std::packaged_task<bool()> task;
+                        std::function<void()> task;
                         {
                             std::unique_lock<std::mutex> lock(m_Mutex);
                             m_Ready.wait(lock, [&]() { return m_Stopping || !m_Tasks.empty(); });
@@ -88,21 +87,19 @@ class TaskPool
     TaskPool(const TaskPool &) = delete;
     TaskPool &operator=(const TaskPool &) = delete;
 
-    std::future<bool> Submit(std::packaged_task<bool()> task)
+    void Submit(std::function<void()> task)
     {
-        auto result = task.get_future();
         {
             std::lock_guard<std::mutex> lock(m_Mutex);
             m_Tasks.push_back(std::move(task));
         }
         m_Ready.notify_one();
-        return result;
     }
 
   private:
     std::mutex m_Mutex;
     std::condition_variable m_Ready;
-    std::deque<std::packaged_task<bool()>> m_Tasks;
+    std::deque<std::function<void()>> m_Tasks;
     std::vector<std::thread> m_Threads;
     bool m_Stopping = false;
 };
@@ -188,7 +185,8 @@ DAGRunResult DAGManager::Execute(bool failFast)
                 m_Nodes.begin(), m_Nodes.end(), [](const auto &entry)
                 {
                     return entry.second.Lane == DAGExecutionLane::Parallel ||
-                           entry.second.Lane == DAGExecutionLane::Isolated;
+                           entry.second.Lane == DAGExecutionLane::Isolated ||
+                           entry.second.Lane == DAGExecutionLane::Root;
                 }));
         }
         std::unique_ptr<TaskPool> pool;
@@ -253,6 +251,39 @@ DAGRunResult DAGManager::Execute(bool failFast)
             }
         };
 
+        struct Completion
+        {
+            std::string Name;
+            DAGExecutionLane Lane = DAGExecutionLane::Serial;
+            bool Succeeded = false;
+        };
+        std::mutex completionMutex;
+        std::condition_variable completionReady;
+        std::deque<Completion> completions;
+        std::size_t active = 0;
+        bool rootActive = false;
+        bool stopDispatch = false;
+        std::atomic<bool> failureObserved{false};
+
+        auto dispatch = [&](WorkItem work)
+        {
+            const std::string name = work.Name;
+            const DAGExecutionLane lane = work.Lane;
+            ++active;
+            if (lane == DAGExecutionLane::Root) rootActive = true;
+            pool->Submit(
+                [&, work = std::move(work), name, lane]() mutable
+                {
+                    const bool succeeded = runWork(std::move(work));
+                    if (!succeeded) failureObserved.store(true, std::memory_order_release);
+                    {
+                        std::lock_guard<std::mutex> lock(completionMutex);
+                        completions.push_back({name, lane, succeeded});
+                    }
+                    completionReady.notify_one();
+                });
+        };
+
         while (true)
         {
             std::vector<std::string> ready;
@@ -284,8 +315,50 @@ DAGRunResult DAGManager::Execute(bool failFast)
                     if (dependenciesComplete) ready.push_back(name);
                 }
             }
-            if (!pending) break;
-            if (ready.empty())
+
+            if (failFast && failureObserved.load(std::memory_order_acquire)) stopDispatch = true;
+            if (stopDispatch && active == 0) break;
+            if (!pending && active == 0) break;
+
+            if (!stopDispatch)
+            {
+                const auto serial = std::find_if(
+                    ready.begin(), ready.end(), [&](const std::string &name)
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+                        return m_Nodes.at(name).Lane == DAGExecutionLane::Serial;
+                    });
+                if (serial != ready.end())
+                {
+                    if (active == 0)
+                    {
+                        const bool succeeded = runWork(prepareWork(*serial));
+                        if (failFast && !succeeded)
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+                            MarkBlockedDescendants_(*serial);
+                            stopDispatch = true;
+                        }
+                        continue;
+                    }
+                }
+                else
+                {
+                    for (const auto &name : ready)
+                    {
+                        if (active >= maxWorkers) break;
+                        DAGExecutionLane lane;
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+                            lane = m_Nodes.at(name).Lane;
+                        }
+                        if (lane == DAGExecutionLane::Root && rootActive) continue;
+                        dispatch(prepareWork(name));
+                    }
+                }
+            }
+
+            if (active == 0)
             {
                 bool stillPending = false;
                 {
@@ -293,69 +366,24 @@ DAGRunResult DAGManager::Execute(bool failFast)
                     stillPending = std::any_of(m_Nodes.begin(), m_Nodes.end(), [](const auto &entry)
                                                { return entry.second.Status == DAGNodeStatus::Pending; });
                 }
-                if (!stillPending) break;
+                if (!stillPending || stopDispatch) break;
                 throw std::logic_error("DAG scheduler reached pending nodes without a runnable dependency set");
             }
 
-            const auto serial = std::find_if(ready.begin(), ready.end(), [&](const std::string &name)
-                                             {
-                                                 std::lock_guard<std::recursive_mutex> lock(m_Mutex);
-                                                 return m_Nodes.at(name).Lane == DAGExecutionLane::Serial;
-                                             });
-            if (serial != ready.end())
+            Completion completion;
             {
-                const bool succeeded = runWork(prepareWork(*serial));
-                if (failFast && !succeeded)
-                {
-                    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
-                    MarkBlockedDescendants_(*serial);
-                    break;
-                }
-                continue;
+                std::unique_lock<std::mutex> lock(completionMutex);
+                completionReady.wait(lock, [&]() { return !completions.empty(); });
+                completion = std::move(completions.front());
+                completions.pop_front();
             }
-
-            std::vector<WorkItem> batch;
-            bool rootSelected = false;
-            for (const auto &name : ready)
-            {
-                DAGExecutionLane lane;
-                {
-                    std::lock_guard<std::recursive_mutex> lock(m_Mutex);
-                    lane = m_Nodes.at(name).Lane;
-                }
-                if (lane == DAGExecutionLane::Root && rootSelected) continue;
-                if (batch.size() >= maxWorkers) break;
-                if (lane == DAGExecutionLane::Root) rootSelected = true;
-                batch.push_back(prepareWork(name));
-            }
-
-            std::vector<std::pair<std::string, std::future<bool>>> futures;
-            std::optional<WorkItem> rootWork;
-            for (auto &work : batch)
-            {
-                if (work.Lane == DAGExecutionLane::Root)
-                    rootWork = std::move(work);
-                else
-                {
-                    const std::string workName = work.Name;
-                    std::packaged_task<bool()> task(
-                        [&, work = std::move(work)]() mutable { return runWork(std::move(work)); });
-                    futures.emplace_back(workName, pool->Submit(std::move(task)));
-                }
-            }
-            std::vector<std::string> failures;
-            if (rootWork)
-            {
-                const std::string rootName = rootWork->Name;
-                if (!runWork(std::move(*rootWork))) failures.push_back(rootName);
-            }
-            for (auto &[name, future] : futures)
-                if (!future.get()) failures.push_back(name);
-            if (failFast && !failures.empty())
+            --active;
+            if (completion.Lane == DAGExecutionLane::Root) rootActive = false;
+            if (failFast && !completion.Succeeded)
             {
                 std::lock_guard<std::recursive_mutex> lock(m_Mutex);
-                for (const auto &name : failures) MarkBlockedDescendants_(name);
-                break;
+                MarkBlockedDescendants_(completion.Name);
+                stopDispatch = true;
             }
         }
         std::lock_guard<std::recursive_mutex> lock(m_Mutex);

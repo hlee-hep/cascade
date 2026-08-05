@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
+import fcntl
 import os
+import resource
 import struct
 import sys
 
@@ -8,6 +10,46 @@ import sys
 RESULT_DESCRIPTOR = int(sys.argv[1]) if len(sys.argv) == 2 else -1
 RESULT_MAGIC = 0x43534344
 MAX_MESSAGE_SIZE = 4096
+
+
+def _apply_limit(variable, resource_id, scale=1):
+    configured = os.environ.get(variable)
+    if not configured:
+        return
+    if not configured.isdigit() or int(configured) <= 0:
+        raise RuntimeError(f"{variable} must be a positive integer")
+    requested = int(configured) * scale
+    _, hard = resource.getrlimit(resource_id)
+    soft = requested if hard == resource.RLIM_INFINITY else min(requested, hard)
+    resource.setrlimit(resource_id, (soft, hard))
+
+
+def _harden_worker():
+    os.umask(0o077)
+    flags = fcntl.fcntl(RESULT_DESCRIPTOR, fcntl.F_GETFD)
+    fcntl.fcntl(RESULT_DESCRIPTOR, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    if sys.platform.startswith("linux"):
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+            raise OSError(ctypes.get_errno(), "cannot enable no_new_privs")
+    descriptors = []
+    try:
+        descriptors = [int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()]
+    except OSError:
+        soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        descriptors = range(3, min(soft, 65536))
+    for descriptor in descriptors:
+        if descriptor >= 3 and descriptor != RESULT_DESCRIPTOR:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    _apply_limit("CASCADE_WORKER_MEMORY_LIMIT_MB", resource.RLIMIT_AS, 1024 * 1024)
+    _apply_limit("CASCADE_WORKER_FILE_SIZE_LIMIT_MB", resource.RLIMIT_FSIZE, 1024 * 1024)
+    _apply_limit("CASCADE_WORKER_MAX_PROCESSES", resource.RLIMIT_NPROC)
+    _apply_limit("CASCADE_WORKER_MAX_OPEN_FILES", resource.RLIMIT_NOFILE)
 
 
 def send_result(status, phase, message):
@@ -23,9 +65,15 @@ def main():
     try:
         if RESULT_DESCRIPTOR < 3:
             raise RuntimeError("Isolated worker requires a valid result descriptor")
+        _harden_worker()
         request = json.load(sys.stdin)
         if request.get("schema") != 1:
             raise RuntimeError("Unsupported isolated worker request schema")
+
+        runtime_directory = os.environ.get("CASCADE_PYTHON_RUNTIME_DIR", "")
+        if not os.path.isabs(runtime_directory):
+            raise RuntimeError("Isolated Python runtime directory is missing or invalid")
+        sys.path.insert(0, runtime_directory)
 
         from cascade.py_amcm import (
             _load_targeted_python_plugin_info,

@@ -93,16 +93,31 @@ fs::path OutputTransaction::Stage(const fs::path &finalPath)
     return staged;
 }
 
-void OutputTransaction::AcquireOutputLocks_()
+void OutputTransaction::AcquireOutputLocks_(const std::vector<fs::path> &finalPaths)
 {
     if (!m_OutputLockDescriptors.empty()) throw std::logic_error("OutputTransaction: output locks are already held.");
     const fs::path lockDirectory = m_OutputRoot / ".cascade" / "locks" / "outputs";
     fs::create_directories(lockDirectory);
+    std::map<fs::path, int> requests;
+    for (const auto &final : finalPaths)
+    {
+        fs::path current = m_OutputRoot;
+        const fs::path relative = final.lexically_relative(m_OutputRoot);
+        if (relative.empty() || *relative.begin() == "..")
+            throw std::runtime_error("OutputTransaction: cannot lock an output outside the configured root.");
+        for (const auto &component : relative)
+        {
+            current /= component;
+            const int operation = current == final ? LOCK_EX : LOCK_SH;
+            auto [iterator, inserted] = requests.emplace(current, operation);
+            if (!inserted && operation == LOCK_EX) iterator->second = LOCK_EX;
+        }
+    }
     try
     {
-        for (const auto &[final, _] : m_StagedOutputs)
+        for (const auto &[path, operation] : requests)
         {
-            const fs::path lockPath = lockDirectory / (Sha256(final.string()) + ".lock");
+            const fs::path lockPath = lockDirectory / (Sha256(path.string()) + ".lock");
             int flags = O_CREAT | O_RDWR;
 #ifdef O_CLOEXEC
             flags |= O_CLOEXEC;
@@ -120,7 +135,7 @@ void OutputTransaction::AcquireOutputLocks_()
                 close(descriptor);
                 throw std::system_error(error, std::generic_category(), "OutputTransaction: invalid output lock");
             }
-            while (flock(descriptor, LOCK_EX) != 0)
+            while (flock(descriptor, operation) != 0)
             {
                 if (errno == EINTR) continue;
                 const int error = errno;
@@ -135,6 +150,29 @@ void OutputTransaction::AcquireOutputLocks_()
         ReleaseOutputLocks_();
         throw;
     }
+}
+
+bool OutputTransaction::AcquireRecoveryLocks_(const std::vector<Promotion> &promotions) noexcept
+{
+    if (!m_OutputLockDescriptors.empty() || promotions.empty()) return true;
+    std::vector<fs::path> finalPaths;
+    finalPaths.reserve(promotions.size());
+    for (const auto &promotion : promotions)
+        finalPaths.push_back(promotion.Final);
+    try
+    {
+        AcquireOutputLocks_(finalPaths);
+        return true;
+    }
+    catch (const std::exception &error)
+    {
+        LOG_ERROR("OutputTransaction", "Cannot acquire recovery locks: " << error.what());
+    }
+    catch (...)
+    {
+        LOG_ERROR("OutputTransaction", "Cannot acquire recovery locks due to an unknown error");
+    }
+    return false;
 }
 
 void OutputTransaction::ReleaseOutputLocks_() noexcept
@@ -154,13 +192,22 @@ void OutputTransaction::Commit()
 
     try
     {
-        AcquireOutputLocks_();
+        std::vector<fs::path> finalPaths;
+        finalPaths.reserve(m_StagedOutputs.size());
+        for (const auto &[final, _] : m_StagedOutputs)
+            finalPaths.push_back(final);
+        AcquireOutputLocks_(finalPaths);
         for (const auto &[final, staged] : m_StagedOutputs)
         {
             if (!fs::exists(staged)) throw std::runtime_error("OutputTransaction: staged output was not created: " + staged.string());
             Promotion promotion;
             promotion.Final = final;
             promotion.Staged = staged;
+            struct stat stagedMetadata{};
+            if (lstat(staged.c_str(), &stagedMetadata) != 0)
+                throw std::system_error(errno, std::generic_category(), "OutputTransaction: cannot inspect staged output");
+            promotion.PromotedDevice = static_cast<std::uintmax_t>(stagedMetadata.st_dev);
+            promotion.PromotedInode = static_cast<std::uintmax_t>(stagedMetadata.st_ino);
             promotion.HadOriginal = fs::exists(final);
             if (promotion.HadOriginal)
             {
@@ -208,18 +255,25 @@ void OutputTransaction::RollbackUnlocked_() noexcept
 {
     std::error_code error;
     std::vector<Promotion> promotions = m_Promotions.empty() ? ReadJournal_() : m_Promotions;
+    if (!AcquireRecoveryLocks_(promotions)) return;
     for (auto iterator = promotions.rbegin(); iterator != promotions.rend(); ++iterator)
     {
+        struct stat finalMetadata{};
+        const bool finalExists = lstat(iterator->Final.c_str(), &finalMetadata) == 0;
+        const bool finalIsPromoted =
+            finalExists && static_cast<std::uintmax_t>(finalMetadata.st_dev) == iterator->PromotedDevice &&
+            static_cast<std::uintmax_t>(finalMetadata.st_ino) == iterator->PromotedInode;
         if (iterator->HadOriginal)
         {
             if (!fs::exists(iterator->Backup)) continue;
-            fs::remove_all(iterator->Final, error);
+            if (finalExists && !finalIsPromoted) continue;
+            if (finalIsPromoted) fs::remove_all(iterator->Final, error);
             error.clear();
             fs::create_directories(iterator->Final.parent_path(), error);
             error.clear();
             fs::rename(iterator->Backup, iterator->Final, error);
         }
-        else if (!fs::exists(iterator->Staged))
+        else if (finalIsPromoted)
         {
             fs::remove_all(iterator->Final, error);
             error.clear();
@@ -253,7 +307,8 @@ void OutputTransaction::WriteJournal_() const
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) throw std::runtime_error("OutputTransaction: cannot create promotion journal.");
         for (const auto &promotion : m_Promotions)
-            output << (promotion.HadOriginal ? 1 : 0) << ' ' << std::quoted(promotion.Final.string()) << ' '
+            output << (promotion.HadOriginal ? 1 : 0) << ' ' << promotion.PromotedDevice << ' '
+                   << promotion.PromotedInode << ' ' << std::quoted(promotion.Final.string()) << ' '
                    << std::quoted(promotion.Staged.string()) << ' ' << std::quoted(promotion.Backup.string()) << '\n';
         output.flush();
         if (!output) throw std::runtime_error("OutputTransaction: cannot write promotion journal.");
@@ -269,17 +324,20 @@ std::vector<OutputTransaction::Promotion> OutputTransaction::ReadJournal_() cons
     {
         std::ifstream input(JournalPath_());
         int hadOriginal = 0;
+        std::uintmax_t promotedDevice = 0;
+        std::uintmax_t promotedInode = 0;
         std::string final;
         std::string staged;
         std::string backup;
-        while (input >> hadOriginal >> std::quoted(final) >> std::quoted(staged) >> std::quoted(backup))
+        while (input >> hadOriginal >> promotedDevice >> promotedInode >> std::quoted(final) >> std::quoted(staged) >>
+               std::quoted(backup))
         {
             const fs::path finalPath = AbsoluteNormalized(final);
             const fs::path stagedPath = AbsoluteNormalized(staged);
             const fs::path backupPath = backup.empty() ? fs::path() : AbsoluteNormalized(backup);
             if (!IsContained_(m_OutputRoot, finalPath) || !IsContained_(m_StagingRoot, stagedPath)) continue;
             if (hadOriginal != 0 && (backupPath.empty() || !IsContained_(m_StagingRoot, backupPath))) continue;
-            promotions.push_back({finalPath, stagedPath, backupPath, hadOriginal != 0});
+            promotions.push_back({finalPath, stagedPath, backupPath, promotedDevice, promotedInode, hadOriginal != 0});
         }
     }
     catch (...)

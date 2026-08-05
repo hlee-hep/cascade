@@ -123,7 +123,8 @@ Multiple staged files form one transaction. Commit order:
 
 If promotion or cache update fails, promoted files are removed and originals are
 restored. During isolated execution, the parent can replay the on-disk journal
-after a fatal child signal.
+after a fatal child signal. Recovery checks the promoted file identity before
+rolling it back, so it does not overwrite output committed later by another run.
 
 Both relative and absolute requests must resolve inside the configured output root.
 The output root itself is not a valid file target.
@@ -170,10 +171,17 @@ calibration identifiers explicit parameters. Otherwise the cache cannot recogniz
 that an input changed.
 
 Cache files are locked for concurrent access and replaced atomically. Final output
-paths use inter-process locks from promotion through cache recording and transaction
-completion, preventing concurrent publishers from corrupting each other's rollback
-state. Concurrent modules should still use distinct final paths because the last
-successful publisher wins.
+paths use hierarchical inter-process locks from promotion through cache recording
+and transaction completion. A directory output conflicts with every output below
+it, while sibling files may still commit concurrently. Concurrent modules should
+still use distinct final paths because the last successful publisher wins.
+
+`TrackInput`/`track_input` artifacts are part of the snapshot hash. A cache entry
+is accepted only when its completed provenance manifest matches the snapshot and
+output root and its recorded outputs still match their committed identities or
+content hashes. Missing, replaced, or corrupted output invalidates the entry and
+causes a normal rerun. Cache index and module-provenance reads are capped at
+16 MiB to bound malformed local-state parsing.
 
 ## Cancellation
 
@@ -245,9 +253,20 @@ Design isolated pipelines around files or another explicit durable protocol.
 Only modules discovered from verified plugin packages can run in isolation; an
 arbitrary in-memory module handle cannot be reconstructed safely after `exec()`.
 Set `CASCADE_ISOLATED_TIMEOUT_SECONDS` to a positive number to enforce a worker
-deadline; zero or an unset value means no deadline. Isolation contains crashes but
-does not restrict filesystem, network, or process privileges and is not a security
-sandbox.
+deadline; zero or an unset value means no deadline. Worker executables must resolve
+to absolute, executable, owner/root-controlled files that are not group/world
+writable. Workers close inherited descriptors, enable Linux `no_new_privs`, use a
+private umask, and do not inherit loader-injection variables such as `LD_PRELOAD`
+or `LD_AUDIT`. The Python worker starts in interpreter-isolated mode, ignores the
+inherited `PYTHONPATH`, and imports Cascade only from the canonical runtime
+directory. Custom `PYTHONDIR` layouts can provide that parent directory through
+`CASCADE_PYTHON_RUNTIME_DIR`; it must be absolute and owner/root controlled.
+
+Optional positive worker limits are `CASCADE_WORKER_MEMORY_LIMIT_MB`,
+`CASCADE_WORKER_FILE_SIZE_LIMIT_MB`, `CASCADE_WORKER_MAX_PROCESSES`, and
+`CASCADE_WORKER_MAX_OPEN_FILES`. These are defense-in-depth controls. Isolation
+contains crashes but still permits ordinary filesystem and network access and is
+not a complete security sandbox.
 
 Provenance hashing defaults to `CASCADE_PROVENANCE_HASH_MODE=full`. Use `metadata`
 to avoid reading complete artifacts, or `none` to record only existence, kind, and

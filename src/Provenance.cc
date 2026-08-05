@@ -49,6 +49,7 @@ std::map<std::string, ActiveRun> g_ActiveRuns;
 std::map<std::string, ModuleRunManifest> g_ModuleRuns;
 std::map<std::string, std::string> g_LastRunByInstance;
 std::atomic<unsigned long long> g_WorkflowCounter{0};
+constexpr std::uintmax_t kMaximumModuleManifestBytes = 16 * 1024 * 1024;
 
 struct FileIdentity
 {
@@ -279,6 +280,17 @@ ArtifactProvenance CaptureArtifact(const fs::path &source, const std::string &re
         return artifact;
     }
     artifact.Exists = true;
+    struct stat identityMetadata{};
+    if (lstat(source.c_str(), &identityMetadata) == 0)
+    {
+        const FileIdentity identity = IdentityOf(identityMetadata);
+        artifact.Device = identity.Device;
+        artifact.Inode = identity.Inode;
+        artifact.ModifiedSeconds = identity.ModifiedSeconds;
+        artifact.ModifiedNanoseconds = identity.ModifiedNanoseconds;
+        artifact.ChangedSeconds = identity.ChangedSeconds;
+        artifact.ChangedNanoseconds = identity.ChangedNanoseconds;
+    }
     if (fs::is_symlink(status))
     {
         artifact.Kind = "symlink";
@@ -345,6 +357,15 @@ json ArtifactJson(const ArtifactProvenance &artifact)
             {"kind", artifact.Kind},
             {"exists", artifact.Exists},
             {"size", artifact.Size},
+            {"identity",
+             artifact.Exists
+                 ? json{{"device", artifact.Device},
+                        {"inode", artifact.Inode},
+                        {"mtime_seconds", artifact.ModifiedSeconds},
+                        {"mtime_nanoseconds", artifact.ModifiedNanoseconds},
+                        {"ctime_seconds", artifact.ChangedSeconds},
+                        {"ctime_nanoseconds", artifact.ChangedNanoseconds}}
+                 : json(nullptr)},
             {"sha256", artifact.Sha256.empty() ? json(nullptr) : json(artifact.Sha256)}};
 }
 
@@ -355,6 +376,16 @@ ArtifactProvenance ArtifactFromJson(const json &value)
     artifact.Kind = value.value("kind", "");
     artifact.Exists = value.value("exists", false);
     artifact.Size = value.value("size", static_cast<std::uintmax_t>(0));
+    const auto identity = value.value("identity", json(nullptr));
+    if (identity.is_object())
+    {
+        artifact.Device = identity.value("device", static_cast<std::uintmax_t>(0));
+        artifact.Inode = identity.value("inode", static_cast<std::uintmax_t>(0));
+        artifact.ModifiedSeconds = identity.value("mtime_seconds", static_cast<std::int64_t>(0));
+        artifact.ModifiedNanoseconds = identity.value("mtime_nanoseconds", static_cast<std::int64_t>(0));
+        artifact.ChangedSeconds = identity.value("ctime_seconds", static_cast<std::int64_t>(0));
+        artifact.ChangedNanoseconds = identity.value("ctime_nanoseconds", static_cast<std::int64_t>(0));
+    }
     if (value.contains("sha256") && value["sha256"].is_string()) artifact.Sha256 = value["sha256"].get<std::string>();
     return artifact;
 }
@@ -543,6 +574,23 @@ void ProvenanceRecorder::TrackInput(const std::string &runId, const fs::path &pa
         iterator->second.Inputs.push_back(path);
 }
 
+std::string ProvenanceRecorder::InputSnapshotState(const std::string &runId)
+{
+    std::vector<fs::path> inputs;
+    {
+        std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
+        const auto iterator = g_ActiveRuns.find(runId);
+        if (iterator == g_ActiveRuns.end())
+            throw std::runtime_error("Cannot snapshot inputs for an unknown run: " + runId);
+        inputs = iterator->second.Inputs;
+    }
+    std::sort(inputs.begin(), inputs.end());
+    json state = json::array();
+    for (const auto &input : inputs)
+        state.push_back(ArtifactJson(CaptureArtifact(input, AbsoluteString(input), ArtifactHashMode::Full)));
+    return state.dump();
+}
+
 void ProvenanceRecorder::SetCacheSource(const std::string &runId, const std::string &manifestPath)
 {
     std::lock_guard<std::mutex> lock(g_ProvenanceMutex);
@@ -616,6 +664,11 @@ void ProvenanceRecorder::WriteModuleRun(const ModuleRunManifest &manifest, const
 
 ModuleRunManifest ProvenanceRecorder::LoadModuleRun(const fs::path &path)
 {
+    std::error_code sizeError;
+    const auto manifestSize = fs::file_size(path, sizeError);
+    if (sizeError) throw std::runtime_error("Cannot inspect provenance manifest: " + path.string());
+    if (manifestSize > kMaximumModuleManifestBytes)
+        throw std::runtime_error("Provenance manifest exceeds the 16 MiB limit: " + path.string());
     std::ifstream input(path);
     if (!input) throw std::runtime_error("Cannot read provenance manifest: " + path.string());
     json value;
@@ -665,6 +718,89 @@ ModuleRunManifest ProvenanceRecorder::LoadModuleRun(const fs::path &path)
         manifest.Outputs.push_back(ArtifactFromJson(artifact));
     manifest.ManifestPath = value.value("manifest_path", AbsoluteString(path));
     return manifest;
+}
+
+bool ProvenanceRecorder::ValidateCachedRun(const fs::path &path, const std::string &expectedSnapshotHash,
+                                           const fs::path &outputDirectory, std::string *reason)
+{
+    auto fail = [&](const std::string &message)
+    {
+        if (reason) *reason = message;
+        return false;
+    };
+    if (path.empty() || !fs::is_regular_file(path)) return fail("cached provenance manifest is missing");
+    ModuleRunManifest manifest;
+    try
+    {
+        manifest = LoadModuleRun(path);
+    }
+    catch (const std::exception &error)
+    {
+        return fail(std::string("cached provenance manifest is invalid: ") + error.what());
+    }
+    if (manifest.Status != ModuleStatus::Done) return fail("cached provenance does not describe a successful run");
+    if (manifest.SnapshotHash != expectedSnapshotHash) return fail("cached provenance snapshot hash does not match");
+
+    std::error_code error;
+    const fs::path root = fs::weakly_canonical(fs::absolute(outputDirectory), error);
+    if (error) return fail("configured output directory cannot be resolved");
+    const fs::path recordedRoot = fs::weakly_canonical(fs::absolute(manifest.OutputDirectory), error);
+    if (error || recordedRoot != root) return fail("cached provenance belongs to a different output directory");
+
+    for (const auto &recorded : manifest.Outputs)
+    {
+        const fs::path relative(recorded.Path);
+        if (relative.empty() || relative.is_absolute() || relative.has_root_path())
+            return fail("cached provenance contains an invalid output path");
+        const fs::path candidate = fs::weakly_canonical(root / relative, error);
+        if (error) return fail("cached output cannot be resolved: " + recorded.Path);
+        const fs::path contained = candidate.lexically_relative(root);
+        if (contained.empty() || *contained.begin() == "..")
+            return fail("cached output escapes the configured output directory: " + recorded.Path);
+        struct stat metadata{};
+        if (lstat(candidate.c_str(), &metadata) == 0 && recorded.Inode != 0)
+        {
+            const FileIdentity identity = IdentityOf(metadata);
+            if (identity.Device == recorded.Device && identity.Inode == recorded.Inode &&
+                identity.Size == recorded.Size && identity.ModifiedSeconds == recorded.ModifiedSeconds &&
+                identity.ModifiedNanoseconds == recorded.ModifiedNanoseconds &&
+                identity.ChangedSeconds == recorded.ChangedSeconds &&
+                identity.ChangedNanoseconds == recorded.ChangedNanoseconds)
+                continue;
+        }
+        ArtifactProvenance current;
+        try
+        {
+            current = CaptureArtifact(candidate, recorded.Path, ArtifactHashMode::Full);
+        }
+        catch (const std::exception &failure)
+        {
+            return fail("cannot validate cached output " + recorded.Path + ": " + failure.what());
+        }
+        if (!current.Exists || current.Kind != recorded.Kind || current.Size != recorded.Size)
+            return fail("cached output metadata changed: " + recorded.Path);
+        if (!recorded.Sha256.empty() && current.Sha256 != recorded.Sha256)
+            return fail("cached output content changed: " + recorded.Path);
+    }
+    return true;
+}
+
+void ProvenanceRecorder::RefreshOutputIdentities(ModuleRunManifest &manifest, const fs::path &outputDirectory)
+{
+    for (auto &artifact : manifest.Outputs)
+    {
+        const fs::path path = outputDirectory / artifact.Path;
+        struct stat metadata{};
+        if (lstat(path.c_str(), &metadata) != 0)
+            throw std::system_error(errno, std::generic_category(), "Cannot inspect committed output identity");
+        const FileIdentity identity = IdentityOf(metadata);
+        artifact.Device = identity.Device;
+        artifact.Inode = identity.Inode;
+        artifact.ModifiedSeconds = identity.ModifiedSeconds;
+        artifact.ModifiedNanoseconds = identity.ModifiedNanoseconds;
+        artifact.ChangedSeconds = identity.ChangedSeconds;
+        artifact.ChangedNanoseconds = identity.ChangedNanoseconds;
+    }
 }
 
 void ProvenanceRecorder::StoreModuleRun(const ModuleRunManifest &manifest)

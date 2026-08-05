@@ -292,8 +292,10 @@ an upstream module. Both staging and final-path helpers reject paths outside the
 configured output root.
 
 Call `TrackInput(path)` / `track_input(path)` for every material file input.
-Cascade hashes declared local inputs in the module provenance manifest. Output
-artifacts registered with the staging helper are captured automatically.
+Cascade hashes declared local inputs into both the snapshot identity and module
+provenance. Changing a tracked file therefore invalidates a matching cache entry.
+Output artifacts registered with the staging helper are captured automatically
+and revalidated before a cached run is skipped.
 
 Direct writes, network calls, database updates, and messages sent to external
 services are not transactional.

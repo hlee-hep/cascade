@@ -82,6 +82,16 @@ def make_executable(target, source, env):
         st = os.stat(path)
         os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+def generate_python_worker(target, source, env):
+    with open(str(source[0]), "r", encoding="utf-8") as input_file:
+        lines = input_file.read().splitlines()
+    if not lines:
+        raise RuntimeError("Python worker source is empty")
+    lines[0] = f"#!{env['PYTHON_INTERPRETER']} -I"
+    with open(str(target[0]), "w", encoding="utf-8") as output_file:
+        output_file.write("\n".join(lines) + "\n")
+    return 0
+
 def create_symlink(target, source, env):
     link_path = str(target[0])
     target_path = str(source[0])
@@ -136,6 +146,8 @@ def run_tests(target, source, env):
             python_test_environment = {
                 **test_environment,
                 "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
+                "CASCADE_PYTHON_RUNTIME_DIR": os.path.abspath("build/test-runtime"),
+                "CASCADE_TEST_ASSERT_ISOLATED_PYTHON": "1",
                 "CASCADE_PLUGIN_DIR": os.path.abspath("build/test-plugins"),
                 "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
                 "PYTHONPATH": os.path.abspath("build/test-runtime"),
@@ -195,6 +207,7 @@ vars.Add('PYMODULEDIR', 'python module install directory (cascade.pymodule)', ''
 
 env = Environment(ENV=os.environ, variables=vars)
 env.Append()
+env['PYTHON_INTERPRETER'] = os.path.realpath(env.WhereIs('python3') or sys.executable)
 prefix = os.path.expanduser(env['PREFIX'])
 env['PREFIX'] = prefix
 if not env['LIBDIR']:
@@ -213,8 +226,19 @@ pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 
 env.ParseConfig('root-config --cflags --libs')
 env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
-env.AppendUnique(CXXFLAGS=["-std=c++17", "-O2", "-fvisibility=default"])
-env.AppendUnique(LINKFLAGS=["-Wl,--enable-new-dtags"])
+env.AppendUnique(CXXFLAGS=[
+    "-std=c++17",
+    "-O2",
+    "-fvisibility=default",
+    "-fstack-protector-strong",
+    "-D_FORTIFY_SOURCE=2",
+])
+env.AppendUnique(LINKFLAGS=[
+    "-Wl,--enable-new-dtags",
+    "-Wl,-z,relro",
+    "-Wl,-z,now",
+    "-Wl,-z,noexecstack",
+])
 env.Append(CPPPATH=pybind_includes)
 env.Append(LIBS=["ssl","crypto"])
 VariantDir("build/src", "src", duplicate=0)
@@ -292,6 +316,7 @@ pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
 # Isolated execution workers use exec(), so they must be real standalone entry points.
 worker_env = env.Clone()
 worker_env.Replace(RPATH=[])
+worker_env.AppendUnique(CXXFLAGS=["-fPIE"], LINKFLAGS=["-pie"])
 worker_env.AppendUnique(
     LIBPATH=[
         os.path.join(TOP, "build", "src"),
@@ -309,7 +334,7 @@ cpp_worker = worker_env.Program("build/bin/cascade-worker", "tools/CascadeWorker
 Depends(cpp_worker, core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj)
 cpp_worker_install = env.Install(env["BINDIR"], cpp_worker)
 
-python_worker = env.InstallAs("build/bin/cascade-python-worker", "python/cascade_worker")
+python_worker = env.Command("build/bin/cascade-python-worker", "python/cascade_worker", generate_python_worker)
 env.AddPostAction(python_worker, make_executable)
 python_worker_install = env.InstallAs(os.path.join(env["BINDIR"], "cascade-python-worker"), python_worker)
 env.AddPostAction(python_worker_install, make_executable)

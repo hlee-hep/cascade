@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <iomanip>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -22,6 +23,9 @@
 namespace
 {
 namespace fs = std::filesystem;
+constexpr std::size_t kMaxManifestBytes = 4 * 1024 * 1024;
+constexpr std::size_t kMaxKeyOrSignatureBytes = 1024 * 1024;
+constexpr std::size_t kMaxPythonArtifactBytes = 64 * 1024 * 1024;
 
 class PackageReadLock
 {
@@ -144,7 +148,7 @@ int OpenRegularFile(const fs::path &path)
     return descriptor;
 }
 
-std::vector<unsigned char> ReadDescriptor(int descriptor)
+std::vector<unsigned char> ReadDescriptor(int descriptor, std::size_t maximumBytes = std::numeric_limits<std::size_t>::max())
 {
     if (lseek(descriptor, 0, SEEK_SET) < 0) throw std::runtime_error("cannot seek plugin file descriptor");
     std::vector<unsigned char> data;
@@ -158,6 +162,8 @@ std::vector<unsigned char> ReadDescriptor(int descriptor)
             throw std::runtime_error("cannot read plugin file descriptor");
         }
         if (count == 0) break;
+        if (data.size() > maximumBytes - static_cast<std::size_t>(count))
+            throw std::runtime_error("plugin file exceeds its configured size limit");
         data.insert(data.end(), buffer.begin(), buffer.begin() + count);
     }
     return data;
@@ -204,12 +210,13 @@ std::string Sha256Descriptor(int descriptor)
     return out.str();
 }
 
-std::vector<unsigned char> ReadRegularFile(const fs::path &path)
+std::vector<unsigned char> ReadRegularFile(const fs::path &path,
+                                           std::size_t maximumBytes = std::numeric_limits<std::size_t>::max())
 {
     const int descriptor = OpenRegularFile(path);
     try
     {
-        auto data = ReadDescriptor(descriptor);
+        auto data = ReadDescriptor(descriptor, maximumBytes);
         close(descriptor);
         return data;
     }
@@ -218,6 +225,17 @@ std::vector<unsigned char> ReadRegularFile(const fs::path &path)
         close(descriptor);
         throw;
     }
+}
+
+void ValidateUnsignedPath(const fs::path &path, const std::string &label)
+{
+    struct stat metadata{};
+    if (lstat(path.c_str(), &metadata) != 0)
+        throw std::runtime_error("cannot inspect unsigned plugin " + label + ": " + path.string());
+    if (metadata.st_uid != geteuid() && metadata.st_uid != 0)
+        throw std::runtime_error("unsigned plugin " + label + " is owned by another user: " + path.string());
+    if ((metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        throw std::runtime_error("unsigned plugin " + label + " is group/world writable: " + path.string());
 }
 
 std::string Sha256(const std::vector<unsigned char> &data)
@@ -481,7 +499,7 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
 
     const fs::path manifestPath = packageDir / "plugin_manifest.json";
     const fs::path signaturePath = packageDir / "plugin_manifest.json.sig";
-    const auto manifestBytes = ReadRegularFile(manifestPath);
+    const auto manifestBytes = ReadRegularFile(manifestPath, kMaxManifestBytes);
     const bool hasSignature = fs::is_regular_file(signaturePath);
 
     VerifiedPluginPackage result;
@@ -494,8 +512,8 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
         const fs::path keyPath = trustedKey.empty() ? fs::path(trustStore) / (packageName + ".pem") : fs::path(trustedKey);
         if (!fs::is_regular_file(keyPath))
             throw std::runtime_error("signed plugin requires its package-bound trusted key: " + keyPath.string());
-        const auto keyBytes = ReadRegularFile(keyPath);
-        const auto signatureBytes = ReadRegularFile(signaturePath);
+        const auto keyBytes = ReadRegularFile(keyPath, kMaxKeyOrSignatureBytes);
+        const auto signatureBytes = ReadRegularFile(signaturePath, kMaxKeyOrSignatureBytes);
         EVP_PKEY *key = ReadPublicKey(keyBytes);
         if (!key) throw std::runtime_error("cannot parse trusted plugin key: " + keyPath.string());
         const bool valid = VerifySignature(manifestBytes, signatureBytes, key);
@@ -508,6 +526,12 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
     else if (policy == PluginTrustPolicy::RequireSigned)
     {
         throw std::runtime_error("plugin package requires a trusted signature: " + manifestPath.string());
+    }
+    else
+    {
+        ValidateUnsignedPath(packageDir.parent_path(), "root");
+        ValidateUnsignedPath(packageDir, "package directory");
+        ValidateUnsignedPath(manifestPath, "manifest");
     }
 
     const nlohmann::json manifest = nlohmann::json::parse(manifestBytes.begin(), manifestBytes.end());
@@ -583,6 +607,8 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
 
         if (!selected || (!language.empty() && entryLanguage != language)) continue;
 
+        if (result.Trust != PluginTrustStatus::Signed) ValidateUnsignedPath(artifactPath, "artifact");
+
         int descriptor = OpenRegularFile(artifactPath);
         std::vector<unsigned char> artifactBytes;
         try
@@ -590,7 +616,7 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
             const std::string actualHash = Sha256Descriptor(descriptor);
             if (actualHash != expectedHash)
                 throw std::runtime_error("plugin artifact hash mismatch: " + artifactPath.string());
-            if (entryLanguage == "python") artifactBytes = ReadDescriptor(descriptor);
+            if (entryLanguage == "python") artifactBytes = ReadDescriptor(descriptor, kMaxPythonArtifactBytes);
         }
         catch (...)
         {
