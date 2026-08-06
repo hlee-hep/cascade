@@ -44,7 +44,7 @@ def main():
     controller.get_dag().dump_dot(str(output_directory / "toy-dimuon-analysis.dot"))
     for node in result.nodes:
         detail = f" — {node.message}" if node.message else ""
-        print(f"{node.name}: {node.status}{detail}")
+        print(f"{node.name}: {modules[node.name].get_status()}{detail}")
     if result.failed():
         failures = [f"{node.name}: {node.message}" for node in result.nodes if not node.succeeded()]
         raise RuntimeError("DAG failed: " + "; ".join(failures))
