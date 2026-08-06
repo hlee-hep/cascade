@@ -706,6 +706,43 @@ class CliTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "DuplicateModule"):
                     cli_plugin._reject_prospective_duplicates(str(stage), str(target), "incoming")
 
+    def test_prospective_install_visits_shared_language_root_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            plugin_root = root / "plugins"
+            package = plugin_root / "worker-test"
+            package.mkdir(parents=True)
+            (package / "plugin_manifest.json").write_text(json.dumps({
+                "schema": 2,
+                "package": package.name,
+                "modules": [
+                    {
+                        "name": "WorkerTestModule",
+                        "language": "cpp",
+                        "path": "libWorkerTestModule.so",
+                        "sha256": "unused",
+                        "classes": [],
+                    },
+                    {
+                        "name": "worker_test_module",
+                        "language": "python",
+                        "path": "worker_test_module.py",
+                        "sha256": "unused",
+                        "classes": ["WorkerTestPythonModule"],
+                    },
+                ],
+            }), encoding="utf-8")
+
+            layout = {
+                "cpp": str(plugin_root),
+                "python": str(plugin_root),
+                "source": "environment",
+            }
+            with mock.patch.object(cli_plugin, "_runtime_plugin_layouts", return_value=[layout]):
+                cli_plugin._reject_prospective_duplicates(
+                    str(root / "stage"), str(root / "target"), "incoming"
+                )
+
     def test_plugin_install_publishes_then_registers_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

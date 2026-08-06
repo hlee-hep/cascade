@@ -729,13 +729,15 @@ def _reject_prospective_duplicates(stage_prefix: str, target_prefix: str, packag
         os.path.realpath(os.path.join(target_layout["cpp"], package)),
         os.path.realpath(os.path.join(target_layout["python"], package)),
     }
+    visited_packages = set()
     for layout in _runtime_plugin_layouts():
         for language, root in (("cpp", layout["cpp"]), ("python", layout["python"])):
             if not root or not os.path.isdir(root) or os.path.islink(root):
                 continue
             for entry in sorted(os.listdir(root)):
                 package_dir = os.path.join(root, entry)
-                if os.path.realpath(package_dir) in replaced:
+                real_package_dir = os.path.realpath(package_dir)
+                if real_package_dir in replaced or real_package_dir in visited_packages:
                     continue
                 try:
                     metadata = os.lstat(package_dir)
@@ -743,6 +745,7 @@ def _reject_prospective_duplicates(stage_prefix: str, target_prefix: str, packag
                     continue
                 if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
                     continue
+                visited_packages.add(real_package_dir)
                 for declared_language, name in _manifest_module_identities(package_dir):
                     candidates.append((declared_language, name, package_dir))
 
