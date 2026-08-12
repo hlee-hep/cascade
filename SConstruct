@@ -658,6 +658,7 @@ test_runtime_extension = env.Command(
     create_symlink,
 )
 test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_extension
+env.Alias("test-runtime", test_runtime)
 
 # Compile the native fixture with no ROOT include or link flags. This guards the
 # minimal plugin ABI boundary independently of the framework's ROOT build.

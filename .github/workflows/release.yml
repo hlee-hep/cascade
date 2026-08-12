@@ -49,13 +49,13 @@ jobs:
           test -f "docs/releases/$GITHUB_REF_NAME.md"
           grep -Fq "# Cascade $version" "docs/releases/$GITHUB_REF_NAME.md"
 
-      - name: Build benchmark executables
+      - name: Build release runtime and benchmark executables
         run: |
           scons -j2 \
+            test-runtime \
             build/benchmarks/cascade-dag-bench \
             build/benchmarks/cascade-input-hash-bench \
-            build/benchmarks/cascade-output-hash-bench \
-            build/test-runtime/cascade/__init__.py
+            build/benchmarks/cascade-output-hash-bench
 
       - name: Check tagged runtime version
         env:
