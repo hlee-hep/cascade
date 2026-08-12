@@ -152,3 +152,42 @@ jobs:
             | tee "$RUNNER_TEMP/toy-second.log"
 
           test "$(grep -Ec '^(generate|spectrum|fit|report): .*Skipped' "$RUNNER_TEMP/toy-second.log")" -eq 4
+
+  sanitizers:
+    name: ASan and UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: micromamba-shell {0}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create sanitizer environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: cascade-sanitizers
+          create-args: >-
+            python=3.11
+            root_base=6.32
+            cxx-compiler
+            pkg-config
+            scons
+            pybind11
+            pyyaml
+            yaml-cpp
+            nlohmann_json
+            openssl
+          cache-environment: true
+          cache-environment-key: cascade-sanitizers-root632-py311
+          post-cleanup: all
+
+      - name: Run verification with ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:handle_segv=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          CASCADE_CONFIG_FILE: ${{ runner.temp }}/cascade-sanitizer-config/config.json
+        run: scons verify -j2 SANITIZERS=address,undefined

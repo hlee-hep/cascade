@@ -18,6 +18,8 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 
 - [ ] `scons -j2` completes from a clean checkout with documented dependencies.
 - [ ] `scons verify -j2` passes.
+- [ ] `scons verify -j2 SANITIZERS=address,undefined` passes on Linux.
+- [ ] `scons bench -j2` results were reviewed for scheduler and hashing regressions.
 - [ ] `cascade info` reports the expected version, ABI integer, and ABI tag.
 - [ ] `cascade doctor env`, `cascade doctor runtime`, and `cascade doctor plugins`
   report no unexpected failures.

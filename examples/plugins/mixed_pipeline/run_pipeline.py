@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from cascade import py_amcm
+from cascade import Controller
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = output_dir / ".cache"
-    controller = py_amcm()
+    controller = Controller()
 
     modules = {
         "text_cpp": controller.register_module("TextProducerModule", "text_cpp"),

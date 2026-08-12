@@ -14,7 +14,7 @@ from .common import (
     _redirect_stdout_to_stderr,
     _resolve_config_path,
     _result_payload,
-    _runtime_environment,
+    _runtime_options,
     _split_parameter_ref,
     _validate_keys,
 )
@@ -43,9 +43,11 @@ def cmd_module_list(args) -> None:
 
 
 def cmd_module_run(args) -> None:
-    with _runtime_environment(args):
+    with _runtime_options(args) as runtime_options:
         with _redirect_stdout_to_stderr(args.json):
-            controller = _load_controller(args.json, getattr(args, "require_signed", False))
+            controller = _load_controller(
+                args.json, getattr(args, "require_signed", False), runtime_options
+            )
             handle = controller.register_module(args.module, args.name)
             if args.output_directory:
                 handle.set_output_directory(os.path.abspath(args.output_directory))
@@ -70,7 +72,7 @@ def cmd_module_run(args) -> None:
         raise SystemExit(1)
 
 
-def _configure_dag_workflow(args):
+def _configure_dag_workflow(args, runtime_options=None):
     workflow_path = os.path.realpath(args.workflow)
     workflow = _load_mapping(workflow_path)
     _validate_keys(
@@ -82,6 +84,7 @@ def _configure_dag_workflow(args):
             "fail_fast",
             "dot",
             "provenance",
+            "runtime",
             "modules",
             "links",
         },
@@ -165,7 +168,9 @@ def _configure_dag_workflow(args):
             "target_node": target_node,
             "target_param": target_param,
         })
-    controller = _load_controller(args.json, getattr(args, "require_signed", False))
+    controller = _load_controller(
+        args.json, getattr(args, "require_signed", False), runtime_options
+    )
     for item in configured:
         handle = controller.register_module(item["class_name"], item["name"])
         output = _resolve_config_path(base, item["output_directory"]) or default_output
@@ -206,8 +211,10 @@ def _configure_dag_workflow(args):
 
 
 def cmd_dag_validate(args) -> None:
-    with _redirect_stdout_to_stderr(args.json):
-        configured = _configure_dag_workflow(args)
+    workflow = _load_mapping(os.path.realpath(args.workflow))
+    with _runtime_options(args, workflow.get("runtime")) as runtime_options:
+        with _redirect_stdout_to_stderr(args.json):
+            configured = _configure_dag_workflow(args, runtime_options)
     payload = {
         "valid": True,
         "workflow": configured["workflow_path"],
@@ -288,9 +295,10 @@ def _run_dag_with_progress(controller, fail_fast, provenance_path):
 
 
 def cmd_dag_run(args) -> None:
-    with _runtime_environment(args):
+    workflow = _load_mapping(os.path.realpath(args.workflow))
+    with _runtime_options(args, workflow.get("runtime")) as runtime_options:
         with _redirect_stdout_to_stderr(args.json):
-            configured = _configure_dag_workflow(args)
+            configured = _configure_dag_workflow(args, runtime_options)
             controller = configured["controller"]
             workflow = configured["workflow"]
             base = configured["base"]

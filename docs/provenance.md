@@ -152,12 +152,12 @@ changed. The final path component is kept unresolved so a recorded symlink remai
 a symlink during validation.
 
 Tracked input identity defaults to filesystem metadata so large ROOT files are not
-read solely to make a cache decision. `CASCADE_INPUT_HASH_MODE=full` records and
+read solely to make a cache decision. `input_hash=full` records and
 uses SHA-256 instead, while `auto` hashes regular inputs up to 64 MiB. Metadata
 mode records identity without proving byte equality. Directory capture still walks
 the directory tree, even when regular-file contents are not hashed.
 
-Output records use the independent `CASCADE_PROVENANCE_HASH_MODE`. Its default,
+Output records use the independent `output_hash` runtime option. Its default,
 `full`, allows a moved or replaced output to be accepted only if the recomputed
 content hash matches. With `metadata` or `none`, kind and size are the remaining
 checks after an identity change. See

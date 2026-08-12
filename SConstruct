@@ -14,68 +14,6 @@ def generate_init_py(target, source, env):
     print(f"[SCons] __init__.py for cascade generated in {target_dir}")
     return 0
 
-def generate_init_py_head(target, source, env):
-    target_dir = os.path.dirname(str(target[0]))
-    files = [f for f in os.listdir(target_dir) if f.endswith(".py") and f != "__init__.py"]
-    lines = [
-        "# Auto-generated cascade __init__.py\n",
-        "from ._cascade import CacheManager, CancellationToken, ExecutionContext, IAnalysisModule, ModulePhase, ModuleRunManifest, ModuleStatus, OutputTransaction, ParamManager, PluginPaths, PluginVerifier, ProvenanceRecorder, RunResult, SnapshotHasher, log_level, set_log_level, set_log_file, init_interrupt, is_interrupted, log, get_version, get_abi_version, get_abi_tag",
-        "import importlib",
-        "",
-        "__version__ = get_version()",
-        "__abi_version__ = get_abi_version()",
-        "__abi_tag__ = get_abi_tag()",
-        "",
-        "_LAZY_MODULES = {",
-    ]
-    for fname in sorted(files):
-        modulename = fname[:-3]
-        lines.append(f"    \"{modulename}\": \"{modulename}\",")
-    lines += [
-        "}",
-        "",
-        "__all__ = [",
-        "    \"log_level\",",
-        "    \"CacheManager\",",
-        "    \"CancellationToken\",",
-        "    \"ExecutionContext\",",
-        "    \"IAnalysisModule\",",
-        "    \"ModulePhase\",",
-        "    \"ModuleStatus\",",
-        "    \"OutputTransaction\",",
-        "    \"ParamManager\",",
-        "    \"PluginPaths\",",
-        "    \"ModuleRunManifest\",",
-        "    \"PluginVerifier\",",
-        "    \"ProvenanceRecorder\",",
-        "    \"RunResult\",",
-        "    \"SnapshotHasher\",",
-        "    \"set_log_level\",",
-        "    \"set_log_file\",",
-        "    \"get_version\",",
-        "    \"get_abi_version\",",
-        "    \"get_abi_tag\",",
-        "    \"__version__\",",
-        "    \"__abi_version__\",",
-        "    \"__abi_tag__\",",
-        "    \"init_interrupt\",",
-        "    \"is_interrupted\",",
-        "    \"log\",",
-        "] + list(_LAZY_MODULES.keys())",
-        "",
-        "def __getattr__(name):",
-        "    if name in _LAZY_MODULES:",
-        "        mod = importlib.import_module(f\".{_LAZY_MODULES[name]}\", __name__)",
-        "        obj = getattr(mod, name)",
-        "        globals()[name] = obj",
-        "        return obj",
-        "    raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")",
-    ]
-    with open(str(target[0]), "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print(f"[SCons] __init__.py for cascade generated in {target_dir}")
-    return 0
-
 def make_executable(target, source, env):
     for t in target:
         path = str(t)
@@ -103,6 +41,45 @@ def create_symlink(target, source, env):
     print(f"[SCons] symlink {link_path} -> {rel_target}")
     return 0
 
+def sanitizer_environment(env, base, preload_address=False):
+    if not env.get("SANITIZERS"):
+        return base
+    result = {
+        **base,
+        # ROOT installs its own fatal-signal handlers. GCC 11 ASan's SIGSEGV
+        # interception can recurse through them before a report is emitted.
+        "ASAN_OPTIONS": os.environ.get(
+            "ASAN_OPTIONS", "detect_leaks=0:halt_on_error=1:handle_segv=0"
+        ),
+        "UBSAN_OPTIONS": os.environ.get("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1"),
+    }
+    if preload_address:
+        python_asan_options = [
+            option
+            for option in result["ASAN_OPTIONS"].split(":")
+            if not option.startswith("handle_segv=")
+        ]
+        result["ASAN_OPTIONS"] = ":".join(python_asan_options + ["handle_segv=1"])
+    if preload_address and "address" in str(env.get("SANITIZERS", "")).split(","):
+        compiler = env.subst("$CXX")
+        runtime = ""
+        for library_name in ("libasan.so.6", "libasan.so"):
+            candidate = subprocess.check_output(
+                [compiler, f"-print-file-name={library_name}"], text=True
+            ).strip()
+            if not candidate or candidate == library_name or not os.path.isfile(candidate):
+                continue
+            with open(candidate, "rb") as library:
+                if library.read(4) == b"\x7fELF":
+                    runtime = os.path.realpath(candidate)
+                    break
+        if runtime:
+            preload = result.get("LD_PRELOAD", "")
+            result["LD_PRELOAD"] = os.pathsep.join(
+                value for value in (runtime, preload) if value
+            )
+    return result
+
 def run_tests(target, source, env):
     test_binary = os.path.abspath(str(source[0]))
     build_library_paths = [
@@ -119,6 +96,13 @@ def run_tests(target, source, env):
         "TMPDIR": "/tmp",
         "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
     }
+    test_environment = sanitizer_environment(env, test_environment)
+    if env.get("SANITIZERS"):
+        # GCC 11 ASan and ROOT's process-wide signal machinery are unstable in
+        # an exec-instrumented worker under ASLR. Normal verify retains the
+        # native worker E2E; sanitizer verify still covers its parent protocol,
+        # validation, and hardening paths.
+        test_environment["CASCADE_TEST_SKIP_INSTRUMENTED_EXEC"] = "1"
     subprocess.check_call(
         [test_binary],
         env={
@@ -141,7 +125,19 @@ def run_tests(target, source, env):
         with open(source_path, "r", encoding="utf-8") as source_file:
             compile(source_file.read(), source_path, "exec")
     for test_source in sorted(str(path) for path in Glob("tests/test_*.py")):
-        python_test_environment = test_environment
+        # The hardened Python exec worker intentionally strips LD_PRELOAD. Its
+        # normal end-to-end coverage runs in verify; sanitizer jobs cover the
+        # same lifecycle in-process; normal verify owns exec-worker E2E coverage.
+        if env.get("SANITIZERS") and test_source.endswith("test_python_worker_e2e.py"):
+            continue
+        python_test_environment = sanitizer_environment(
+            env, test_environment, preload_address=True
+        )
+        if test_source.endswith("test_python_api.py"):
+            python_test_environment = {
+                **python_test_environment,
+                "PYTHONPATH": os.path.abspath("build/test-runtime"),
+            }
         if test_source.endswith("test_python_worker_e2e.py"):
             python_test_environment = {
                 **test_environment,
@@ -152,10 +148,20 @@ def run_tests(target, source, env):
                 "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
                 "PYTHONPATH": os.path.abspath("build/test-runtime"),
             }
-        subprocess.check_call(
-            [sys.executable, "-m", "unittest", test_source],
-            env=python_test_environment,
-        )
+        python_test_command = [sys.executable, "-m", "unittest", test_source]
+        if env.get("SANITIZERS"):
+            python_test_command = [
+                sys.executable,
+                "-c",
+                (
+                    "import os, runpy, sys; "
+                    "os.environ.pop('LD_PRELOAD', None); "
+                    "sys.argv[0] = 'unittest'; "
+                    "runpy.run_module('unittest', run_name='__main__')"
+                ),
+                test_source,
+            ]
+        subprocess.check_call(python_test_command, env=python_test_environment)
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
     with open(str(target[0]), "w") as stamp:
         stamp.write("ok\n")
@@ -180,6 +186,9 @@ def run_verification(target, source, env):
         "PYTHONPATH": os.path.abspath("build/test-runtime"),
         "TMPDIR": "/tmp",
     }
+    verification_environment = sanitizer_environment(
+        env, verification_environment, preload_address=True
+    )
     if os.path.isdir(".git"):
         subprocess.check_call(["git", "diff", "--check"])
         subprocess.check_call(["git", "diff", "--cached", "--check"])
@@ -201,6 +210,14 @@ def run_verification(target, source, env):
         ],
         env=verification_environment,
     )
+    os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
+    with open(str(target[0]), "w", encoding="utf-8") as stamp:
+        stamp.write("ok\n")
+    return 0
+
+def run_benchmarks(target, source, env):
+    for benchmark in source:
+        subprocess.check_call([os.path.abspath(str(benchmark))])
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
     with open(str(target[0]), "w", encoding="utf-8") as stamp:
         stamp.write("ok\n")
@@ -263,6 +280,7 @@ vars.Add('BINDIR', 'binary install directory', '')
 vars.Add('INCLUDEDIR', 'header install directory', '')
 vars.Add('PYTHONDIR', 'python package install directory', '')
 vars.Add('PYMODULEDIR', 'python module install directory (cascade.pymodule)', '')
+vars.Add('SANITIZERS', 'comma-separated sanitizers: address,undefined', '')
 
 env = Environment(ENV=os.environ, variables=vars)
 env.Append()
@@ -314,6 +332,14 @@ env.AppendUnique(LINKFLAGS=[
     "-Wl,-z,now",
     "-Wl,-z,noexecstack",
 ])
+sanitizers = [value.strip() for value in str(env['SANITIZERS']).split(',') if value.strip()]
+unsupported_sanitizers = sorted(set(sanitizers) - {'address', 'undefined'})
+if unsupported_sanitizers:
+    raise ValueError('unsupported SANITIZERS value(s): ' + ', '.join(unsupported_sanitizers))
+if sanitizers:
+    sanitizer_flag = '-fsanitize=' + ','.join(sanitizers)
+    env.AppendUnique(CXXFLAGS=[sanitizer_flag, '-fno-omit-frame-pointer'])
+    env.AppendUnique(LINKFLAGS=[sanitizer_flag])
 env.Append(CPPPATH=pybind_includes)
 env.Append(LIBS=["ssl","crypto"])
 
@@ -427,7 +453,11 @@ worker_env.AppendUnique(
         r"-Wl,-rpath=\$$ORIGIN/../lib:\$$ORIGIN/../src:\$$ORIGIN/../utils:\$$ORIGIN/../AnalysisManager:\$$ORIGIN/../ParamManager:\$$ORIGIN/../PlotManager",
     ],
 )
-cpp_worker = worker_env.Program("build/bin/cascade-worker", "tools/CascadeWorker.cc")
+cpp_worker_object = worker_env.Object(
+    "build/tools/CascadeWorker.o",
+    "tools/CascadeWorker.cc",
+)
+cpp_worker = worker_env.Program("build/bin/cascade-worker", cpp_worker_object)
 Depends(cpp_worker, core_objs + utils_obj + lib_param_obj + lib_analysis_obj + lib_plot_obj)
 cpp_worker_install = env.Install(env["BINDIR"], cpp_worker)
 
@@ -438,7 +468,7 @@ env.AddPostAction(python_worker_install, make_executable)
 
 # pyinstall
 cascade_dir = env['PYTHONDIR']
-cascade_files = Glob("python/*.py")
+cascade_files = Glob("python/*.py") + Glob("python/*.pyi") + ["python/py.typed"]
 py_install = env.Install(cascade_dir, cascade_files)
 
 cascade_cli_package_dir = os.path.join(os.path.dirname(cascade_dir), "cascade_cli")
@@ -453,9 +483,6 @@ scripts_dir = os.path.join(env['PREFIX'], "share", "cascade", "scripts")
 sign_script = env.Install(scripts_dir, "scripts/sign_plugin.sh")
 env.AddPostAction(sign_script, make_executable)
 plugin_sconstruct = env.Install(scripts_dir, "scripts/plugin_sconstruct")
-
-cascade_init_target = os.path.join(cascade_dir, "__init__.py")
-cascade_init = env.Command(cascade_init_target, py_install + cascade_cli_package, generate_init_py_head)
 
 cascade_so_target = os.path.join(cascade_dir, f"_cascade{env['SHLIBSUFFIX']}")
 cascade_so_link = env.Command(cascade_so_target, pybind_install, create_symlink)
@@ -485,7 +512,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_init + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct + cpp_worker_install + python_worker_install
+install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct + cpp_worker_install + python_worker_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj + cpp_worker + python_worker
 
 install_targets = SCons.Util.unique(install_targets)
@@ -516,11 +543,57 @@ test_env.Append(
     ],
     LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
 )
+
+benchmark_env = test_env.Clone()
+# Benchmarks must measure the just-built core even when the shell has an older
+# Cascade installation on LD_LIBRARY_PATH. DT_RPATH takes precedence for these
+# build-tree-only executables.
+benchmark_env.Append(LINKFLAGS=["-Wl,--disable-new-dtags"])
+dag_benchmark_object = benchmark_env.Object(
+    "build/benchmarks/dag_bottleneck.o",
+    "benchmarks/dag_bottleneck.cc",
+)
+dag_benchmark = benchmark_env.Program(
+    "build/benchmarks/cascade-dag-bench",
+    dag_benchmark_object,
+)
+Depends(dag_benchmark, build_targets)
+input_hash_benchmark_object = benchmark_env.Object(
+    "build/benchmarks/input_hash_bottleneck.o",
+    "benchmarks/input_hash_bottleneck.cc",
+)
+input_hash_benchmark = benchmark_env.Program(
+    "build/benchmarks/cascade-input-hash-bench",
+    input_hash_benchmark_object,
+)
+Depends(input_hash_benchmark, build_targets)
+output_hash_benchmark_object = benchmark_env.Object(
+    "build/benchmarks/output_hash_bottleneck.o",
+    "benchmarks/output_hash_bottleneck.cc",
+)
+output_hash_benchmark = benchmark_env.Program(
+    "build/benchmarks/cascade-output-hash-bench",
+    output_hash_benchmark_object,
+)
+Depends(output_hash_benchmark, build_targets)
+benchmark_stamp = env.Command(
+    "build/benchmarks/.benchmarks-ran",
+    dag_benchmark + input_hash_benchmark + output_hash_benchmark,
+    run_benchmarks,
+)
+AlwaysBuild(benchmark_stamp)
+env.Alias("bench", benchmark_stamp)
+env.Alias("benchmark", benchmark_stamp)
+
 test_plugin_env = test_env.Clone()
 test_plugin_env.AppendUnique(LINKFLAGS=[r"-Wl,-rpath=\$$ORIGIN/../../../src:\$$ORIGIN/../../../utils:\$$ORIGIN/../../../AnalysisManager:\$$ORIGIN/../../../ParamManager:\$$ORIGIN/../../../PlotManager"])
+test_plugin_object = test_plugin_env.SharedObject(
+    "build/tests/fixtures/WorkerTestModule.os",
+    "tests/fixtures/WorkerTestModule.cc",
+)
 test_plugin = test_plugin_env.SharedLibrary(
     "build/test-plugins/worker-test/WorkerTestModule",
-    "tests/fixtures/WorkerTestModule.cc",
+    test_plugin_object,
 )
 Depends(test_plugin, build_targets)
 test_python_plugin = env.Install(
@@ -534,7 +607,10 @@ test_plugin_manifest = env.Command(
 )
 
 test_runtime_dir = os.path.join("build", "test-runtime", "cascade")
-test_runtime_python = env.Install(test_runtime_dir, Glob("python/*.py"))
+test_runtime_python = env.Install(
+    test_runtime_dir,
+    Glob("python/*.py") + Glob("python/*.pyi") + ["python/py.typed"],
+)
 test_runtime_pymodule = env.Install(
     os.path.join(test_runtime_dir, "pymodule"),
     "modules/python/base_module.py",
@@ -544,17 +620,12 @@ test_runtime_pymodule_init = env.Command(
     test_runtime_pymodule,
     generate_init_py,
 )
-test_runtime_init = env.Command(
-    os.path.join(test_runtime_dir, "__init__.py"),
-    test_runtime_python,
-    generate_init_py_head,
-)
 test_runtime_extension = env.Command(
     os.path.join(test_runtime_dir, "_cascade.so"),
     pybind_obj,
     create_symlink,
 )
-test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_init + test_runtime_extension
+test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_extension
 
 # Compile the native fixture with no ROOT include or link flags. This guards the
 # minimal plugin ABI boundary independently of the framework's ROOT build.

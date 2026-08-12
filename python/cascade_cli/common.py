@@ -76,39 +76,45 @@ def _emit(data: Any, as_json: bool = False) -> None:
     print(data)
 
 
-def _load_controller(quiet: bool = False, require_signed: bool = False):
+def _load_controller(quiet: bool = False, require_signed: bool = False, runtime_options=None):
     import cascade
 
     if quiet:
         cascade.set_log_level(cascade.log_level.NONE)
-    from cascade import py_amcm
-    return py_amcm(require_signed=require_signed)
+    from cascade import Controller
+    return Controller(require_signed=require_signed, runtime_options=runtime_options)
 
 
 @contextmanager
-def _runtime_environment(args):
+def _runtime_options(args, workflow_options=None):
+    from cascade._cascade import get_runtime_options
+
+    configured = get_runtime_options()
     mapping = {
-        "input_hash": "CASCADE_INPUT_HASH_MODE",
-        "output_hash": "CASCADE_PROVENANCE_HASH_MODE",
-        "workers": "CASCADE_DAG_MAX_WORKERS",
-        "timeout": "CASCADE_ISOLATED_TIMEOUT_SECONDS",
-        "progress_interval_ms": "CASCADE_PROGRESS_INTERVAL_MS",
+        "input_hash": "input_hash",
+        "output_hash": "output_hash",
+        "workers": "dag_workers",
+        "timeout": "isolated_timeout_seconds",
+        "progress_interval_ms": "progress_interval_ms",
     }
-    previous = {}
-    try:
-        for attribute, variable in mapping.items():
-            value = getattr(args, attribute, None)
-            if value is None:
-                continue
-            previous[variable] = os.environ.get(variable)
-            os.environ[variable] = str(value)
-        yield
-    finally:
-        for variable, value in previous.items():
-            if value is None:
-                os.environ.pop(variable, None)
-            else:
-                os.environ[variable] = value
+    workflow_mapping = {
+        "input_hash": "input_hash",
+        "output_hash": "output_hash",
+        "workers": "dag_workers",
+        "isolated_timeout_seconds": "isolated_timeout_seconds",
+        "progress_interval_ms": "progress_interval_ms",
+    }
+    workflow_options = workflow_options or {}
+    if not isinstance(workflow_options, dict):
+        raise TypeError("workflow.runtime must be a mapping")
+    _validate_keys(workflow_options, set(workflow_mapping), "workflow.runtime")
+    for key, value in workflow_options.items():
+        setattr(configured, workflow_mapping[key], value)
+    for attribute, field in mapping.items():
+        value = getattr(args, attribute, None)
+        if value is not None:
+            setattr(configured, field, value)
+    yield configured
 
 
 @contextmanager

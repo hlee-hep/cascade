@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from cascade import py_amcm
+from cascade import Controller
 
 
 def main():
-    ctrl = py_amcm()
+    ctrl = Controller()
 
     required = {"TextProducerModule", "TextTransformModule"}
     missing = required - set(ctrl.get_list_available_modules())

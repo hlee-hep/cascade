@@ -6,6 +6,7 @@
 #include "ModuleRun.hh"
 #include "PluginVerifier.hh"
 #include "PluginTrust.hh"
+#include "RuntimeOptions.hh"
 #include <iostream>
 #include <map>
 #include <memory>
@@ -19,6 +20,7 @@ class AMCM
     AMCM();
     explicit AMCM(PluginTrustPolicy trustPolicy);
     AMCM(PluginTrustPolicy trustPolicy, bool discoverPlugins);
+    AMCM(PluginTrustPolicy trustPolicy, bool discoverPlugins, RuntimeOptions runtimeOptions);
 
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base);
     std::shared_ptr<IAnalysisModule> RegisterModule(const std::string &base, const std::string &instanceName);
@@ -28,6 +30,7 @@ class AMCM
     std::vector<ModuleMetadata> ListAvailableModuleMetadata() const;
     std::optional<PluginOrigin> GetPluginOrigin(const std::string &name) const;
     PluginTrustPolicy GetPluginTrustPolicy() const { return m_TrustPolicy; }
+    RuntimeOptions GetRuntimeOptions() const { return m_RuntimeOptions; }
 
     std::shared_ptr<IAnalysisModule> GetModule(const std::string &name);
     std::string GetStatus(const std::string &name) const;
@@ -55,6 +58,7 @@ class AMCM
     std::map<std::string, std::shared_ptr<IAnalysisModule>> m_Modules;
     std::unique_ptr<DAGManager> m_Dag;
     PluginTrustPolicy m_TrustPolicy = PluginTrustPolicy::Verified;
+    const RuntimeOptions m_RuntimeOptions;
 
     struct RunLogEntry
     {

@@ -7,6 +7,10 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Added
 
+- Deterministic DAG, input-hashing, and output-hashing bottleneck testbenches,
+  including the `1,10,100,1000` node scheduler sweep.
+- ASan/UBSan CI verification and deterministic randomized DAG/concurrency tests.
+- Typed Python package markers and stubs for `Controller` and runtime options.
 - A terminal-only Cascade banner for the no-argument command and top-level help.
 - Convention-based `cascade plugin install` builds with optional
   `cascade-plugin.yaml`, removing the need for package-owned SConstruct files.
@@ -27,6 +31,18 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Changed
 
+- The supported Python control surface is now `Controller`; `AMCM` remains the
+  internal Analysis Module Control Master engine name.
+- Runtime execution policy is captured immutably per controller/DAG run. CLI and
+  isolated Python workers pass typed options directly instead of mutating process
+  environment or global state.
+- Scheduler dispatch is completion-driven with a bounded worker pool, an explicit
+  serial barrier, and process-wide ROOT serialization.
+- AMCM isolation/provenance and provenance serialization are split into focused
+  implementation units without changing the C++ plugin contract.
+- Python package exports are tracked source files, and benchmark objects are built
+  only below `build/benchmarks`, so clean builds no longer create source-tree
+  artifacts.
 - Python tests now restore injected `cascade` modules between suites, and the
   logger reevaluates terminal color support after runtime stderr redirection.
 - Core, CLI, and Python-module logging now consistently uses

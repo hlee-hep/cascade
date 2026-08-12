@@ -39,8 +39,8 @@ Parameters are frozen before `Init`. After `Init` returns, Cascade checks
 cancellation and enters `Check`, which follows this order:
 
 1. return `Skipped` for `dry_run`, without computing a snapshot;
-2. capture manager state and tracked-input identity using
-   `CASCADE_INPUT_HASH_MODE`;
+2. capture manager state and tracked-input identity using the configured
+   `input_hash` policy;
 3. hash the complete snapshot;
 4. bypass lookup when `force_run=true`;
 5. find the snapshot in the module cache index;
@@ -66,8 +66,8 @@ the new completed snapshot and provenance.
 
 ## Input identity policy
 
-`CASCADE_INPUT_HASH_MODE` applies to explicit
-`TrackInput`/`track_input` artifacts in both the snapshot and provenance.
+The `input_hash` runtime option applies to explicit `TrackInput`/`track_input`
+artifacts in both the snapshot and provenance.
 
 | Mode | Regular file behavior | Best fit | Main tradeoff |
 | --- | --- | --- | --- |
@@ -85,15 +85,16 @@ required.
 Tracked input directories are always traversed to build a deterministic entry
 fingerprint. `metadata` avoids reading regular-file contents,
 but a directory with millions of entries can still be expensive to enumerate. For
-large datasets, track a versioned manifest file or dataset identifier instead of a
-whole directory when that represents the real semantic input.
+large datasets, track an existing version/index file or register the dataset
+identifier as a parameter when that represents the real semantic input. Do not
+create an extra Cascade-specific manifest solely for this optimization.
 
 URI-like inputs are recorded but not fetched. Put the remote dataset version,
 object generation, query, or checksum in a registered parameter.
 
 ## Output provenance policy
 
-`CASCADE_PROVENANCE_HASH_MODE` controls committed output artifact records.
+The `output_hash` runtime option controls committed output artifact records.
 
 | Mode | Recorded validation data | Cache behavior after identity changes |
 | --- | --- | --- |
@@ -148,7 +149,7 @@ created the record. A `full` directory can still require a complete recursive wa
 | `Isolated` | Verified module in a clean worker process | Uses the bounded worker pool |
 
 The scheduler is completion-driven: a dependent can start as soon as its own
-dependencies finish. `CASCADE_DAG_MAX_WORKERS` bounds the total active `Root`,
+dependencies finish. `dag_workers` bounds the total active `Root`,
 `Parallel`, and `Isolated` work for one DAG. A ready `Serial` node acts as a barrier:
 the scheduler stops dispatching other ready pooled nodes, drains active work, and
 runs the serial node. This favors deterministic exclusive work over maximum pool
@@ -180,23 +181,49 @@ registration entry points are checked around loading, but package trust remains 
 security boundary: neither signed packages nor isolated workers make arbitrary
 native code harmless.
 
-## Runtime variables
+## Runtime options
 
-Values are read from the process environment. Configure them before constructing
-controllers or starting concurrent work; changing process-wide environment state
-during active runs is unsupported.
+Execution policies use a typed runtime object rather than process environment
+variables. Pass the policy when constructing a controller; the controller keeps
+an immutable copy for all of its runs:
+
+```python
+import cascade
+
+options = cascade.RuntimeOptions()
+options.input_hash = "metadata"
+options.output_hash = "full"
+options.dag_workers = 4
+options.isolated_timeout_seconds = 0
+options.progress_interval_ms = 200
+
+controller = cascade.Controller(runtime_options=options)
+```
+
+The equivalent C++ API is `GetRuntimeOptions()` / `SetRuntimeOptions()` from
+`RuntimeOptions.hh`, plus the `AMCM` constructor that accepts `RuntimeOptions`.
+`configure_runtime` changes only the default captured by controllers constructed
+afterward. CLI flags build a command-local options object and do not mutate that
+process default.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `input_hash` | `metadata` | `metadata`, `auto`, or `full` tracked-input identity |
+| `output_hash` | `full` | `full`, `metadata`, or `none` output artifact hashing |
+| `dag_workers` | `0` | Pooled DAG concurrency; `0` resolves to hardware concurrency |
+| `progress_interval_ms` | `200` | Terminal-render interval; `0` renders every update |
+| `isolated_timeout_seconds` | `0` | Worker deadline; `0` disables it |
+
+## Deployment variables
+
+Environment variables remain only for construction-time paths, packaging, cache
+retention, and isolated-worker operating-system limits.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CASCADE_OUTPUT_DIR` | Current working directory | Construction-time module output root |
 | `CASCADE_CACHE_DIR` | `~/.cache/cascade/snapshot_cache` | Snapshot cache and failed/skipped provenance root |
-| `CASCADE_INPUT_HASH_MODE` | `metadata` | `metadata`, `auto`, or `full` tracked-input identity |
-| `CASCADE_PROVENANCE_HASH_MODE` | `full` | `full`, `metadata`, or `none` output artifact hashing |
-| `CASCADE_PROVENANCE_HASH_CACHE_ENTRIES` | `1024` | Process-local full-hash cache bound; `0` disables it |
 | `CASCADE_CACHE_MAX_SNAPSHOTS` | `256` | Snapshot history retained per module; `0` is unlimited |
-| `CASCADE_DAG_MAX_WORKERS` | Hardware concurrency | Positive pooled DAG concurrency bound |
-| `CASCADE_PROGRESS_INTERVAL_MS` | `200` | Non-negative terminal-render interval; `0` renders every update |
-| `CASCADE_ISOLATED_TIMEOUT_SECONDS` | `0` | Non-negative worker deadline; `0` disables it |
 | `CASCADE_WORKER_MEMORY_LIMIT_MB` | Unset | Positive isolated-worker address-space limit |
 | `CASCADE_WORKER_FILE_SIZE_LIMIT_MB` | Unset | Positive isolated-worker file-size limit |
 | `CASCADE_WORKER_MAX_PROCESSES` | Unset | Positive isolated-worker process-count limit |
@@ -222,9 +249,7 @@ workflow.
 ### Interactive analysis with large ROOT inputs
 
 ```bash
-export CASCADE_INPUT_HASH_MODE=metadata
-export CASCADE_PROVENANCE_HASH_MODE=full
-export CASCADE_DAG_MAX_WORKERS=4
+cascade dag run workflow.yaml --input-hash metadata --output-hash full --workers 4
 ```
 
 This avoids a complete input read while keeping strong validation for produced
@@ -233,9 +258,7 @@ artifacts. Tune worker count to memory pressure, not just CPU count.
 ### Reproducible release or archival run
 
 ```bash
-export CASCADE_INPUT_HASH_MODE=full
-export CASCADE_PROVENANCE_HASH_MODE=full
-export CASCADE_ISOLATED_TIMEOUT_SECONDS=3600
+cascade dag run workflow.yaml --input-hash full --output-hash full --timeout 3600
 ```
 
 Require signed plugins as a controller/CLI policy as well. Expect the first process
@@ -248,7 +271,7 @@ export CASCADE_WORKER_MEMORY_LIMIT_MB=8192
 export CASCADE_WORKER_FILE_SIZE_LIMIT_MB=16384
 export CASCADE_WORKER_MAX_PROCESSES=16
 export CASCADE_WORKER_MAX_OPEN_FILES=1024
-export CASCADE_ISOLATED_TIMEOUT_SECONDS=1800
+cascade dag run workflow.yaml --timeout 1800
 ```
 
 These are examples, not universal safe defaults. ROOT memory mapping, subprocesses,

@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from cascade import py_amcm
+from cascade import Controller
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
     output_directory = Path(args.output).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     cache_directory = output_directory / ".cache"
-    controller = py_amcm()
+    controller = Controller()
 
     modules = {
         "generate": controller.register_module("ToyDimuonSourceModule", "generate"),

@@ -125,7 +125,7 @@ cascade macro run examples/RootMacroExample.C \
 
 The legacy `cascade --macro ...` spelling remains available. Use this adapter
 for existing ROOT macros. New plugin workflows can use `cascade dag run` or
-`py_amcm`.
+`Controller`.
 
 ## Direct manager example
 

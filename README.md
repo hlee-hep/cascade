@@ -44,10 +44,11 @@ owns the operational boundary:
 | `ParamManager` | Registered typed parameters and YAML/JSON serialization |
 | `DAGManager` | Stateful dependency execution, failure propagation, and generic data links |
 | `PlotManager` | ROOT stack, overlay, ratio, legend, and style helpers |
-| `AMCM` / `py_amcm` | Registration, execution, progress, provenance, isolation |
+| `AMCM` / `Controller` | Registration, execution, progress, provenance, isolation |
 
-The supported Python control surface is `py_amcm`. `cascade._cascade` and the raw
-`AMCM` binding are internal integration surfaces.
+The supported Python control surface is `Controller`. `AMCM` remains the internal
+C++ engine name (Analysis Module Control Master); `cascade._cascade` and its raw
+binding are internal integration surfaces.
 
 ## Build, test, and install
 
@@ -83,6 +84,10 @@ scons -j2
 scons verify -j2
 scons install PREFIX=/your/cascade/prefix
 ```
+
+To profile DAG scheduling and execution-lane bottlenecks independently of the
+correctness suite, run `scons bench -j2`. The scenarios and machine-readable
+output are documented in [Performance testbench](docs/performance.md).
 
 The default prefix is `~/.local`. See [Build and installation](docs/build.md) for
 all install variables and runtime environment setup.

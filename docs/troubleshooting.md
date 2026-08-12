@@ -289,9 +289,9 @@ created the snapshot.
 Inspect the single schema-versioned cache format through `cascade cache list`.
 Python and C++ modules use the same core cache manager and locking rules.
 
-The default `CASCADE_INPUT_HASH_MODE=metadata` detects normal replacement and
+The default `input_hash=metadata` runtime option detects normal replacement and
 in-place modification through device, inode, size, mtime, and ctime. It does not
-cryptographically prove byte identity. Try `CASCADE_INPUT_HASH_MODE=full` when
+cryptographically prove byte identity. Try `input_hash=full` when
 investigating files restored with preserved metadata, network filesystems with weak
 timestamp semantics, or reproducibility requirements.
 
@@ -303,15 +303,17 @@ an output therefore causes a normal rerun even when the snapshot hash is present
 
 Separate input and output validation:
 
-- `CASCADE_INPUT_HASH_MODE=full` reads every tracked regular input in a new process;
+- `input_hash=full` reads every tracked regular input in a new process;
 - tracking a directory enumerates its complete tree even in metadata mode;
 - a cached output recorded with `full` is rehashed when its filesystem identity
   changed; `metadata` and `none` retain their original lower-cost policy;
 - a cold filesystem cache can make metadata walks visibly slower.
 
-For large ROOT inputs, the normal setting is `CASCADE_INPUT_HASH_MODE=metadata`.
-Track a versioned dataset manifest instead of an enormous directory when possible.
-Do not weaken `CASCADE_PROVENANCE_HASH_MODE` until measurements show output hashing
+For large ROOT inputs, the normal setting is `input_hash=metadata`.
+If the dataset already has a version/index file, track that instead of an enormous
+directory; otherwise keep the dataset identifier as a registered parameter rather
+than adding another generated artifact.
+Do not weaken `output_hash` until measurements show output hashing
 is the actual bottleneck.
 
 Run the module once with `--explain-cache` to print the exact decision, or inspect
@@ -337,7 +339,7 @@ Expected: isolated child memory is not copied back. Read committed output instea
 
 Request cancellation from another control thread. Cascade sends `SIGTERM` and then
 `SIGKILL` if needed. For unattended runs set a positive
-`CASCADE_ISOLATED_TIMEOUT_SECONDS`; zero and an unset value mean no deadline. Also
+`isolated_timeout_seconds`; zero means no deadline. Also
 inspect external I/O calls that do not respond to signals.
 
 ### Isolated worker path or permission is rejected
@@ -387,7 +389,7 @@ After correcting a failed branch, call `dag.reset_failed()` before retrying.
 
 ### DAG has idle workers
 
-Check node lanes and memory pressure before raising `CASCADE_DAG_MAX_WORKERS`.
+Check node lanes and memory pressure before raising `dag_workers`.
 In-process Python and generic `Serial` callbacks are exclusive. A ready serial node
 stops new pooled dispatch while active work drains. ROOT nodes are also limited to
 one process-wide active ROOT lane, including across controller instances. Only

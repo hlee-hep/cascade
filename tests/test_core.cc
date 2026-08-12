@@ -9,6 +9,7 @@
 #include "PlotManager.hh"
 #include "PluginVerifier.hh"
 #include "PluginPaths.hh"
+#include "RuntimeOptions.hh"
 
 #include <TCanvas.h>
 #include <TFile.h>
@@ -25,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <random>
 #include <regex>
 #include <stdexcept>
 #include <sstream>
@@ -570,10 +572,11 @@ void TestProvenanceCacheLink()
 
 void TestCacheIntegrityValidation()
 {
-    const char *configuredInputHashMode = std::getenv("CASCADE_INPUT_HASH_MODE");
-    const bool hadConfiguredInputHashMode = configuredInputHashMode && *configuredInputHashMode;
-    const std::string originalInputHashMode = hadConfiguredInputHashMode ? configuredInputHashMode : "";
-    unsetenv("CASCADE_INPUT_HASH_MODE");
+    const RuntimeOptions originalRuntimeOptions = GetRuntimeOptions();
+    RuntimeOptions runtimeOptions = originalRuntimeOptions;
+    runtimeOptions.InputHash = "metadata";
+    runtimeOptions.OutputHash = "full";
+    SetRuntimeOptions(runtimeOptions);
     const auto root = std::filesystem::temp_directory_path() / "cascade-cache-integrity";
     const auto output = root / "output";
     const auto cache = root / "cache";
@@ -623,7 +626,8 @@ void TestCacheIntegrityValidation()
     assert(changed.Run().Status == ModuleStatus::Done);
     assert(TrackedInputModule::Executions.load() == 2);
 
-    setenv("CASCADE_INPUT_HASH_MODE", "full", 1);
+    runtimeOptions.InputHash = "full";
+    SetRuntimeOptions(runtimeOptions);
     TrackedInputModule strict;
     strict.SetName("tracked-strict");
     strict.SetOutputDirectory(output.string());
@@ -637,11 +641,6 @@ void TestCacheIntegrityValidation()
         input >> manifest;
         assert(manifest.at("artifacts").at("inputs").at(0).at("sha256").get<std::string>().size() == 64);
     }
-    if (hadConfiguredInputHashMode)
-        setenv("CASCADE_INPUT_HASH_MODE", originalInputHashMode.c_str(), 1);
-    else
-        unsetenv("CASCADE_INPUT_HASH_MODE");
-
     TransactionModule outputFirst(false, "OutputIntegrityModule");
     outputFirst.SetName("output-first");
     outputFirst.SetOutputDirectory(output.string());
@@ -668,10 +667,8 @@ void TestCacheIntegrityValidation()
         assert(contents == "new");
     }
 
-    const char *configuredOutputHashMode = std::getenv("CASCADE_PROVENANCE_HASH_MODE");
-    const bool hadConfiguredOutputHashMode = configuredOutputHashMode && *configuredOutputHashMode;
-    const std::string originalOutputHashMode = hadConfiguredOutputHashMode ? configuredOutputHashMode : "";
-    setenv("CASCADE_PROVENANCE_HASH_MODE", "none", 1);
+    runtimeOptions.OutputHash = "none";
+    SetRuntimeOptions(runtimeOptions);
     TransactionModule metadataFirst(false, "MetadataOutputModule");
     metadataFirst.SetName("metadata-first");
     metadataFirst.SetOutputDirectory(output.string());
@@ -689,7 +686,8 @@ void TestCacheIntegrityValidation()
     assert(metadataResult.CacheDecision == "hit");
     assert(chmod((output / "result.txt").c_str(), 0600) == 0);
 
-    setenv("CASCADE_PROVENANCE_HASH_MODE", "full", 1);
+    runtimeOptions.OutputHash = "full";
+    SetRuntimeOptions(runtimeOptions);
     SymlinkOutputModule symlinkFirst;
     symlinkFirst.SetName("symlink-first");
     symlinkFirst.SetOutputDirectory(output.string());
@@ -701,10 +699,7 @@ void TestCacheIntegrityValidation()
     symlinkCached.SetOutputDirectory(output.string());
     symlinkCached.SetCacheDirectory(cache.string());
     assert(symlinkCached.Run().Status == ModuleStatus::Skipped);
-    if (hadConfiguredOutputHashMode)
-        setenv("CASCADE_PROVENANCE_HASH_MODE", originalOutputHashMode.c_str(), 1);
-    else
-        unsetenv("CASCADE_PROVENANCE_HASH_MODE");
+    SetRuntimeOptions(originalRuntimeOptions);
 }
 
 void TestControllerContracts()
@@ -757,10 +752,11 @@ void TestControllerContracts()
     assert(workerModule->GetCodeHash() == "artifact-sha256:" + workerOrigin->ArtifactSha256);
     workerModule->SetOutputDirectory(isolatedOutput.string());
     workerModule->SetCacheDirectory(isolatedCache.string());
-    const auto workerResult = controller.RunAModuleIsolated(workerModule);
-    assert(workerResult.Succeeded());
-    assert(workerResult.CacheDecision == "bypassed");
+    if (!std::getenv("CASCADE_TEST_SKIP_INSTRUMENTED_EXEC"))
     {
+        const auto workerResult = controller.RunAModuleIsolated(workerModule);
+        assert(workerResult.Succeeded());
+        assert(workerResult.CacheDecision == "bypassed");
         std::ifstream output(isolatedOutput / "worker-result.txt");
         std::string contents;
         output >> contents;
@@ -1397,7 +1393,10 @@ void TestDagValidationAndReset()
 
 void TestDagExecutionLanes()
 {
-    setenv("CASCADE_DAG_MAX_WORKERS", "4", 1);
+    const RuntimeOptions originalRuntimeOptions = GetRuntimeOptions();
+    RuntimeOptions runtimeOptions = originalRuntimeOptions;
+    runtimeOptions.DagWorkers = 4;
+    SetRuntimeOptions(runtimeOptions);
     std::atomic<int> entered{0};
     std::atomic<bool> overlapped{false};
     DAGManager parallel;
@@ -1414,6 +1413,7 @@ void TestDagExecutionLanes()
 
     std::atomic<bool> slowFinished{false};
     std::atomic<bool> dependentStartedBeforeSlowFinished{false};
+    std::atomic<bool> joinObservedBothDependencies{false};
     DAGManager eventDriven;
     eventDriven.AddNode(
         "fast", {}, []() { std::this_thread::sleep_for(std::chrono::milliseconds(20)); },
@@ -1430,8 +1430,13 @@ void TestDagExecutionLanes()
         "dependent", {"fast"},
         [&]() { dependentStartedBeforeSlowFinished.store(!slowFinished.load()); },
         DAGExecutionLane::Parallel);
+    eventDriven.AddNode(
+        "join", {"slow", "dependent"},
+        [&]() { joinObservedBothDependencies.store(slowFinished.load() && dependentStartedBeforeSlowFinished.load()); },
+        DAGExecutionLane::Parallel);
     assert(eventDriven.Execute().Succeeded());
     assert(dependentStartedBeforeSlowFinished.load());
+    assert(joinObservedBothDependencies.load());
 
     std::atomic<int> activeRoots{0};
     std::atomic<int> maximumRoots{0};
@@ -1450,7 +1455,76 @@ void TestDagExecutionLanes()
     roots.AddNode("root-right", {}, rootTask, DAGExecutionLane::Root);
     assert(roots.Execute().Succeeded());
     assert(maximumRoots.load() == 1);
-    unsetenv("CASCADE_DAG_MAX_WORKERS");
+    SetRuntimeOptions(originalRuntimeOptions);
+}
+
+void TestRandomizedDagAndRuntimeIsolation()
+{
+    std::mt19937 random(0xCA5CADEu);
+    for (int iteration = 0; iteration < 100; ++iteration)
+    {
+        const std::size_t nodeCount = 8 + random() % 57;
+        RuntimeOptions options;
+        options.DagWorkers = 4;
+        DAGManager dag(options);
+        std::mutex completedMutex;
+        std::vector<bool> completed(nodeCount, false);
+        std::vector<std::vector<std::size_t>> dependencies(nodeCount);
+        for (std::size_t node = 0; node < nodeCount; ++node)
+        {
+            for (std::size_t candidate = 0; candidate < node; ++candidate)
+                if (random() % 7 == 0) dependencies[node].push_back(candidate);
+            std::vector<std::string> names;
+            for (const auto dependency : dependencies[node]) names.push_back("node-" + std::to_string(dependency));
+            dag.AddNode(
+                "node-" + std::to_string(node), names,
+                [&, node]()
+                {
+                    std::lock_guard<std::mutex> lock(completedMutex);
+                    for (const auto dependency : dependencies[node]) assert(completed[dependency]);
+                    completed[node] = true;
+                },
+                DAGExecutionLane::Parallel);
+        }
+        assert(dag.Execute().Succeeded());
+        assert(std::all_of(completed.begin(), completed.end(), [](bool value) { return value; }));
+    }
+
+    RuntimeOptions fullOptions;
+    fullOptions.InputHash = "full";
+    fullOptions.DagWorkers = 4;
+    RuntimeOptions metadataOptions;
+    metadataOptions.InputHash = "metadata";
+    metadataOptions.DagWorkers = 4;
+    DAGManager fullDag(fullOptions);
+    DAGManager metadataDag(metadataOptions);
+    std::atomic<int> mismatches{0};
+    for (int node = 0; node < 32; ++node)
+    {
+        fullDag.AddNode(
+            "full-" + std::to_string(node), {},
+            [&]()
+            {
+                if (GetRuntimeOptions().InputHash != "full") ++mismatches;
+                std::this_thread::yield();
+                if (GetRuntimeOptions().InputHash != "full") ++mismatches;
+            },
+            DAGExecutionLane::Parallel);
+        metadataDag.AddNode(
+            "metadata-" + std::to_string(node), {},
+            [&]()
+            {
+                if (GetRuntimeOptions().InputHash != "metadata") ++mismatches;
+                std::this_thread::yield();
+                if (GetRuntimeOptions().InputHash != "metadata") ++mismatches;
+            },
+            DAGExecutionLane::Parallel);
+    }
+    std::thread fullThread([&]() { assert(fullDag.Execute().Succeeded()); });
+    std::thread metadataThread([&]() { assert(metadataDag.Execute().Succeeded()); });
+    fullThread.join();
+    metadataThread.join();
+    assert(mismatches.load() == 0);
 }
 
 void TestPluginTrustPolicy()
@@ -1711,6 +1785,7 @@ int main()
     TestRdfSnapshotRunsOneEventLoop();
     TestDagValidationAndReset();
     TestDagExecutionLanes();
+    TestRandomizedDagAndRuntimeIsolation();
     std::filesystem::remove_all(runtimeRoot);
     return 0;
 }

@@ -166,7 +166,7 @@ The snapshot is derived from:
 - registered `AnalysisManager` state;
 - code-version hash;
 - execution state affecting output identity;
-- tracked input identity according to `CASCADE_INPUT_HASH_MODE`.
+- tracked input identity according to the configured `input_hash` runtime option.
 
 Python modules may extend deterministic state with `snapshot_state()`.
 
@@ -190,7 +190,7 @@ it, while sibling files may still commit concurrently. Concurrent modules should
 still use distinct final paths because the last successful publisher wins.
 
 `TrackInput`/`track_input` artifacts are part of the snapshot hash. Input hashing
-defaults to `CASCADE_INPUT_HASH_MODE=metadata`, recording device, inode, size,
+defaults to `metadata`, recording device, inode, size,
 nanosecond modification time, and change time without reading the complete file.
 Use `full` for SHA-256 content identity or `auto` to hash regular files up to
 64 MiB and use metadata for larger inputs. This policy is shared by C++ and Python
@@ -212,8 +212,9 @@ Metadata input identity is the performance-oriented default, not a cryptographic
 content guarantee. Use `full` on filesystems with weak timestamp semantics, when
 another tool may deliberately preserve metadata while rewriting a file, or for an
 archival/release run. Directory inputs are traversed even in metadata mode, so a
-versioned dataset manifest is usually a better tracked input than a directory with
-millions of entries.
+pre-existing dataset index or version identifier is usually a better semantic
+input than a directory with millions of entries. Cascade does not generate a
+separate dataset manifest.
 
 ## Cancellation
 
@@ -284,8 +285,8 @@ Design isolated pipelines around files or another explicit durable protocol.
 
 Only modules discovered from verified plugin packages can run in isolation; an
 arbitrary in-memory module handle cannot be reconstructed safely after `exec()`.
-Set `CASCADE_ISOLATED_TIMEOUT_SECONDS` to a positive number to enforce a worker
-deadline; zero or an unset value means no deadline. Worker executables must resolve
+Set the `isolated_timeout_seconds` runtime option to a positive number to enforce a
+worker deadline; zero means no deadline. Worker executables must resolve
 to absolute, executable, owner/root-controlled files that are not group/world
 writable. Their parent directories, and the isolated Python runtime's parent chain,
 must not be group/world writable unless the directory is sticky and owned by root
@@ -304,18 +305,19 @@ Optional positive worker limits are `CASCADE_WORKER_MEMORY_LIMIT_MB`,
 contains crashes but still permits ordinary filesystem and network access and is
 not a complete security sandbox.
 
-Output provenance hashing defaults to `CASCADE_PROVENANCE_HASH_MODE=full`. Use
+Output provenance hashing defaults to `output_hash=full`. Use
 `metadata` to avoid reading complete output artifacts, or `none` to record only
 existence, kind, and size where throughput matters more than content fingerprints.
-Tracked inputs use the separate `CASCADE_INPUT_HASH_MODE` policy above. Cache
+Tracked inputs use the separate `input_hash` policy above. Cache
 histories keep 256 snapshots per module by default; override that with
 `CASCADE_CACHE_MAX_SNAPSHOTS` (`0` means unlimited).
 
 Full hashes are streamed in 1 MiB chunks and reused within the process when the
 file device, inode, size, modification time, and change time are unchanged. This
 avoids repeated reads when independent modules track the same immutable input. The
-cache holds 1024 identities by default; set
-`CASCADE_PROVENANCE_HASH_CACHE_ENTRIES=0` to disable it or choose another bound.
+cache holds 1024 identities by default. Set
+`RuntimeOptions.artifact_hash_cache_entries` to zero to disable it or choose another
+bound through the typed API.
 The digest cache is not persisted across processes. With output hashing set to
 `metadata` or `none`, a later identity change cannot be resolved by byte comparison;
 cache validation then has only the recorded kind and size. This is an explicit
@@ -332,15 +334,15 @@ throughput-versus-integrity tradeoff.
 - In-process `AnalysisManager` modules share one process-wide ROOT execution lane.
 - Isolated nodes and C++ modules without analysis managers use bounded DAG worker
   lanes. In-process Python nodes share the ROOT-safe serial lane.
-- `CASCADE_DAG_MAX_WORKERS` bounds a DAG's concurrent work and defaults to detected
-  hardware concurrency.
+- `dag_workers` bounds a DAG's concurrent work and defaults to detected hardware
+  concurrency when set to zero.
 
 Give concurrently executable modules distinct output paths and avoid shared mutable
 globals.
 
 Progress state is updated for every callback, while terminal rendering is throttled
-to once every 200 ms. Set `CASCADE_PROGRESS_INTERVAL_MS=0` to render every update or
-choose a different non-negative interval.
+to once every 200 ms. Set `progress_interval_ms=0` to render every update or choose
+a different non-negative interval.
 
 ## Provenance and run-log compatibility
 

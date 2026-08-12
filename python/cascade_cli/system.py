@@ -126,18 +126,21 @@ def _runtime_path_check(path: str, kind: str) -> Dict[str, str]:
 
 
 def cmd_doctor_runtime(args) -> None:
+    from cascade._cascade import get_runtime_options
+
     prefix = os.path.realpath(_CLI_PREFIX)
+    options = get_runtime_options()
     values = {
         "prefix": prefix,
         "output_directory": os.path.realpath(os.environ.get("CASCADE_OUTPUT_DIR", os.getcwd())),
         "cache_directory": os.path.realpath(
             os.environ.get("CASCADE_CACHE_DIR", os.path.expanduser("~/.cache/cascade/snapshot_cache"))
         ),
-        "input_hash": os.environ.get("CASCADE_INPUT_HASH_MODE", "metadata"),
-        "output_hash": os.environ.get("CASCADE_PROVENANCE_HASH_MODE", "full"),
-        "dag_workers": os.environ.get("CASCADE_DAG_MAX_WORKERS", str(os.cpu_count() or 1)),
-        "progress_interval_ms": os.environ.get("CASCADE_PROGRESS_INTERVAL_MS", "200"),
-        "isolated_timeout_seconds": os.environ.get("CASCADE_ISOLATED_TIMEOUT_SECONDS", "0"),
+        "input_hash": options.input_hash,
+        "output_hash": options.output_hash,
+        "dag_workers": options.dag_workers or (os.cpu_count() or 1),
+        "progress_interval_ms": options.progress_interval_ms,
+        "isolated_timeout_seconds": options.isolated_timeout_seconds,
     }
     cpp_worker = os.environ.get("CASCADE_CPP_WORKER", os.path.join(prefix, "bin", "cascade-worker"))
     python_worker = os.environ.get(

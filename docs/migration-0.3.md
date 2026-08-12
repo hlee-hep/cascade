@@ -8,7 +8,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 | Area | 0.3 requirement |
 | --- | --- |
 | Semantic version | `0.3.0` |
-| C++ plugin ABI | 2 |
+| C++ plugin ABI | 3 |
 | C++ standard | The mode reported by `root-config` (C++17, 20, or 23) |
 | Plugin manifest | Schema 2, verified; optional signature |
 | Analysis config | `schema_version: 1` |
@@ -208,6 +208,23 @@ Declare material inputs with `TrackInput` / `track_input`. Transactional outputs
 are discovered automatically. Legacy hash-only snapshot cache files are accepted
 and upgraded to schema 1 when written.
 
+## 10. Replace runtime environment variables
+
+The runtime policy variables used during 0.x development were removed without a
+deprecated fallback:
+
+- `CASCADE_INPUT_HASH_MODE`;
+- `CASCADE_PROVENANCE_HASH_MODE`;
+- `CASCADE_PROVENANCE_HASH_CACHE_ENTRIES`;
+- `CASCADE_DAG_MAX_WORKERS`;
+- `CASCADE_PROGRESS_INTERVAL_MS`;
+- `CASCADE_ISOLATED_TIMEOUT_SECONDS`.
+
+Use CLI flags, a workflow `runtime` mapping, or pass `RuntimeOptions` directly to
+`cascade.Controller`. The controller captures an immutable copy, so concurrent
+controllers can safely use different policies. Python callers should use
+`Controller`; `AMCM` is the internal C++ engine name.
+
 ## Migration verification
 
 - [ ] Framework reports version 0.3.0 and ABI 3.
@@ -218,6 +235,7 @@ and upgraded to schema 1 when written.
 - [ ] Material file inputs are explicitly tracked for provenance.
 - [ ] Callers inspect `RunResult`.
 - [ ] Plugin manifests were regenerated after the rebuild.
+- [ ] Runtime policy variables were replaced with typed controller or CLI options.
 - [ ] Distributed signed manifests were re-signed when applicable.
 - [ ] `cascade doctor plugins` reports zero errors.
 - [ ] Normal, cached, failure, and isolated smoke tests pass.

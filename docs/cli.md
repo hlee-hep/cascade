@@ -169,6 +169,13 @@ fail_fast: true
 dot: output/workflow.dot
 provenance: output/workflow-provenance.json
 
+runtime:
+  input_hash: metadata
+  output_hash: full
+  workers: 4
+  isolated_timeout_seconds: 0
+  progress_interval_ms: 200
+
 modules:
   - module: ProducerModule
     name: producer
@@ -191,6 +198,9 @@ All fields are validated and unknown fields are rejected. Module names must be
 unique. Dependencies and parameter links use instance names, while `module`
 selects the verified C++ or Python class.
 
+The optional `runtime` mapping configures execution policy without changing the
+process environment. Command-line flags override these workflow values.
+
 `dag validate` loads verified plugins, constructs every module, applies parameter
 files and inline values, checks registered parameter types, and wires the DAG
 without executing a lifecycle phase. It rejects missing or duplicate
@@ -211,9 +221,8 @@ manager progress when available. The display is written only to stderr, preservi
 machine-readable stdout.
 
 DAG runs accept the same hash, timeout, and progress-interval options as module
-runs, plus `--workers N` for the bounded execution pool. These options affect only
-the current process invocation and take precedence over the corresponding runtime
-environment variables while the command executes.
+runs, plus `--workers N` for the bounded execution pool. These options are passed
+to the command's controller and never mutate process-global runtime state.
 
 The mixed plugin contains a runnable
 [`workflow.yaml`](../examples/plugins/mixed_pipeline/workflow.yaml).

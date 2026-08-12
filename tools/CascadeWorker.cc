@@ -1,5 +1,6 @@
 #include "AMCM.hh"
 #include "IsolatedWorker.hh"
+#include "RuntimeOptions.hh"
 
 #include <algorithm>
 #include <cerrno>
@@ -123,6 +124,18 @@ int main(int argc, char **argv)
         nlohmann::json request;
         std::cin >> request;
         if (request.value("schema", 0) != 1) throw std::runtime_error("Unsupported isolated worker request schema");
+
+        if (request.contains("runtime_options"))
+        {
+            const auto &value = request.at("runtime_options");
+            RuntimeOptions options = GetRuntimeOptions();
+            options.InputHash = value.value("input_hash", options.InputHash);
+            options.OutputHash = value.value("output_hash", options.OutputHash);
+            options.DagWorkers = value.value("dag_workers", options.DagWorkers);
+            options.ProgressIntervalMilliseconds = value.value("progress_interval_ms", options.ProgressIntervalMilliseconds);
+            options.ArtifactHashCacheEntries = value.value("artifact_hash_cache_entries", options.ArtifactHashCacheEntries);
+            SetRuntimeOptions(options);
+        }
 
         const bool requireSigned = request.value("require_signed", false);
         AMCM controller(requireSigned ? PluginTrustPolicy::RequireSigned : PluginTrustPolicy::Verified, false);

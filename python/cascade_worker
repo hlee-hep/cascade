@@ -80,9 +80,22 @@ def main():
             raise RuntimeError("Isolated Python runtime directory is missing or invalid")
         sys.path.insert(0, runtime_directory)
 
+        from cascade._cascade import RuntimeOptions
+
+        runtime_value = request.get("runtime_options", {})
+        runtime_options = RuntimeOptions()
+        runtime_options.input_hash = runtime_value.get("input_hash", runtime_options.input_hash)
+        runtime_options.output_hash = runtime_value.get("output_hash", runtime_options.output_hash)
+        runtime_options.dag_workers = runtime_value.get("dag_workers", runtime_options.dag_workers)
+        runtime_options.progress_interval_ms = runtime_value.get(
+            "progress_interval_ms", runtime_options.progress_interval_ms
+        )
+        runtime_options.artifact_hash_cache_entries = runtime_value.get(
+            "artifact_hash_cache_entries", runtime_options.artifact_hash_cache_entries
+        )
         from cascade.py_amcm import (
+            Controller,
             _load_targeted_python_plugin_info,
-            py_amcm,
         )
 
         require_signed = bool(request.get("require_signed", False))
@@ -98,7 +111,11 @@ def main():
                 "Plugin changed between isolated execution validation and worker startup"
         )
 
-        controller = py_amcm(require_signed=require_signed, discover_plugins=False)
+        controller = Controller(
+            require_signed=require_signed,
+            discover_plugins=False,
+            runtime_options=runtime_options,
+        )
         handle = controller._register_python_plugin_info(info, request["instance"])
         module = handle._module
         module.set_cache_directory(request["cache_directory"])

@@ -5,7 +5,7 @@ Cascade separates analysis logic from execution and distribution concerns.
 ```mermaid
 flowchart LR
     U["User / workflow"] --> Q["cascade CLI"]
-    U --> C["py_amcm or AMCM"]
+    U --> C["Controller or AMCM"]
     Q --> C
     C --> R["Verified plugin registry"]
     R --> M["C++ IAnalysisModule"]

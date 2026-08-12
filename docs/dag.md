@@ -12,8 +12,8 @@ Controller-managed modules are assigned execution lanes automatically:
 - isolated modules may run concurrently in separate worker processes.
 
 Only one in-process ROOT module runs at a time, including across controller
-instances. Set `CASCADE_DAG_MAX_WORKERS` to a positive integer to bound concurrent
-ROOT-free and isolated work. The default is the detected hardware concurrency.
+instances. Set the `dag_workers` runtime option to a positive integer to bound
+concurrent ROOT-free and isolated work. Zero uses detected hardware concurrency.
 
 The bound covers `Root`, `Parallel`, and `Isolated` nodes together. A ready generic
 `Serial` node is an exclusive barrier: no additional pooled work is dispatched,
@@ -39,18 +39,18 @@ ROOT/serial/worker lane. A running module reports the mean of its available
 stdout is never mixed with progress output.
 
 `--input-hash`, `--output-hash`, `--timeout`, `--progress-interval-ms`, and
-`--workers` are invocation-scoped counterparts to the runtime environment
-variables. They are applied before the controller and scheduler are constructed.
+`--workers` configure typed runtime options for the invocation. They are applied
+before the controller and scheduler are constructed.
 
 ## Module DAGs from Python
 
 Use the controller-level API for mixed C++/Python workflows:
 
 ```python
-from cascade import py_amcm
+from cascade import Controller
 
 
-controller = py_amcm()
+controller = Controller()
 controller.register_module("TextProducerModule", "producer")
 controller.register_module("TextTransformModule", "transform")
 
@@ -268,7 +268,7 @@ dot -Tpng pipeline.dot -o pipeline.png
 
 - Scheduling is local and bounded; it is not a distributed executor.
 - There is no automatic backoff or retry count. Isolated-module timeouts remain
-  controlled by `CASCADE_ISOLATED_TIMEOUT_SECONDS`.
+  controlled by `isolated_timeout_seconds`.
 - Ready-node selection is deterministic, but completion order for parallel lanes
   is intentionally not deterministic.
 - Output path collisions remain a module-design error.

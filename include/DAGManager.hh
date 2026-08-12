@@ -1,4 +1,5 @@
 #pragma once
+#include "RuntimeOptions.hh"
 #include <functional>
 #include <map>
 #include <mutex>
@@ -77,6 +78,9 @@ class DAGManager
     using Task = std::function<void()>;
     using DataTransfer = std::function<void()>;
 
+    DAGManager();
+    explicit DAGManager(RuntimeOptions options);
+
     struct Node
     {
         std::string Name;
@@ -103,6 +107,7 @@ class DAGManager
 
   private:
     mutable std::recursive_mutex m_Mutex;
+    const RuntimeOptions m_RuntimeOptions;
     bool m_Executing = false;
     std::map<std::string, Node> m_Nodes;
 

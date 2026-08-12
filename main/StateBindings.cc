@@ -3,6 +3,7 @@
 #include "CacheManager.hh"
 #include "ExecutionContext.hh"
 #include "Provenance.hh"
+#include "RuntimeOptions.hh"
 #include "SnapshotHasher.hh"
 
 namespace py = pybind11;
@@ -11,6 +12,41 @@ namespace cascade::python_binding
 {
 void BindState(py::module_ &m)
 {
+    py::class_<RuntimeOptions>(m, "RuntimeOptions")
+        .def(py::init<>())
+        .def_readwrite("input_hash", &RuntimeOptions::InputHash)
+        .def_readwrite("output_hash", &RuntimeOptions::OutputHash)
+        .def_readwrite("dag_workers", &RuntimeOptions::DagWorkers)
+        .def_readwrite("isolated_timeout_seconds", &RuntimeOptions::IsolatedTimeoutSeconds)
+        .def_readwrite("progress_interval_ms", &RuntimeOptions::ProgressIntervalMilliseconds)
+        .def_readwrite("artifact_hash_cache_entries", &RuntimeOptions::ArtifactHashCacheEntries);
+    m.def("get_runtime_options", &GetRuntimeOptions);
+    m.def("set_runtime_options", &SetRuntimeOptions);
+    m.def(
+        "configure_runtime",
+        [](const py::kwargs &values)
+        {
+            RuntimeOptions options = GetRuntimeOptions();
+            for (const auto &item : values)
+            {
+                const std::string key = py::cast<std::string>(item.first);
+                if (key == "input_hash")
+                    options.InputHash = py::cast<std::string>(item.second);
+                else if (key == "output_hash")
+                    options.OutputHash = py::cast<std::string>(item.second);
+                else if (key == "dag_workers")
+                    options.DagWorkers = py::cast<std::size_t>(item.second);
+                else if (key == "isolated_timeout_seconds")
+                    options.IsolatedTimeoutSeconds = py::cast<double>(item.second);
+                else if (key == "progress_interval_ms")
+                    options.ProgressIntervalMilliseconds = py::cast<std::size_t>(item.second);
+                else
+                    throw py::key_error("Unknown runtime option: " + key);
+            }
+            SetRuntimeOptions(options);
+            return options;
+        });
+
     py::class_<ParamManager>(m, "ParamManager")
         .def(py::init<>())
         .def("register",

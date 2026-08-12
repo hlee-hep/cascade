@@ -21,7 +21,7 @@ dict = modenv.Command(
     action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libutils.so"
 )
 
-sources = [dict_cxx, os.path.join(builddir, "Logger.cc")]
+sources = [dict_cxx, os.path.join(builddir, "Logger.cc"), os.path.join(builddir, "RuntimeOptions.cc")]
 lib = modenv.SharedLibrary("libutils", sources)
 
 install_targets = modenv.Install(modenv["LIBDIR"], [lib, pcm, rootmap])

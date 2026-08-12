@@ -1,4 +1,5 @@
 #include "AnalysisManager.hh"
+#include "RuntimeOptions.hh"
 #include "AnalysisManagerDetail.inc"
 #include "LambdaManager.hh"
 #include <ROOT/RDFHelpers.hxx>
@@ -88,16 +89,7 @@ bool IsSupportedBranchType(const std::string &type) { return !CanonicalBranchTyp
 
 long long ProgressReportIntervalNs()
 {
-    static const long long interval = []()
-    {
-        const char *configured = std::getenv("CASCADE_PROGRESS_INTERVAL_MS");
-        if (!configured || !*configured) return 200000000LL;
-        char *end = nullptr;
-        const long long milliseconds = std::strtoll(configured, &end, 10);
-        if (end == configured || *end != '\0' || milliseconds < 0) return 200000000LL;
-        return milliseconds * 1000000LL;
-    }();
-    return interval;
+    return static_cast<long long>(GetRuntimeOptions().ProgressIntervalMilliseconds) * 1000000LL;
 }
 
 void ValidateSchemaVersion(const YAML::Node &root, ConfigValidationResult &result)

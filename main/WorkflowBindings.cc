@@ -18,6 +18,9 @@ void BindWorkflow(py::module_ &m)
     py::class_<AMCM>(m, "AMCM")
         .def(py::init<PluginTrustPolicy, bool>(), py::arg("trust_policy") = PluginTrustPolicy::Verified,
              py::arg("discover_plugins") = true)
+        .def(py::init<PluginTrustPolicy, bool, RuntimeOptions>(), py::arg("trust_policy"),
+             py::arg("discover_plugins"), py::arg("runtime_options"))
+        .def("get_runtime_options", &AMCM::GetRuntimeOptions)
         .def("register_module",
              [](AMCM &self, const std::string &base)
              {

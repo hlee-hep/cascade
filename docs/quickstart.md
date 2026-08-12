@@ -136,9 +136,9 @@ dies after beginning output promotion.
 ## 8. Inspect the API
 
 ```python
-from cascade import py_amcm
+from cascade import Controller
 
-controller = py_amcm()
+controller = Controller()
 print(controller.get_list_available_modules())
 
 module = controller.register_module("TextProducerModule", "producer")

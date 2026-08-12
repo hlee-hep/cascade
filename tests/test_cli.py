@@ -286,7 +286,9 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.require_signed)
         self.assertIs(args.func, cli_execution.cmd_module_list)
 
-    def test_module_run_explains_cache_and_restores_runtime_options(self):
+    def test_module_run_passes_scoped_runtime_options(self):
+        from cascade._cascade import get_runtime_options
+
         controller = _FakeController()
         args = cli_parser.build_parser().parse_args(
             [
@@ -296,14 +298,23 @@ class CliTests(unittest.TestCase):
             ]
         )
         output = io.StringIO()
-        previous_input = os.environ.get("CASCADE_INPUT_HASH_MODE")
-        with mock.patch.object(cli_execution, "_load_controller", return_value=controller), \
+        previous = get_runtime_options()
+        with mock.patch.object(cli_execution, "_load_controller", return_value=controller) as load_controller, \
                 contextlib.redirect_stdout(output):
             cli_execution.cmd_module_run(args)
         self.assertIn("Cache hit: snapshot and recorded outputs matched", output.getvalue())
-        self.assertEqual(os.environ.get("CASCADE_INPUT_HASH_MODE"), previous_input)
+        scoped = load_controller.call_args.args[2]
+        self.assertEqual(scoped.input_hash, "full")
+        self.assertEqual(scoped.output_hash, "metadata")
+        self.assertEqual(scoped.isolated_timeout_seconds, 12)
+        restored = get_runtime_options()
+        self.assertEqual(restored.input_hash, previous.input_hash)
+        self.assertEqual(restored.output_hash, previous.output_hash)
+        self.assertEqual(restored.isolated_timeout_seconds, previous.isolated_timeout_seconds)
 
     def test_runtime_doctor_reports_resolved_workers_and_policies(self):
+        from cascade._cascade import get_runtime_options, set_runtime_options
+
         build_directory = pathlib.Path(__file__).parents[1] / "build"
         with tempfile.TemporaryDirectory(dir=build_directory) as directory:
             root = pathlib.Path(directory)
@@ -318,12 +329,18 @@ class CliTests(unittest.TestCase):
                 "CASCADE_CPP_WORKER": str(cpp_worker),
                 "CASCADE_PYTHON_WORKER": str(python_worker),
                 "CASCADE_PYTHON_RUNTIME_DIR": str(runtime),
-                "CASCADE_INPUT_HASH_MODE": "auto",
-                "CASCADE_PROVENANCE_HASH_MODE": "full",
             }
             output = io.StringIO()
-            with mock.patch.dict(os.environ, environment, clear=False), contextlib.redirect_stdout(output):
-                cli_system.cmd_doctor_runtime(types.SimpleNamespace(json=True))
+            previous = get_runtime_options()
+            configured = get_runtime_options()
+            configured.input_hash = "auto"
+            configured.output_hash = "full"
+            set_runtime_options(configured)
+            try:
+                with mock.patch.dict(os.environ, environment, clear=False), contextlib.redirect_stdout(output):
+                    cli_system.cmd_doctor_runtime(types.SimpleNamespace(json=True))
+            finally:
+                set_runtime_options(previous)
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["runtime"]["input_hash"], "auto")
             self.assertTrue(all(check["status"] == "OK" for check in payload["checks"]))
@@ -983,6 +1000,55 @@ class CliTests(unittest.TestCase):
                 cli_execution.cmd_dag_validate(args)
             self.assertIn("Valid workflow: 2 module(s), 1 parameter link(s).", output.getvalue())
             self.assertIsNone(controller.fail_fast)
+
+    def test_dag_workflow_runtime_options_are_controller_scoped(self):
+        from cascade._cascade import get_runtime_options
+
+        workflow = {
+            "schema_version": 1,
+            "runtime": {
+                "input_hash": "full",
+                "output_hash": "metadata",
+                "workers": 3,
+                "isolated_timeout_seconds": 7.5,
+                "progress_interval_ms": 25,
+            },
+            "modules": [{"module": "Producer", "name": "producer"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "workflow.json"
+            path.write_text(json.dumps(workflow), encoding="utf-8")
+            controller = _FakeController()
+            args = types.SimpleNamespace(workflow=str(path), json=False, require_signed=False)
+            observed = {}
+
+            def load_controller(*load_args, **_kwargs):
+                options = load_args[2]
+                observed.update({
+                    "input_hash": options.input_hash,
+                    "output_hash": options.output_hash,
+                    "workers": options.dag_workers,
+                    "timeout": options.isolated_timeout_seconds,
+                    "progress": options.progress_interval_ms,
+                })
+                return controller
+
+            previous = get_runtime_options()
+            with mock.patch.object(cli_execution, "_load_controller", side_effect=load_controller), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cli_execution.cmd_dag_validate(args)
+
+            self.assertEqual(observed, {
+                "input_hash": "full",
+                "output_hash": "metadata",
+                "workers": 3,
+                "timeout": 7.5,
+                "progress": 25,
+            })
+            restored = get_runtime_options()
+            self.assertEqual(restored.input_hash, previous.input_hash)
+            self.assertEqual(restored.output_hash, previous.output_hash)
+            self.assertEqual(restored.dag_workers, previous.dag_workers)
 
     def test_dag_validate_rejects_cycles_before_loading_controller(self):
         workflow = {

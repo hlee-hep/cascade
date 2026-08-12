@@ -288,7 +288,9 @@ AMCM controller;
 ```
 
 ```python
-controller = py_amcm()
+from cascade import Controller
+
+controller = Controller()
 ```
 
 Distributed or managed workflows can require signed packages:
@@ -298,7 +300,9 @@ AMCM controller(PluginTrustPolicy::RequireSigned);
 ```
 
 ```python
-controller = py_amcm(require_signed=True)
+from cascade import Controller
+
+controller = Controller(require_signed=True)
 ```
 
 The CLI exposes only the strengthening form:
@@ -389,9 +393,9 @@ execution of plugin constructors; C++ ABI checks still run in the actual loader.
 Useful runtime inspection:
 
 ```python
-from cascade import py_amcm
+from cascade import Controller
 
-controller = py_amcm()
+controller = Controller()
 print(controller.get_list_available_modules())
 print(controller.get_list_available_module_metadata())
 ```

@@ -226,12 +226,18 @@ class _ModuleHandle:
         return self._ctrl.run_module_isolated(target)
 
 
-class py_amcm:
-    def __init__(self, require_signed=False, discover_plugins=True):
+class Controller:
+    """Public controller for verified C++ and Python analysis modules."""
+
+    def __init__(self, require_signed=False, discover_plugins=True, runtime_options=None):
         self.require_signed = bool(require_signed)
         self._discover_plugins = bool(discover_plugins)
         policy = PluginTrustPolicy.RequireSigned if self.require_signed else PluginTrustPolicy.Verified
-        self.ctrl = AMCM(policy, self._discover_plugins)
+        self.ctrl = (
+            AMCM(policy, self._discover_plugins)
+            if runtime_options is None
+            else AMCM(policy, self._discover_plugins, runtime_options)
+        )
         self._python_index_cache = None
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
@@ -473,3 +479,7 @@ class py_amcm:
                 os.path.join(log_dir, f"{workflow_id}.json")
             )
         return self.save_provenance()
+
+
+# Short spelling retained as an alias; Controller is the documented public name.
+py_amcm = Controller

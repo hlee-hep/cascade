@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from cascade import py_amcm, log_level, set_log_level
+from cascade import Controller, log_level, set_log_level
 
 
 def main():
-    ctrl = py_amcm()
+    ctrl = Controller()
     set_log_level(log_level.INFO)
 
     available = ctrl.get_list_available_modules()
