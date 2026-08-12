@@ -54,7 +54,8 @@ jobs:
           scons -j2 \
             build/benchmarks/cascade-dag-bench \
             build/benchmarks/cascade-input-hash-bench \
-            build/benchmarks/cascade-output-hash-bench
+            build/benchmarks/cascade-output-hash-bench \
+            build/test-runtime/cascade/__init__.py
 
       - name: Check tagged runtime version
         env:
