@@ -99,3 +99,16 @@ Run comparisons on the same machine, power policy, build, node count, and
 workload. Prefer at least nine iterations for results used in a performance
 decision. This is a diagnostic benchmark, not a correctness gate, so timing
 thresholds are deliberately not part of `scons verify`.
+
+## CI baseline artifacts
+
+Every push to `main` and every pull request runs the three testbenches with
+machine-readable output. GitHub Actions uploads `dag.json`, `input-hash.json`,
+`output-hash.json`, and `metadata.json` as
+`cascade-benchmark-<commit-sha>`. Metadata records the commit, runner OS, CPU,
+architecture, kernel, ROOT, compiler, and Python versions.
+
+These artifacts are an observation history, not a performance gate. Compare
+results only across sufficiently similar runners and storage environments. Each
+release candidate also attaches the four JSON files to its GitHub prerelease so
+the baseline outlives the workflow artifact retention period.

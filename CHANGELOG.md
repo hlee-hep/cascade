@@ -5,6 +5,8 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0-rc1] - 2026-08-12
+
 ### Added
 
 - Deterministic DAG, input-hashing, and output-hashing bottleneck testbenches,
@@ -28,6 +30,15 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 - Reproducible `scons verify` gate covering tests, the ROOT-free plugin compile
   boundary, working-tree checks, runtime diagnostics, and plugin verification.
 - MIT License for source and distribution terms.
+- Initial public C++ plugin ABI 3 with full build fingerprint checks.
+- Verified C++ and Python plugin packages with optional Ed25519 publisher signatures.
+- Transactional plugin installation and persistent plugin prefix discovery.
+- Unified C++/Python module lifecycle, output transactions, cancellation, and
+  subprocess isolation.
+- Deterministic DAG execution with parameter links and failure propagation.
+- Versioned module/workflow provenance, run history, inspection, comparison, and
+  replay.
+- Schema-validated ROOT input, cut, and histogram configuration.
 
 ### Changed
 
@@ -61,29 +72,15 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
   module stems that need ROOT/AnalysisManager/PlotManager linkage.
 - AnalysisManager and pybind registration implementations are split by feature
   without changing the public ROOT, C++, or Python APIs.
-
-## [0.3.0] - Unreleased
-
-### Added
-
-- Initial public C++ plugin ABI 3 with full build fingerprint checks.
-- Verified C++ and Python plugin packages with optional Ed25519 publisher signatures.
-- Transactional plugin installation and persistent plugin prefix discovery.
-- Unified C++/Python module lifecycle, output transactions, cancellation, and subprocess isolation.
-- Deterministic DAG execution with parameter links and failure propagation.
-- Versioned module/workflow provenance, run history, inspection, comparison, and replay.
-- Schema-validated ROOT input, cut, and histogram configuration.
-
-### Changed
-
-- The supported Python control surface is `py_amcm`; raw bindings are internal integration surfaces.
 - Analysis configuration documents require `schema_version: 1`.
-- Snapshot caches use schema 1 entries linked to provenance manifests while retaining legacy hash-only reads.
+- Snapshot caches use schema 1 entries linked to provenance manifests while
+  retaining legacy hash-only reads.
 
 ### Security
 
-- Plugin discovery verifies package boundaries, regular files, hashes, ABI metadata, and the configured signature policy before registration.
+- Plugin discovery verifies package boundaries, regular files, hashes, ABI
+  metadata, and the configured signature policy before registration.
 - Protected outputs are staged and promoted only after successful lifecycle completion.
 
-[Unreleased]: https://github.com/hlee-hep/cascade/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/hlee-hep/cascade/releases/tag/v0.3.0
+[Unreleased]: https://github.com/hlee-hep/cascade/compare/v0.3.0-rc1...HEAD
+[0.3.0-rc1]: https://github.com/hlee-hep/cascade/releases/tag/v0.3.0-rc1

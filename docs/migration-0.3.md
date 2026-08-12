@@ -7,7 +7,7 @@ analysis config documents. No pre-0.3 plugin ABI is supported.
 
 | Area | 0.3 requirement |
 | --- | --- |
-| Semantic version | `0.3.0` |
+| Semantic version | `0.3.0-rc1` |
 | C++ plugin ABI | 3 |
 | C++ standard | The mode reported by `root-config` (C++17, 20, or 23) |
 | Plugin manifest | Schema 2, verified; optional signature |
@@ -227,7 +227,7 @@ controllers can safely use different policies. Python callers should use
 
 ## Migration verification
 
-- [ ] Framework reports version 0.3.0 and ABI 3.
+- [ ] Framework reports version 0.3.0-rc1 and ABI 3.
 - [ ] No development-only binaries built against pre-baseline headers remain in active plugin roots.
 - [ ] Every analysis config has `schema_version: 1`.
 - [ ] Every protected output uses a staging helper.

@@ -1,4 +1,4 @@
-import os, re, subprocess, stat, sys
+import os, platform, re, shutil, subprocess, stat, sys
 from SCons.Script import Environment, Variables
 import SCons.Util
 
@@ -80,6 +80,22 @@ def sanitizer_environment(env, base, preload_address=False):
             )
     return result
 
+def sanitizer_command(env, command):
+    if not env.get("SANITIZERS"):
+        return command
+    setarch = shutil.which("setarch")
+    if not setarch:
+        return command
+    prefix = [setarch, platform.machine(), "-R"]
+    if subprocess.run(
+        prefix + ["true"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode != 0:
+        return command
+    return prefix + command
+
 def run_tests(target, source, env):
     test_binary = os.path.abspath(str(source[0]))
     build_library_paths = [
@@ -104,7 +120,7 @@ def run_tests(target, source, env):
         # validation, and hardening paths.
         test_environment["CASCADE_TEST_SKIP_INSTRUMENTED_EXEC"] = "1"
     subprocess.check_call(
-        [test_binary],
+        sanitizer_command(env, [test_binary]),
         env={
             **test_environment,
             "CASCADE_CPP_WORKER": os.path.abspath("build/bin/cascade-worker"),
@@ -124,44 +140,60 @@ def run_tests(target, source, env):
         source_path = str(python_source)
         with open(source_path, "r", encoding="utf-8") as source_file:
             compile(source_file.read(), source_path, "exec")
-    for test_source in sorted(str(path) for path in Glob("tests/test_*.py")):
-        # The hardened Python exec worker intentionally strips LD_PRELOAD. Its
-        # normal end-to-end coverage runs in verify; sanitizer jobs cover the
-        # same lifecycle in-process; normal verify owns exec-worker E2E coverage.
-        if env.get("SANITIZERS") and test_source.endswith("test_python_worker_e2e.py"):
-            continue
+    python_test_sources = sorted(str(path) for path in Glob("tests/test_*.py"))
+    if env.get("SANITIZERS"):
+        # One interpreter avoids repeatedly initializing and tearing down
+        # preloaded ASan around ROOT. Normal verify owns the hardened Python
+        # exec-worker E2E because that worker intentionally strips LD_PRELOAD.
+        python_test_sources = [
+            path for path in python_test_sources
+            if not path.endswith("test_python_worker_e2e.py")
+        ]
         python_test_environment = sanitizer_environment(
             env, test_environment, preload_address=True
         )
-        if test_source.endswith("test_python_api.py"):
-            python_test_environment = {
-                **python_test_environment,
-                "PYTHONPATH": os.path.abspath("build/test-runtime"),
-            }
-        if test_source.endswith("test_python_worker_e2e.py"):
-            python_test_environment = {
-                **test_environment,
-                "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
-                "CASCADE_PYTHON_RUNTIME_DIR": os.path.abspath("build/test-runtime"),
-                "CASCADE_TEST_ASSERT_ISOLATED_PYTHON": "1",
-                "CASCADE_PLUGIN_DIR": os.path.abspath("build/test-plugins"),
-                "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
-                "PYTHONPATH": os.path.abspath("build/test-runtime"),
-            }
-        python_test_command = [sys.executable, "-m", "unittest", test_source]
-        if env.get("SANITIZERS"):
-            python_test_command = [
-                sys.executable,
-                "-c",
-                (
-                    "import os, runpy, sys; "
-                    "os.environ.pop('LD_PRELOAD', None); "
-                    "sys.argv[0] = 'unittest'; "
-                    "runpy.run_module('unittest', run_name='__main__')"
-                ),
-                test_source,
-            ]
-        subprocess.check_call(python_test_command, env=python_test_environment)
+        python_test_environment = {
+            **python_test_environment,
+            "PYTHONPATH": os.path.abspath("build/test-runtime"),
+        }
+        python_test_command = [
+            sys.executable,
+            "-c",
+            (
+                "import os, runpy, sys; "
+                "os.environ.pop('LD_PRELOAD', None); "
+                "sys.argv[0] = 'unittest'; "
+                "runpy.run_module('unittest', run_name='__main__')"
+            ),
+            *python_test_sources,
+        ]
+        subprocess.check_call(
+            sanitizer_command(env, python_test_command),
+            env=python_test_environment,
+        )
+    else:
+        for test_source in python_test_sources:
+            python_test_environment = test_environment
+            if test_source.endswith("test_python_api.py"):
+                python_test_environment = {
+                    **python_test_environment,
+                    "PYTHONPATH": os.path.abspath("build/test-runtime"),
+                }
+            if test_source.endswith("test_python_worker_e2e.py"):
+                python_test_environment = {
+                    **test_environment,
+                    "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
+                    "CASCADE_PYTHON_RUNTIME_DIR": os.path.abspath("build/test-runtime"),
+                    "CASCADE_TEST_ASSERT_ISOLATED_PYTHON": "1",
+                    "CASCADE_PLUGIN_DIR": os.path.abspath("build/test-plugins"),
+                    "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
+                    "PYTHONPATH": os.path.abspath("build/test-runtime"),
+                }
+            python_test_command = [sys.executable, "-m", "unittest", test_source]
+            subprocess.check_call(
+                python_test_command,
+                env=python_test_environment,
+            )
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)
     with open(str(target[0]), "w") as stamp:
         stamp.write("ok\n")
@@ -193,11 +225,11 @@ def run_verification(target, source, env):
         subprocess.check_call(["git", "diff", "--check"])
         subprocess.check_call(["git", "diff", "--cached", "--check"])
     subprocess.check_call(
-        [sys.executable, "python/cascade", "doctor", "runtime", "--json"],
+        sanitizer_command(env, [sys.executable, "python/cascade", "doctor", "runtime", "--json"]),
         env=verification_environment,
     )
     subprocess.check_call(
-        [
+        sanitizer_command(env, [
             sys.executable,
             "python/cascade",
             "doctor",
@@ -207,7 +239,7 @@ def run_verification(target, source, env):
             "--py-dir",
             os.path.abspath("build/test-plugins"),
             "--json",
-        ],
+        ]),
         env=verification_environment,
     )
     os.makedirs(os.path.dirname(str(target[0])), exist_ok=True)

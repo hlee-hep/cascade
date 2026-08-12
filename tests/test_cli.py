@@ -222,7 +222,7 @@ class CliTests(unittest.TestCase):
                 "name": "AnalysisModule",
                 "metadata": {"name": "AnalysisModule", "version": "1.0", "summary": "", "tags": []},
             },
-            "runtime": {"language": "python", "cascade_version": "0.3.0"},
+            "runtime": {"language": "python", "cascade_version": "0.3.0-rc1"},
             "identity": {"code_hash": "code", "snapshot_hash": f"snapshot-{threshold}"},
             "parameters": {"threshold": threshold},
             "timing": {"started_at": "2026-08-02T01:00:00Z", "finished_at": "2026-08-02T01:00:01Z"},

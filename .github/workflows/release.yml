@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*-rc*"
+
+permissions:
+  contents: write
+
+jobs:
+  prerelease:
+    name: Create prerelease
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: micromamba-shell {0}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create release environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: cascade-release
+          create-args: >-
+            python=3.11
+            root_base=6.32
+            cxx-compiler
+            pkg-config
+            scons
+            pybind11
+            pyyaml
+            yaml-cpp
+            nlohmann_json
+            openssl
+          cache-environment: true
+          cache-environment-key: cascade-release-root632-py311
+          post-cleanup: all
+
+      - name: Validate release inputs
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test -f "docs/releases/$GITHUB_REF_NAME.md"
+          grep -Fq "# Cascade $version" "docs/releases/$GITHUB_REF_NAME.md"
+
+      - name: Build benchmark executables
+        run: |
+          scons -j2 \
+            build/benchmarks/cascade-dag-bench \
+            build/benchmarks/cascade-input-hash-bench \
+            build/benchmarks/cascade-output-hash-bench
+
+      - name: Check tagged runtime version
+        env:
+          PYTHONPATH: ${{ github.workspace }}/build/test-runtime
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/src:${{ github.workspace }}/build/utils:${{ github.workspace }}/build/AnalysisManager:${{ github.workspace }}/build/ParamManager:${{ github.workspace }}/build/PlotManager:${{ github.workspace }}/build/main
+        run: |
+          python -c 'import cascade, os; assert cascade.__version__ == os.environ["GITHUB_REF_NAME"][1:]; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__)'
+
+      - name: Capture release benchmark baseline
+        run: |
+          baseline="$RUNNER_TEMP/cascade-benchmark"
+          mkdir -p "$baseline"
+
+          build/benchmarks/cascade-dag-bench \
+            --nodes 1,10,100,1000 \
+            --iterations 9 \
+            --workers 1,2,4 \
+            --json > "$baseline/dag.json"
+
+          build/benchmarks/cascade-input-hash-bench \
+            --fixture-mib 128 \
+            --iterations 9 \
+            --json > "$baseline/input-hash.json"
+
+          build/benchmarks/cascade-output-hash-bench \
+            --fixture-mib 128 \
+            --iterations 9 \
+            --json > "$baseline/output-hash.json"
+
+          python scripts/collect_benchmark_metadata.py \
+            --output "$baseline/metadata.json" \
+            --dag "$baseline/dag.json" \
+            --input-hash "$baseline/input-hash.json" \
+            --output-hash "$baseline/output-hash.json"
+
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP"/cascade-benchmark/*.json \
+            --verify-tag \
+            --prerelease \
+            --title "Cascade $version" \
+            --notes-file "docs/releases/$GITHUB_REF_NAME.md"

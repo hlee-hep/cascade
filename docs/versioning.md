@@ -4,7 +4,8 @@ Cascade tracks project releases and C++ plugin compatibility separately.
 
 ## Semantic version
 
-The project version is `MAJOR.MINOR.PATCH`:
+The project version is `MAJOR.MINOR.PATCH`, optionally followed by a SemVer
+prerelease suffix such as `-rc1`:
 
 - `cascade.__version__`;
 - `CascadeVersionString()` in `include/Version.hh`.

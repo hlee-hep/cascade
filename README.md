@@ -10,7 +10,7 @@ supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
-The current development release is **0.3.0** with
+The current prerelease is **0.3.0-rc1** with
 **plugin ABI 3**. The full build fingerprint is checked in addition to the
 integer ABI.
 

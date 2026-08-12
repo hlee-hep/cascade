@@ -3,7 +3,7 @@
 Cascade versions the framework, plugin ABI, and document schemas independently.
 Read [Versioning and compatibility](versioning.md) before changing any version.
 
-## 0.3 release checklist
+## 0.3.0-rc1 release checklist
 
 ### Contract
 
@@ -20,6 +20,7 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 - [ ] `scons verify -j2` passes.
 - [ ] `scons verify -j2 SANITIZERS=address,undefined` passes on Linux.
 - [ ] `scons bench -j2` results were reviewed for scheduler and hashing regressions.
+- [ ] The CI benchmark job uploaded three result JSON files plus runner metadata.
 - [ ] `cascade info` reports the expected version, ABI integer, and ABI tag.
 - [ ] `cascade doctor env`, `cascade doctor runtime`, and `cascade doctor plugins`
   report no unexpected failures.
@@ -37,6 +38,8 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 - [ ] Re-sign distributed plugin manifests and verify them with provisioned public keys.
 - [ ] Review installation paths and runtime loader instructions on a fresh shell.
 - [ ] Create the release tag only after the staged artifacts pass verification.
+- [ ] Push `v0.3.0-rc1` only after CI is green; the tag workflow creates a GitHub
+  prerelease and attaches the benchmark baseline JSON files.
 
 ## Release commands
 

@@ -110,7 +110,7 @@ jobs:
 
       - name: Check installed runtime
         run: |
-          python -c 'import cascade; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
+          python -c 'import cascade; assert cascade.__version__ == "0.3.0-rc1"; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
           cascade doctor runtime --json
 
       - name: Install and verify toy dimuon plugin
@@ -191,3 +191,79 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           CASCADE_CONFIG_FILE: ${{ runner.temp }}/cascade-sanitizer-config/config.json
         run: scons verify -j2 SANITIZERS=address,undefined
+
+  benchmarks:
+    name: Benchmark baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: micromamba-shell {0}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create benchmark environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: cascade-benchmarks
+          create-args: >-
+            python=3.11
+            root_base=6.32
+            cxx-compiler
+            pkg-config
+            scons
+            pybind11
+            pyyaml
+            yaml-cpp
+            nlohmann_json
+            openssl
+          cache-environment: true
+          cache-environment-key: cascade-benchmarks-root632-py311
+          post-cleanup: all
+
+      - name: Build benchmark executables
+        run: |
+          scons -j2 \
+            build/benchmarks/cascade-dag-bench \
+            build/benchmarks/cascade-input-hash-bench \
+            build/benchmarks/cascade-output-hash-bench
+
+      - name: Capture benchmark baseline
+        run: |
+          baseline="$RUNNER_TEMP/cascade-benchmark"
+          mkdir -p "$baseline"
+
+          build/benchmarks/cascade-dag-bench \
+            --nodes 1,10,100,1000 \
+            --iterations 9 \
+            --workers 1,2,4 \
+            --json > "$baseline/dag.json"
+
+          build/benchmarks/cascade-input-hash-bench \
+            --fixture-mib 128 \
+            --iterations 9 \
+            --json > "$baseline/input-hash.json"
+
+          build/benchmarks/cascade-output-hash-bench \
+            --fixture-mib 128 \
+            --iterations 9 \
+            --json > "$baseline/output-hash.json"
+
+          python scripts/collect_benchmark_metadata.py \
+            --output "$baseline/metadata.json" \
+            --dag "$baseline/dag.json" \
+            --input-hash "$baseline/input-hash.json" \
+            --output-hash "$baseline/output-hash.json"
+
+      - name: Upload benchmark baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: cascade-benchmark-${{ github.sha }}
+          path: ${{ runner.temp }}/cascade-benchmark/*.json
+          if-no-files-found: error
+          retention-days: 90
