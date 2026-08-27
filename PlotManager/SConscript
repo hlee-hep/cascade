@@ -21,7 +21,7 @@ modenv.Append(LIBPATH=[utilsdir])
 dict = modenv.Command(
     target=[dict_cxx, pcm, rootmap],
     source=[],
-    action=f"rootcling -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libPlotManager.so"
+    action=f"$ROOTCLING -f {dict_cxx} -c -p -I{TOP}/include -I{srcdir} {' '.join(headers)} {linkdef} --rmf={rootmap} --rml=libPlotManager.so"
 )
 
 sources = [dict_cxx, os.path.join(builddir, "PlotManager.cc")]

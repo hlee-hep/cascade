@@ -222,7 +222,7 @@ class CliTests(unittest.TestCase):
                 "name": "AnalysisModule",
                 "metadata": {"name": "AnalysisModule", "version": "1.0", "summary": "", "tags": []},
             },
-            "runtime": {"language": "python", "cascade_version": "0.3.0-rc1"},
+            "runtime": {"language": "python", "cascade_version": "0.3.0"},
             "identity": {"code_hash": "code", "snapshot_hash": f"snapshot-{threshold}"},
             "parameters": {"threshold": threshold},
             "timing": {"started_at": "2026-08-02T01:00:00Z", "finished_at": "2026-08-02T01:00:01Z"},
@@ -760,7 +760,7 @@ class CliTests(unittest.TestCase):
                     str(root / "stage"), str(root / "target"), "incoming"
                 )
 
-    def test_plugin_install_publishes_then_registers_prefix(self):
+    def test_plugin_install_defaults_to_active_cascade_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             source = root / "source-plugin"
@@ -778,7 +778,7 @@ class CliTests(unittest.TestCase):
             (staged_package / "module.py").write_text("installed", encoding="utf-8")
             args = types.SimpleNamespace(
                 source=str(source),
-                prefix=str(target),
+                prefix=None,
                 package=None,
                 private_key=None,
                 public_key=None,
@@ -789,25 +789,26 @@ class CliTests(unittest.TestCase):
             )
             completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
             with mock.patch.dict(os.environ, {"CASCADE_CONFIG_FILE": str(config)}, clear=False), \
+                    mock.patch.object(cli_plugin, "_default_plugin_prefix", return_value=str(target)), \
+                    mock.patch.object(cli_plugin, "_CLI_PREFIX", str(target)), \
                     mock.patch.object(cli_plugin.tempfile, "mkdtemp", return_value=str(stage)), \
                     mock.patch.object(cli_plugin.subprocess, "run", return_value=completed) as run, \
-                    mock.patch.object(cli_plugin, "_verify_staged_plugin", return_value={"packages": []}):
-                with contextlib.redirect_stdout(io.StringIO()):
+                    mock.patch.object(cli_plugin, "_verify_staged_plugin", return_value={"packages": []}), \
+                    mock.patch.object(cli_plugin, "_plugin_build_template", return_value="/sdk/plugin_sconstruct"):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
                     cli_plugin.cmd_plugin_install(args)
 
             installed = target / "lib" / "cascade" / "pyplugin" / source.name / "module.py"
             self.assertEqual(installed.read_text(encoding="utf-8"), "installed")
-            config_document = json.loads(config.read_text(encoding="utf-8"))
-            self.assertEqual(
-                config_document["plugin_prefixes"],
-                [{"enabled": True, "path": str(target.resolve())}],
-            )
+            self.assertFalse(config.exists())
+            self.assertFalse(json.loads(output.getvalue())["registered_prefix"])
             build_environment = run.call_args.kwargs["env"]
             self.assertEqual(build_environment["CASCADE_PYPLUGIN_DIR"], str(stage / "lib" / "cascade" / "pyplugin"))
             command = run.call_args.args[0]
             self.assertEqual(command[0], "scons")
             self.assertEqual(command[1], "-f")
-            self.assertTrue(command[2].endswith("scripts/plugin_sconstruct"))
+            self.assertEqual(command[2], "/sdk/plugin_sconstruct")
             self.assertEqual(build_environment["CASCADE_PLUGIN_ROOT_MODULES"], "")
             self.assertEqual(json.loads(build_environment["CASCADE_PLUGIN_CLASS_MAP"]), {})
 

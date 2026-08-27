@@ -56,19 +56,19 @@ python3 -c 'import cascade; print(cascade.__version__, cascade.__abi_version__)'
 Expected version/ABI for this tree:
 
 ```text
-0.3.0-rc1 3
+0.3.0 3
 ```
 
 ## 4. Install the example plugin
 
 ```bash
-cascade plugin install examples/plugins/mixed_pipeline \
-  --prefix ~/.local
+cascade plugin install examples/plugins/mixed_pipeline
 ```
 
 This installs two C++ libraries and two Python modules into separate package
 roots, generates a verified manifest in each root, validates the staged package,
-and persistently registers `~/.local` for future terminals.
+and publishes it under the active Cascade prefix, which is discovered without a
+persistent registration.
 
 ## 5. Verify plugin installation
 
@@ -162,7 +162,6 @@ openssl genpkey -algorithm Ed25519 -out plugin_private.pem
 openssl pkey -in plugin_private.pem -pubout -out plugin_public.pem
 
 cascade --require-signed plugin install . \
-  --prefix ~/.local \
   --private-key "$PWD/plugin_private.pem" \
   --public-key "$PWD/plugin_public.pem"
 

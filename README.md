@@ -10,7 +10,7 @@ supplies lifecycle management,
 typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
-The current prerelease is **0.3.0-rc1** with
+The current release is **0.3.0** with
 **plugin ABI 3**. The full build fingerprint is checked in addition to the
 integer ABI.
 
@@ -101,16 +101,14 @@ TextProducerModule (C++) ──> TextTransformModule (Python)
 RootEventModule (C++) ─────> RootSummaryModule (Python)
 ```
 
-Install the example into a persistent plugin prefix:
+Install the example into the active Cascade bundle:
 
 ```bash
-cascade plugin install examples/plugins/mixed_pipeline \
-  --prefix ~/.local
+cascade plugin install examples/plugins/mixed_pipeline
 ```
 
-The command builds into a staging prefix, verifies both languages, publishes the
-package, and records the prefix in the user Cascade configuration. Future
-terminals discover it without `CASCADE_PLUGIN_DIR` or `CASCADE_PYPLUGIN_DIR`.
+The command builds into a staging prefix, verifies both languages, and publishes
+the package. The active runtime prefix is discovered without registration.
 
 Verify the installed package and run both execution modes:
 

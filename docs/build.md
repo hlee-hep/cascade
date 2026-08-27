@@ -7,10 +7,10 @@ tools:
 
 | Dependency | Probe |
 | --- | --- |
-| ROOT | `root-config --cflags --libs` |
+| ROOT | `${ROOT_CONFIG:-root-config} --cflags --libs` |
 | yaml-cpp | `pkg-config --cflags --libs yaml-cpp` |
-| pybind11 | `python3 -m pybind11 --includes` |
-| PyYAML | `python3 -c 'import yaml; print(yaml.__version__)'` |
+| pybind11 | `${PYTHON:-python3} -m pybind11 --includes` |
+| PyYAML | `${PYTHON:-python3} -c 'import yaml; print(yaml.__version__)'` |
 | OpenSSL | headers and `ssl`, `crypto` libraries |
 | nlohmann/json | headers available to the compiler |
 | Operating system | Linux |
@@ -49,18 +49,37 @@ intended for use.
 | `INCLUDEDIR` | `${PREFIX}/include/cascade` |
 | `PYTHONDIR` | `${LIBDIR}/cascade` |
 | `PYMODULEDIR` | `${PYTHONDIR}/pymodule` |
+| `PYTHON` | First `python3` on `PATH`, then the SCons interpreter |
+| `ROOT_CONFIG` | First `root-config` on `PATH` |
 
 Example:
 
 ```bash
 scons install \
   PREFIX=/opt/cascade \
+  PYTHON=/opt/cascade/.venv/bin/python \
+  ROOT_CONFIG=/opt/cascade/root/bin/root-config \
   LIBDIR=/opt/cascade/lib \
   BINDIR=/opt/cascade/bin \
   INCLUDEDIR=/opt/cascade/include/cascade
 ```
 
 Unset component variables inherit from `PREFIX`.
+
+## Self-contained runtime bundle
+
+When `PREFIX` contains a `.venv` and a ROOT installation under `root`, the
+installed `activate.sh` selects the complete Python, ROOT, Cascade, and plugin
+environment:
+
+```bash
+source /opt/cascade/activate.sh
+```
+
+The activation script derives the prefix from its own canonical location and
+sets `CASCADE_PREFIX`, a bundle-local `CASCADE_CONFIG_FILE`, worker runtime,
+`PATH`, `PYTHONPATH`, and `LD_LIBRARY_PATH`. Plugins installed without an
+explicit `--prefix` then target the active Cascade prefix.
 
 ## Installed layout
 

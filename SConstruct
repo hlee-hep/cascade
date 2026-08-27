@@ -1,4 +1,4 @@
-import os, platform, re, shutil, subprocess, stat, sys
+import os, platform, re, shlex, shutil, subprocess, stat, sys
 from SCons.Script import Environment, Variables
 import SCons.Util
 
@@ -110,7 +110,9 @@ def run_tests(target, source, env):
         **os.environ,
         "CASCADE_CACHE_DIR": os.path.abspath("build/test-cache"),
         "TMPDIR": "/tmp",
-        "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
+        "LD_LIBRARY_PATH": os.pathsep.join(
+            build_library_paths + [env['ROOT_LIBDIR'], os.environ.get("LD_LIBRARY_PATH", "")]
+        ),
     }
     test_environment = sanitizer_environment(env, test_environment)
     if env.get("SANITIZERS"):
@@ -157,7 +159,7 @@ def run_tests(target, source, env):
             "PYTHONPATH": os.path.abspath("build/test-runtime"),
         }
         python_test_command = [
-            sys.executable,
+            env['PYTHON_INTERPRETER'],
             "-c",
             (
                 "import os, runpy, sys; "
@@ -189,7 +191,7 @@ def run_tests(target, source, env):
                     "CASCADE_PYPLUGIN_DIR": os.path.abspath("build/test-plugins"),
                     "PYTHONPATH": os.path.abspath("build/test-runtime"),
                 }
-            python_test_command = [sys.executable, "-m", "unittest", test_source]
+            python_test_command = [env['PYTHON_INTERPRETER'], "-m", "unittest", test_source]
             subprocess.check_call(
                 python_test_command,
                 env=python_test_environment,
@@ -214,7 +216,9 @@ def run_verification(target, source, env):
         "CASCADE_CPP_WORKER": os.path.abspath("build/bin/cascade-worker"),
         "CASCADE_PYTHON_WORKER": os.path.abspath("build/bin/cascade-python-worker"),
         "CASCADE_PYTHON_RUNTIME_DIR": os.path.abspath("build/test-runtime"),
-        "LD_LIBRARY_PATH": os.pathsep.join(build_library_paths + [os.environ.get("LD_LIBRARY_PATH", "")]),
+        "LD_LIBRARY_PATH": os.pathsep.join(
+            build_library_paths + [env['ROOT_LIBDIR'], os.environ.get("LD_LIBRARY_PATH", "")]
+        ),
         "PYTHONPATH": os.path.abspath("build/test-runtime"),
         "TMPDIR": "/tmp",
     }
@@ -225,12 +229,12 @@ def run_verification(target, source, env):
         subprocess.check_call(["git", "diff", "--check"])
         subprocess.check_call(["git", "diff", "--cached", "--check"])
     subprocess.check_call(
-        sanitizer_command(env, [sys.executable, "python/cascade", "doctor", "runtime", "--json"]),
+        sanitizer_command(env, [env['PYTHON_INTERPRETER'], "python/cascade", "doctor", "runtime", "--json"]),
         env=verification_environment,
     )
     subprocess.check_call(
         sanitizer_command(env, [
-            sys.executable,
+            env['PYTHON_INTERPRETER'],
             "python/cascade",
             "doctor",
             "plugins",
@@ -312,11 +316,21 @@ vars.Add('BINDIR', 'binary install directory', '')
 vars.Add('INCLUDEDIR', 'header install directory', '')
 vars.Add('PYTHONDIR', 'python package install directory', '')
 vars.Add('PYMODULEDIR', 'python module install directory (cascade.pymodule)', '')
+vars.Add('PYTHON', 'Python interpreter used for bindings, tests, and workers', '')
+vars.Add('ROOT_CONFIG', 'root-config executable used for the ROOT toolchain', '')
 vars.Add('SANITIZERS', 'comma-separated sanitizers: address,undefined', '')
 
 env = Environment(ENV=os.environ, variables=vars)
 env.Append()
-env['PYTHON_INTERPRETER'] = os.path.realpath(env.WhereIs('python3') or sys.executable)
+python_interpreter = env['PYTHON'] or env.WhereIs('python3') or sys.executable
+if not os.path.isabs(python_interpreter):
+    python_interpreter = env.WhereIs(python_interpreter) or python_interpreter
+if not os.path.isfile(python_interpreter) or not os.access(python_interpreter, os.X_OK):
+    raise RuntimeError(f"Python interpreter is not executable: {python_interpreter}")
+# Preserve virtual-environment interpreter symlinks. Executing the resolved uv
+# managed base interpreter would bypass the venv and its installed build tools.
+env['PYTHON_INTERPRETER'] = os.path.abspath(python_interpreter)
+env['PYTHON'] = env['PYTHON_INTERPRETER']
 prefix = os.path.expanduser(env['PREFIX'])
 env['PREFIX'] = prefix
 if not env['LIBDIR']:
@@ -330,12 +344,28 @@ if not env['PYTHONDIR']:
 if not env['PYMODULEDIR']:
     env['PYMODULEDIR'] = os.path.join(env['PYTHONDIR'], 'pymodule')
 
-pybind_flags = os.popen("python3 -m pybind11 --includes").read().strip().split()
+pybind_flags = subprocess.check_output(
+    [env['PYTHON_INTERPRETER'], "-m", "pybind11", "--includes"], text=True
+).strip().split()
 pybind_includes = [flag[2:] for flag in pybind_flags if flag.startswith("-I")]
 
-root_config = env.WhereIs("root-config") or "root-config"
+root_config = env['ROOT_CONFIG'] or env.WhereIs("root-config") or "root-config"
+if not os.path.isabs(root_config):
+    root_config = env.WhereIs(root_config) or root_config
+if not os.path.isfile(root_config) or not os.access(root_config, os.X_OK):
+    raise RuntimeError(f"root-config is not executable: {root_config}")
+root_config = os.path.realpath(root_config)
+env['ROOT_CONFIG'] = root_config
+rootcling = os.path.join(os.path.dirname(root_config), "rootcling")
+if not os.path.isfile(rootcling) or not os.access(rootcling, os.X_OK):
+    raise RuntimeError(f"rootcling is not executable beside root-config: {rootcling}")
+env['ROOTCLING'] = os.path.realpath(rootcling)
 root_cflags = subprocess.check_output([root_config, "--cflags"], text=True).strip().split()
 root_version = subprocess.check_output([root_config, "--version"], text=True).strip()
+root_libdir = subprocess.check_output([root_config, "--libdir"], text=True).strip()
+if not os.path.isdir(root_libdir):
+    raise RuntimeError(f"ROOT library directory does not exist: {root_libdir}")
+env['ROOT_LIBDIR'] = os.path.realpath(root_libdir)
 root_standard_flags = [flag for flag in root_cflags if re.fullmatch(r"-std=(?:c|gnu)\+\+(?:1z|17|2a|20|2b|23)", flag)]
 if len(set(root_standard_flags)) > 1:
     raise RuntimeError("root-config reports multiple C++ language standards: " + " ".join(root_standard_flags))
@@ -348,7 +378,7 @@ standard_values = {"c++17": "201703L", "c++20": "202002L", "c++23": "202302L"}
 if standard_name not in standard_values:
     raise RuntimeError(f"Unsupported ROOT C++ language standard: {root_standard}")
 
-env.ParseConfig('root-config --cflags --libs')
+env.ParseConfig(f'{shlex.quote(root_config)} --cflags --libs')
 env.ParseConfig('pkg-config --cflags --libs yaml-cpp')
 env["CXXFLAGS"] = [flag for flag in env.get("CXXFLAGS", []) if not str(flag).startswith("-std=")]
 env.AppendUnique(CXXFLAGS=[
@@ -515,6 +545,7 @@ scripts_dir = os.path.join(env['PREFIX'], "share", "cascade", "scripts")
 sign_script = env.Install(scripts_dir, "scripts/sign_plugin.sh")
 env.AddPostAction(sign_script, make_executable)
 plugin_sconstruct = env.Install(scripts_dir, "scripts/plugin_sconstruct")
+bundle_activate = env.InstallAs(os.path.join(env['PREFIX'], "activate.sh"), "scripts/activate_bundle.sh")
 
 cascade_so_target = os.path.join(cascade_dir, f"_cascade{env['SHLIBSUFFIX']}")
 cascade_so_link = env.Command(cascade_so_target, pybind_install, create_symlink)
@@ -544,7 +575,7 @@ for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
             hdr_install += env.Install(os.path.join(env['INCLUDEDIR']), globs)
 
 # cppinstall
-install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct + cpp_worker_install + python_worker_install
+install_targets = core_install + lib_analysis_install + utils_install + lib_param_install + lib_plot_install + pybind_install + py_install + cascade_cli_package + cascade_so_link + pymodule_init + cli_install + hdr_install + sign_script + plugin_sconstruct + bundle_activate + cpp_worker_install + python_worker_install
 build_targets = utils_obj + lib_analysis_obj + lib_param_obj + lib_plot_obj + pybind_obj + cpp_worker + python_worker
 
 install_targets = SCons.Util.unique(install_targets)

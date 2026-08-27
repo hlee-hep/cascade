@@ -5,6 +5,20 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-28
+
+### Added
+
+- Self-contained runtime bundle activation for co-located Python, ROOT, Cascade,
+  and bundle-local plugin configuration.
+
+### Changed
+
+- Build configuration now accepts explicit `PYTHON` and `ROOT_CONFIG` tools and
+  consistently uses their Python environment, ROOT utilities, and libraries.
+- Plugin installation now defaults to the active Cascade prefix; only external
+  plugin prefixes require persistent registration.
+
 ## [0.3.0-rc1] - 2026-08-12
 
 ### Added
@@ -82,5 +96,6 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
   metadata, and the configured signature policy before registration.
 - Protected outputs are staged and promoted only after successful lifecycle completion.
 
-[Unreleased]: https://github.com/hlee-hep/cascade/compare/v0.3.0-rc1...HEAD
+[Unreleased]: https://github.com/hlee-hep/cascade/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hlee-hep/cascade/releases/tag/v0.3.0
 [0.3.0-rc1]: https://github.com/hlee-hep/cascade/releases/tag/v0.3.0-rc1

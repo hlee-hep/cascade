@@ -1,6 +1,5 @@
 import argparse
 import math
-import os
 
 from .common import _parse_kv, _positive_int
 from .cache import cmd_cache_explain, cmd_cache_list, cmd_cache_prune
@@ -81,8 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plugin_install.add_argument(
         "--prefix",
-        default=os.path.expanduser("~/.local"),
-        help="Plugin installation prefix (default: ~/.local)",
+        help="Plugin installation prefix (default: active Cascade prefix)",
     )
     plugin_install.add_argument("--package", help="Installed package name (default: source directory name)")
     plugin_install.add_argument("--private-key", help="Ed25519 private key used to sign installed manifests")

@@ -3,14 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - "v*-rc*"
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  prerelease:
-    name: Create prerelease
+  release:
+    name: Create release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
@@ -29,8 +29,8 @@ jobs:
         with:
           environment-name: cascade-release
           create-args: >-
-            python=3.11
-            root_base=6.32
+            python=3.14
+            root_base=6.40
             cxx-compiler
             pkg-config
             scons
@@ -40,7 +40,7 @@ jobs:
             nlohmann_json
             openssl
           cache-environment: true
-          cache-environment-key: cascade-release-root632-py311
+          cache-environment-key: cascade-release-root640-py314
           post-cleanup: all
 
       - name: Validate release inputs
@@ -91,14 +91,18 @@ jobs:
             --input-hash "$baseline/input-hash.json" \
             --output-hash "$baseline/output-hash.json"
 
-      - name: Create GitHub prerelease
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          release_args=()
+          if [[ "$version" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP"/cascade-benchmark/*.json \
             --verify-tag \
-            --prerelease \
+            "${release_args[@]}" \
             --title "Cascade $version" \
             --notes-file "docs/releases/$GITHUB_REF_NAME.md"

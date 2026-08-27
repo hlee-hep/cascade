@@ -144,7 +144,7 @@ Python packages are imported through the private namespace.
 The recommended workflow is the transactional CLI installer:
 
 ```bash
-cascade plugin install . --prefix ~/.local
+cascade plugin install .
 ```
 
 It uses the active Cascade installation as the build SDK, installs into a

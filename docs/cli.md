@@ -43,7 +43,7 @@ cascade plugin install ./my-plugin
 cascade plugin install ./my-plugin --prefix /data/cascade-plugins
 ```
 
-The default plugin prefix is `~/.local`. A conventional source directory needs
+The default plugin prefix is the active `CASCADE_PREFIX`. A conventional source directory needs
 only matching `include/*.hh` and `src/*.cc` modules and/or `python/*.py` modules.
 An optional `cascade-plugin.yaml` lists ROOT-dependent modules or C++ class-name
 overrides. Package-owned `SConstruct` files are rejected. Installation first
@@ -71,7 +71,9 @@ cascade plugin path remove /opt/experiment-plugins
 
 `path add --create` creates a missing prefix. Configuration is stored in
 `${XDG_CONFIG_HOME:-~/.config}/cascade/config.json`. `CASCADE_CONFIG_FILE`
-selects another file for tests and isolated environments.
+selects another file; the installed bundle activation script sets it to
+`${CASCADE_PREFIX}/var/cascade/config.json` so plugin registrations do not leak
+across toolchain bundles.
 
 Require trusted publisher signatures for controller-backed commands by placing
 the global option before the command:

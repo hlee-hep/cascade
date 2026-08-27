@@ -929,6 +929,10 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
     }
 
 
+def _default_plugin_prefix() -> str:
+    return _CLI_PREFIX
+
+
 def cmd_plugin_install(args) -> None:
     source = os.path.realpath(os.path.abspath(os.path.expanduser(args.source)))
     if not os.path.isdir(source):
@@ -943,7 +947,7 @@ def cmd_plugin_install(args) -> None:
         raise ValueError("Plugin package must contain only letters, digits, '.', '_', or '-'")
     if bool(args.private_key) != bool(args.public_key):
         raise ValueError("--private-key and --public-key must be provided together")
-    target_prefix = canonical_prefix(args.prefix)
+    target_prefix = canonical_prefix(args.prefix or _default_plugin_prefix())
     os.makedirs(target_prefix, exist_ok=True)
     _ensure_real_directory_tree(target_prefix)
     trusted_key_snapshots = _snapshot_trusted_keys(target_prefix, args.public_key)
@@ -1022,7 +1026,8 @@ def cmd_plugin_install(args) -> None:
                 operator_key["data"] if publish_public_key else None,
             )
             try:
-                registered = add_plugin_prefix(target_prefix)
+                runtime_prefix = canonical_prefix(_CLI_PREFIX)
+                registered = target_prefix != runtime_prefix and add_plugin_prefix(target_prefix)
             except Exception as config_error:
                 try:
                     _restore_publish_operations(publish_operations)

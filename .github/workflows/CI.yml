@@ -30,6 +30,9 @@ jobs:
           - root: "6.34"
             python: "3.12"
             cache_key: root634-py312
+          - root: "6.40"
+            python: "3.14"
+            cache_key: root640-py314
 
     defaults:
       run:
@@ -110,7 +113,7 @@ jobs:
 
       - name: Check installed runtime
         run: |
-          python -c 'import cascade; assert cascade.__version__ == "0.3.0-rc1"; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
+          python -c 'import cascade; assert cascade.__version__ == "0.3.0"; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
           cascade doctor runtime --json
 
       - name: Install and verify toy dimuon plugin

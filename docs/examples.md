@@ -19,7 +19,7 @@ provenance, worker isolation, a cutflow, and a fit pull plot.
 
 ```bash
 cd examples/plugins/toy_dimuon_analysis
-cascade plugin install . --prefix ~/.local
+cascade plugin install .
 python3 run_analysis.py --output example-output
 python3 run_analysis.py --output example-output  # cache reuse
 ```
@@ -56,7 +56,7 @@ Build/install:
 
 ```bash
 cd examples/plugins/mixed_pipeline
-cascade plugin install . --prefix ~/.local
+cascade plugin install .
 ```
 
 Run:

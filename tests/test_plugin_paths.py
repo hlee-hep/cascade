@@ -115,10 +115,11 @@ class PluginPathConfigTests(unittest.TestCase):
             prefixes = [root / "one", root / "two"]
             for prefix in prefixes:
                 prefix.mkdir()
-            ready = multiprocessing.Queue()
-            start = multiprocessing.Event()
+            context = multiprocessing.get_context("fork")
+            ready = context.Queue()
+            start = context.Event()
             processes = [
-                multiprocessing.Process(
+                context.Process(
                     target=_concurrent_add,
                     args=(str(config), str(prefix), ready, start),
                 )
