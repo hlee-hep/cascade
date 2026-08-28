@@ -69,18 +69,49 @@ def python_plugin_metadata(path):
         result[node.name] = metadata
     return result
 
+def module_code_sha256(path, digest, dependencies):
+    fingerprint = hashlib.sha256()
+    fingerprint.update(path.encode("utf-8"))
+    fingerprint.update(b"\0")
+    fingerprint.update(digest.encode("ascii"))
+    fingerprint.update(b"\n")
+    for dependency in sorted(dependencies, key=lambda item: item["path"]):
+        fingerprint.update(dependency["path"].encode("utf-8"))
+        fingerprint.update(b"\0")
+        fingerprint.update(dependency["sha256"].encode("ascii"))
+        fingerprint.update(b"\n")
+    return fingerprint.hexdigest()
+
 def generate_manifest(target, source, env):
     language = env["CASCADE_MANIFEST_LANGUAGE"]
     entries = []
+    installed = {os.path.basename(str(item)): str(item) for item in source}
     for src in source:
         path = str(src)
         rel = os.path.basename(path)
         name = os.path.splitext(rel)[0]
+        classes = python_plugin_classes(path) if language == "python" else []
+        if language == "python" and not classes:
+            continue
+        dependency_items = []
+        runtime_dependencies = source_dependencies.get(language, {}).get(name, []) if language == "python" else []
+        for dependency in runtime_dependencies:
+            dependency_name = os.path.basename(dependency)
+            dependency_path = installed.get(dependency_name)
+            if not dependency_path:
+                raise RuntimeError(f"Missing installed source dependency for {name}: {dependency}")
+            dependency_items.append({
+                "path": dependency_name,
+                "sha256": sha256_file(dependency_path),
+            })
+        artifact_sha256 = sha256_file(path)
         entry = {
             "name": name,
             "language": language,
             "path": rel,
-            "sha256": sha256_file(path),
+            "sha256": artifact_sha256,
+            "dependencies": sorted(dependency_items, key=lambda item: item["path"]),
+            "code_sha256": module_code_sha256(rel, artifact_sha256, dependency_items),
         }
         if language == "cpp":
             if name.startswith("lib"):
@@ -89,7 +120,7 @@ def generate_manifest(target, source, env):
             if entry["name"] in module_metadata:
                 entry["metadata"] = module_metadata[entry["name"]]
         elif language == "python":
-            entry["classes"] = python_plugin_classes(path)
+            entry["classes"] = classes
             metadata = python_plugin_metadata(path)
             for class_name in entry["classes"]:
                 if class_name in module_metadata:
@@ -99,7 +130,7 @@ def generate_manifest(target, source, env):
         entries.append(entry)
 
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "package": env["CASCADE_PLUGIN_PACKAGE"],
         "modules": sorted(entries, key=lambda item: (item["language"], item["name"], item["path"])),
     }
@@ -160,6 +191,13 @@ if module_metadata_raw:
         module_metadata = json.loads(module_metadata_raw)
     except Exception as e:
         raise RuntimeError(f"Invalid CASCADE_PLUGIN_METADATA JSON: {e}")
+source_dependencies = {"cpp": {}, "python": {}}
+source_dependencies_raw = os.environ.get("CASCADE_PLUGIN_SOURCE_DEPENDENCIES", "")
+if source_dependencies_raw:
+    try:
+        source_dependencies = json.loads(source_dependencies_raw)
+    except Exception as e:
+        raise RuntimeError(f"Invalid CASCADE_PLUGIN_SOURCE_DEPENDENCIES JSON: {e}")
 
 env = Environment(ENV=os.environ, CASCADE_PLUGIN_PACKAGE=package_name)
 
@@ -206,12 +244,23 @@ cpp_install = []
 
 # -------- C++ modules --------
 headers = [str(h) for h in Glob("include/*.hh")]
-modules = [os.path.splitext(os.path.basename(h))[0] for h in headers]
+modules = [
+    os.path.splitext(os.path.basename(h))[0]
+    for h in headers
+    if os.path.splitext(os.path.basename(h))[0].endswith("Module")
+]
 
 for mod in modules:
     cc_in = f"src/{mod}.cc"
     hh_in = f"include/{mod}.hh"
+    module_env = root_env if "*" in root_modules or mod in root_modules else env
     sources = [cc_in]
+    for index, dependency in enumerate(source_dependencies.get("cpp", {}).get(mod, [])):
+        dependency_stem = os.path.splitext(os.path.basename(dependency))[0]
+        dependency_object = module_env.SharedObject(
+            f"build/src/{mod}_dependency_{index}_{dependency_stem}", dependency
+        )
+        sources += dependency_object
 
     # Auto-generate ABI entry if not provided in source
     cc_text = read_text(cc_in)
@@ -227,7 +276,6 @@ CASCADE_PLUGIN_EXPORT void CascadeRegisterPlugin() {{ CASCADE_REGISTER_MODULE({c
         write_text(entry_out, entry_src)
         sources.append(entry_out)
 
-    module_env = root_env if "*" in root_modules or mod in root_modules else env
     lib = module_env.SharedLibrary(mod, sources)
     libs.append(lib)
 

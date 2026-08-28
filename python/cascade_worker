@@ -106,6 +106,7 @@ def main():
         if (
             origin["manifest_sha256"] != request["manifest_sha256"]
             or origin["artifact_sha256"] != request["artifact_sha256"]
+            or origin["code_sha256"] != request["code_sha256"]
         ):
             raise RuntimeError(
                 "Plugin changed between isolated execution validation and worker startup"

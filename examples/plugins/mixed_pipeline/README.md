@@ -44,6 +44,10 @@ then compiles the original C++ sources, installs the original Python sources,
 generates separate verified manifests, assigns identity from the verified
 artifacts, and records the prefix in the persistent configuration.
 
+The same configuration groups `TextFormatting.cc` with `TextProducerModule` and
+`text_transform_helpers.py` with `text_transform_module`. They demonstrate that a
+single C++ or Python module can be built from multiple verified source files.
+
 To test a signed distribution instead:
 
 ```bash

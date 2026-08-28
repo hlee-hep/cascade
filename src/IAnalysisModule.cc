@@ -571,7 +571,10 @@ void IAnalysisModule::InvokeFailureHook_(ModulePhase phase, const std::string &m
 
 std::string IAnalysisModule::ComputeSnapshotHash_() const
 {
-    const std::string artifactHash = m_Impl->Origin ? m_Impl->Origin->ArtifactSha256 : std::string();
+    const std::string artifactHash = m_Impl->Origin
+                                         ? (m_Impl->Origin->CodeSha256.empty() ? m_Impl->Origin->ArtifactSha256
+                                                                              : m_Impl->Origin->CodeSha256)
+                                         : std::string();
     return SnapshotHasher::ComputeSerialized(
         m_Impl->Parameters, m_Impl->BaseName, m_Impl->CodeVersionHash, AnalysisSnapshotState(),
         m_Impl->Context.SnapshotState(), artifactHash,

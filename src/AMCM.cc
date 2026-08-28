@@ -219,7 +219,8 @@ std::shared_ptr<IAnalysisModule> AMCM::RegisterModule(const std::string &base, c
     if (origin)
     {
         mod->SetBaseName(base);
-        mod->SetCodeHash("artifact-sha256:" + origin->ArtifactSha256);
+        mod->SetCodeHash("code-sha256:" +
+                         (origin->CodeSha256.empty() ? origin->ArtifactSha256 : origin->CodeSha256));
     }
     mod->SetPluginOrigin(origin);
     mod->SetName(instanceName);

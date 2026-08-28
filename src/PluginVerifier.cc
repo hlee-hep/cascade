@@ -357,6 +357,67 @@ std::string RequiredString(const nlohmann::json &value, const char *field)
     return value.at(field).get<std::string>();
 }
 
+void ValidateRelativeArtifactPath(const std::string &text, const std::string &label)
+{
+    const fs::path relative(text);
+    if (relative.is_absolute() || relative.has_root_path() || text.find('\\') != std::string::npos)
+        throw std::runtime_error("invalid " + label + " path: " + text);
+    for (const auto &component : relative)
+        if (component == "." || component == "..")
+            throw std::runtime_error(label + " path must be normalized: " + text);
+}
+
+struct ManifestDependency
+{
+    std::string Path;
+    std::string Sha256;
+};
+
+std::vector<ManifestDependency> ManifestDependencies(const nlohmann::json &entry, int schema,
+                                                     const std::string &language, const std::string &modulePath)
+{
+    if (schema == 2) return {};
+    if (!entry.contains("dependencies") || !entry.at("dependencies").is_array())
+        throw std::runtime_error("schema 3 manifest module requires a dependencies array");
+    if (language != "python" && !entry.at("dependencies").empty())
+        throw std::runtime_error("only Python plugin modules may declare runtime source dependencies");
+    static const std::regex hashPattern("[0-9a-f]{64}");
+    std::vector<ManifestDependency> dependencies;
+    std::vector<std::string> paths;
+    for (const auto &value : entry.at("dependencies"))
+    {
+        if (!value.is_object()) throw std::runtime_error("manifest dependency entry must be an object");
+        ManifestDependency dependency{RequiredString(value, "path"), RequiredString(value, "sha256")};
+        ValidateRelativeArtifactPath(dependency.Path, "plugin dependency");
+        const fs::path dependencyPath(dependency.Path);
+        static const std::regex pythonSourcePattern("[A-Za-z_][A-Za-z0-9_]*\\.py");
+        if (!dependencyPath.parent_path().empty() ||
+            !std::regex_match(dependencyPath.filename().string(), pythonSourcePattern) ||
+            dependencyPath.filename() == "__init__.py")
+            throw std::runtime_error("Python plugin dependency must be a top-level importable .py file: " +
+                                     dependency.Path);
+        if (!std::regex_match(dependency.Sha256, hashPattern))
+            throw std::runtime_error("invalid dependency sha256: " + dependency.Path);
+        if (dependency.Path == modulePath || std::find(paths.begin(), paths.end(), dependency.Path) != paths.end())
+            throw std::runtime_error("duplicate plugin dependency path: " + dependency.Path);
+        paths.push_back(dependency.Path);
+        dependencies.push_back(std::move(dependency));
+    }
+    return dependencies;
+}
+
+std::string ModuleCodeSha256(const std::string &path, const std::string &digest,
+                             std::vector<ManifestDependency> dependencies)
+{
+    std::sort(dependencies.begin(), dependencies.end(),
+              [](const auto &left, const auto &right) { return left.Path < right.Path; });
+    std::ostringstream fingerprint;
+    fingerprint << path << '\0' << digest << '\n';
+    for (const auto &dependency : dependencies)
+        fingerprint << dependency.Path << '\0' << dependency.Sha256 << '\n';
+    return Sha256(fingerprint.str());
+}
+
 ModuleMetadata ManifestMetadata(const nlohmann::json &entry, const std::string &identity)
 {
     ModuleMetadata metadata;
@@ -409,8 +470,9 @@ ModuleMetadata ManifestMetadata(const nlohmann::json &entry, const std::string &
 } // namespace
 
 VerifiedPluginArtifact::VerifiedPluginArtifact(const VerifiedPluginArtifact &other)
-    : Name(other.Name), Language(other.Language), Path(other.Path), Sha256(other.Sha256), Classes(other.Classes),
-      Source(other.Source), Origin(other.Origin), m_Descriptor(other.m_Descriptor < 0 ? -1 : dup(other.m_Descriptor))
+    : Name(other.Name), Language(other.Language), Path(other.Path), Sha256(other.Sha256),
+      CodeSha256(other.CodeSha256), Classes(other.Classes), Dependencies(other.Dependencies), Source(other.Source),
+      Origin(other.Origin), m_Descriptor(other.m_Descriptor < 0 ? -1 : dup(other.m_Descriptor))
 {
     if (other.m_Descriptor >= 0 && m_Descriptor < 0) throw std::runtime_error("cannot duplicate plugin descriptor");
 }
@@ -425,8 +487,9 @@ VerifiedPluginArtifact &VerifiedPluginArtifact::operator=(const VerifiedPluginAr
 
 VerifiedPluginArtifact::VerifiedPluginArtifact(VerifiedPluginArtifact &&other) noexcept
     : Name(std::move(other.Name)), Language(std::move(other.Language)), Path(std::move(other.Path)),
-      Sha256(std::move(other.Sha256)), Classes(std::move(other.Classes)), Source(std::move(other.Source)),
-      Origin(std::move(other.Origin)), m_Descriptor(other.m_Descriptor)
+      Sha256(std::move(other.Sha256)), CodeSha256(std::move(other.CodeSha256)),
+      Classes(std::move(other.Classes)), Dependencies(std::move(other.Dependencies)),
+      Source(std::move(other.Source)), Origin(std::move(other.Origin)), m_Descriptor(other.m_Descriptor)
 {
     other.m_Descriptor = -1;
 }
@@ -439,7 +502,9 @@ VerifiedPluginArtifact &VerifiedPluginArtifact::operator=(VerifiedPluginArtifact
     Language = std::move(other.Language);
     Path = std::move(other.Path);
     Sha256 = std::move(other.Sha256);
+    CodeSha256 = std::move(other.CodeSha256);
     Classes = std::move(other.Classes);
+    Dependencies = std::move(other.Dependencies);
     Source = std::move(other.Source);
     Origin = std::move(other.Origin);
     m_Descriptor = other.m_Descriptor;
@@ -497,9 +562,10 @@ PluginManifestIndexResult PluginVerifier::IndexManifests(const std::vector<std::
                     throw std::runtime_error("invalid plugin package name");
                 const auto manifestBytes = ReadRegularFile(manifestPath, kMaxManifestBytes);
                 const nlohmann::json manifest = nlohmann::json::parse(manifestBytes.begin(), manifestBytes.end());
-                if (!manifest.is_object() || !manifest.contains("schema") || !manifest.at("schema").is_number_integer() ||
-                    manifest.at("schema").get<int>() != 2)
+                if (!manifest.is_object() || !manifest.contains("schema") || !manifest.at("schema").is_number_integer())
                     throw std::runtime_error("unsupported plugin manifest schema");
+                const int schema = manifest.at("schema").get<int>();
+                if (schema != 2 && schema != 3) throw std::runtime_error("unsupported plugin manifest schema");
                 if (RequiredString(manifest, "package") != packageName)
                     throw std::runtime_error("manifest package name does not match its directory");
                 if (!manifest.contains("modules") || !manifest.at("modules").is_array())
@@ -517,12 +583,13 @@ PluginManifestIndexResult PluginVerifier::IndexManifests(const std::vector<std::
                     const std::string expectedHash = RequiredString(entry, "sha256");
                     if (!std::regex_match(expectedHash, hashPattern))
                         throw std::runtime_error("invalid artifact sha256: " + name);
+                    ValidateRelativeArtifactPath(relativeText, "plugin artifact");
                     const fs::path relative(relativeText);
-                    if (relative.is_absolute() || relative.has_root_path() || relativeText.find('\\') != std::string::npos)
-                        throw std::runtime_error("invalid plugin artifact path: " + relativeText);
-                    for (const auto &component : relative)
-                        if (component == "." || component == "..")
-                            throw std::runtime_error("plugin artifact path must be normalized: " + relativeText);
+                    const auto dependencies = ManifestDependencies(entry, schema, entryLanguage, relativeText);
+                    const std::string codeSha256 = schema == 3 ? RequiredString(entry, "code_sha256") : expectedHash;
+                    if (!std::regex_match(codeSha256, hashPattern) ||
+                        (schema == 3 && codeSha256 != ModuleCodeSha256(relativeText, expectedHash, dependencies)))
+                        throw std::runtime_error("invalid module code_sha256: " + name);
                     std::vector<std::string> identities;
                     if (entryLanguage == "python")
                     {
@@ -550,6 +617,7 @@ PluginManifestIndexResult PluginVerifier::IndexManifests(const std::vector<std::
                         candidate.Identity = identity;
                         candidate.ArtifactPath = (packageDir / relative).lexically_normal().string();
                         candidate.DeclaredSha256 = expectedHash;
+                        candidate.DeclaredCodeSha256 = codeSha256;
                         candidate.Metadata = ManifestMetadata(entry, identity);
                         candidate.HasSignature = hasSignature;
                         result.Entries.push_back(std::move(candidate));
@@ -703,9 +771,10 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
     }
 
     const nlohmann::json manifest = nlohmann::json::parse(manifestBytes.begin(), manifestBytes.end());
-    if (!manifest.is_object() || !manifest.contains("schema") || !manifest.at("schema").is_number_integer() ||
-        manifest.at("schema").get<int>() != 2)
+    if (!manifest.is_object() || !manifest.contains("schema") || !manifest.at("schema").is_number_integer())
         throw std::runtime_error("unsupported plugin manifest schema");
+    const int schema = manifest.at("schema").get<int>();
+    if (schema != 2 && schema != 3) throw std::runtime_error("unsupported plugin manifest schema");
     if (RequiredString(manifest, "package") != packageName)
         throw std::runtime_error("manifest package name does not match its directory");
     if (!manifest.contains("modules") || !manifest.at("modules").is_array())
@@ -725,15 +794,16 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
         const std::string expectedHash = RequiredString(entry, "sha256");
         static const std::regex hashPattern("[0-9a-f]{64}");
         if (!std::regex_match(expectedHash, hashPattern)) throw std::runtime_error("invalid artifact sha256: " + name);
+        ValidateRelativeArtifactPath(relativeText, "plugin artifact");
         const fs::path relative(relativeText);
-        if (relative.is_absolute() || relative.has_root_path() || relativeText.find('\\') != std::string::npos)
-            throw std::runtime_error("invalid plugin artifact path: " + relativeText);
-        for (const auto &component : relative)
-            if (component == "." || component == "..")
-                throw std::runtime_error("plugin artifact path must be normalized: " + relativeText);
         if (std::find(paths.begin(), paths.end(), relativeText) != paths.end())
             throw std::runtime_error("duplicate plugin artifact path: " + relativeText);
         paths.push_back(relativeText);
+        const auto declaredDependencies = ManifestDependencies(entry, schema, entryLanguage, relativeText);
+        const std::string codeSha256 = schema == 3 ? RequiredString(entry, "code_sha256") : expectedHash;
+        if (!std::regex_match(codeSha256, hashPattern) ||
+            (schema == 3 && codeSha256 != ModuleCodeSha256(relativeText, expectedHash, declaredDependencies)))
+            throw std::runtime_error("invalid module code_sha256: " + name);
 
         std::vector<std::string> classes;
         if (entryLanguage == "python")
@@ -781,12 +851,40 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
 
         int descriptor = OpenRegularFile(artifactPath);
         std::vector<unsigned char> artifactBytes;
+        std::vector<VerifiedPluginDependency> verifiedDependencies;
         try
         {
             const std::string actualHash = Sha256Descriptor(descriptor);
             if (actualHash != expectedHash)
                 throw std::runtime_error("plugin artifact hash mismatch: " + artifactPath.string());
             if (entryLanguage == "python") artifactBytes = ReadDescriptor(descriptor, kMaxPythonArtifactBytes);
+            for (const auto &dependency : declaredDependencies)
+            {
+                const fs::path dependencyPath = packageDir / dependency.Path;
+                if (!fs::is_regular_file(dependencyPath) || !IsContainedPath(packageDir, dependencyPath) ||
+                    HasSymlinkComponent(packageDir, dependencyPath))
+                    throw std::runtime_error("plugin dependency is missing or escapes its package: " +
+                                             dependencyPath.string());
+                if (result.Trust != PluginTrustStatus::Signed)
+                    ValidateUnsignedPath(dependencyPath, "dependency");
+                const int dependencyDescriptor = OpenRegularFile(dependencyPath);
+                try
+                {
+                    const std::string actualDependencyHash = Sha256Descriptor(dependencyDescriptor);
+                    if (actualDependencyHash != dependency.Sha256)
+                        throw std::runtime_error("plugin dependency hash mismatch: " + dependencyPath.string());
+                    const auto dependencyBytes = ReadDescriptor(dependencyDescriptor, kMaxPythonArtifactBytes);
+                    verifiedDependencies.push_back(
+                        {fs::canonical(dependencyPath).string(), actualDependencyHash,
+                         std::string(reinterpret_cast<const char *>(dependencyBytes.data()), dependencyBytes.size())});
+                    close(dependencyDescriptor);
+                }
+                catch (...)
+                {
+                    close(dependencyDescriptor);
+                    throw;
+                }
+            }
         }
         catch (...)
         {
@@ -800,13 +898,16 @@ VerifiedPluginPackage PluginVerifier::VerifyPackage(const std::string &packageDi
         artifact.Language = entryLanguage;
         artifact.Path = fs::canonical(artifactPath).string();
         artifact.Sha256 = actualHash;
+        artifact.CodeSha256 = codeSha256;
         artifact.Classes = std::move(classes);
+        artifact.Dependencies = std::move(verifiedDependencies);
         if (entryLanguage == "python")
             artifact.Source.assign(reinterpret_cast<const char *>(artifactBytes.data()), artifactBytes.size());
         artifact.Origin.Package = packageName;
         artifact.Origin.ManifestPath = result.ManifestPath;
         artifact.Origin.ManifestSha256 = result.ManifestSha256;
         artifact.Origin.ArtifactSha256 = actualHash;
+        artifact.Origin.CodeSha256 = codeSha256;
         artifact.Origin.SignerFingerprint = result.SignerFingerprint;
         artifact.Origin.Trust = result.Trust;
         artifact.m_Descriptor = descriptor;

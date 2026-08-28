@@ -133,6 +133,12 @@ module can include this header and compile without ROOT headers. Include
 facilities, and list those module stems under `root_modules` in the optional
 package `cascade-plugin.yaml`.
 
+When one module uses multiple implementation files, declare the helper sources
+under `source_dependencies` instead of turning them into artificial modules. C++
+helper `.cc` files are linked into the owning module library; Python helper `.py`
+files are installed, hashed, and verified as part of the owning module's code
+identity. See [Plugin development and distribution](plugins.md#source-layout).
+
 Parameters are frozen and published as an immutable snapshot for the complete run,
 so concurrent reads do not take the configuration mutex. Still copy scalar or
 vector parameters into local variables before very hot event loops to avoid repeated

@@ -14,7 +14,7 @@ class PythonWorkerIntegrationTests(unittest.TestCase):
                 "WorkerTestPythonModule", "python-worker-instance"
             )
             self.assertEqual(module.get_basename(), "WorkerTestPythonModule")
-            self.assertRegex(module.get_code_hash(), r"^artifact-sha256:[0-9a-f]{64}$")
+            self.assertRegex(module.get_code_hash(), r"^code-sha256:[0-9a-f]{64}$")
             module.set_output_directory(root / "output")
             module.set_cache_directory(root / "cache")
             result = controller.run_module_isolated(module)

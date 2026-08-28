@@ -229,6 +229,7 @@ RunResult AMCM::RunAModuleIsolated(std::shared_ptr<IAnalysisModule> module)
         {"manifest_path", origin->ManifestPath},
         {"manifest_sha256", origin->ManifestSha256},
         {"artifact_sha256", origin->ArtifactSha256},
+        {"code_sha256", origin->CodeSha256.empty() ? origin->ArtifactSha256 : origin->CodeSha256},
         {"runtime_options",
          {{"input_hash", runtimeOptions.InputHash},
           {"output_hash", runtimeOptions.OutputHash},

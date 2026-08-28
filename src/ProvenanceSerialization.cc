@@ -118,6 +118,7 @@ json PluginOriginJson(const std::optional<PluginOrigin> &origin)
             {"manifest_path", origin->ManifestPath},
             {"manifest_sha256", origin->ManifestSha256},
             {"artifact_sha256", origin->ArtifactSha256},
+            {"code_sha256", origin->CodeSha256.empty() ? origin->ArtifactSha256 : origin->CodeSha256},
             {"signer_fingerprint", origin->SignerFingerprint.empty() ? json(nullptr) : json(origin->SignerFingerprint)}};
 }
 
@@ -129,6 +130,7 @@ std::optional<PluginOrigin> PluginOriginFromJson(const json &value)
     origin.ManifestPath = value.value("manifest_path", "");
     origin.ManifestSha256 = value.value("manifest_sha256", "");
     origin.ArtifactSha256 = value.value("artifact_sha256", "");
+    origin.CodeSha256 = value.value("code_sha256", origin.ArtifactSha256);
     if (value.contains("signer_fingerprint") && value["signer_fingerprint"].is_string())
         origin.SignerFingerprint = value["signer_fingerprint"].get<std::string>();
     origin.Trust = value.value("trust", "Verified") == "Signed" ? PluginTrustStatus::Signed : PluginTrustStatus::Verified;

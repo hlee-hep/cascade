@@ -749,7 +749,7 @@ void TestControllerContracts()
     const auto workerOrigin = workerModule->GetPluginOrigin();
     assert(workerOrigin.has_value());
     assert(workerModule->BaseName() == "WorkerTestModule");
-    assert(workerModule->GetCodeHash() == "artifact-sha256:" + workerOrigin->ArtifactSha256);
+    assert(workerModule->GetCodeHash() == "code-sha256:" + workerOrigin->ArtifactSha256);
     workerModule->SetOutputDirectory(isolatedOutput.string());
     workerModule->SetCacheDirectory(isolatedCache.string());
     if (!std::getenv("CASCADE_TEST_SKIP_INSTRUMENTED_EXEC"))
@@ -1722,6 +1722,86 @@ void TestPluginVerifierService()
     fs::remove_all(root);
 }
 
+void TestPluginSourceDependencies()
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "cascade-plugin-source-dependencies";
+    const fs::path package = root / "pyplugin" / "dependency-package";
+    const fs::path trustStore = root / "trusted_keys";
+    fs::remove_all(root);
+    fs::create_directories(package);
+    fs::create_directories(trustStore);
+    {
+        std::ofstream source(package / "example_module.py");
+        source << "hello";
+    }
+    {
+        std::ofstream helper(package / "helper.py");
+        helper << "VALUE = 7\n";
+    }
+    const nlohmann::json manifest = {
+        {"schema", 3},
+        {"package", "dependency-package"},
+        {"modules",
+         {{{"name", "example_module"},
+           {"language", "python"},
+           {"path", "example_module.py"},
+           {"sha256", "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"},
+           {"code_sha256", "410c8a3969202cd0e31cfada5fb52c0d38ba3bd59f2c975bbfef2f2619796637"},
+           {"dependencies",
+            {{{"path", "helper.py"},
+              {"sha256", "76b26c40fd1de8995c9a5457c2bd4cf363c42d1f88a66f4d583bc10295f2062a"}}}},
+           {"classes", {"ExampleModule"}}}}},
+    };
+    {
+        std::ofstream output(package / "plugin_manifest.json");
+        output << manifest.dump(2) << '\n';
+    }
+
+    const auto index = PluginVerifier::IndexManifests({(root / "pyplugin").string()}, "python");
+    assert(index.Errors.empty());
+    assert(index.Entries.size() == 1);
+    assert(index.Entries.front().DeclaredCodeSha256 ==
+           "410c8a3969202cd0e31cfada5fb52c0d38ba3bd59f2c975bbfef2f2619796637");
+
+    const auto verified = PluginVerifier::VerifyPackage(package.string(), trustStore.string(),
+                                                        PluginTrustPolicy::Verified, "python", "", "ExampleModule");
+    assert(verified.Artifacts.size() == 1);
+    assert(verified.Artifacts.front().CodeSha256 ==
+           "410c8a3969202cd0e31cfada5fb52c0d38ba3bd59f2c975bbfef2f2619796637");
+    assert(verified.Artifacts.front().Dependencies.size() == 1);
+    assert(verified.Artifacts.front().Dependencies.front().Source == "VALUE = 7\n");
+    assert(verified.Artifacts.front().Origin.CodeSha256 == verified.Artifacts.front().CodeSha256);
+
+    {
+        std::ofstream helper(package / "helper.py", std::ios::trunc);
+        helper << "VALUE = 8\n";
+    }
+    bool tamperingRejected = false;
+    try
+    {
+        (void)PluginVerifier::VerifyPackage(package.string(), trustStore.string(), PluginTrustPolicy::Verified,
+                                            "python", "", "ExampleModule");
+    }
+    catch (const std::runtime_error &error)
+    {
+        tamperingRejected = std::string(error.what()).find("dependency hash mismatch") != std::string::npos;
+    }
+    assert(tamperingRejected);
+
+    auto nestedManifest = manifest;
+    nestedManifest["modules"][0]["dependencies"][0]["path"] = "helpers/helper.py";
+    {
+        std::ofstream output(package / "plugin_manifest.json", std::ios::trunc);
+        output << nestedManifest.dump(2) << '\n';
+    }
+    const auto nestedIndex = PluginVerifier::IndexManifests({(root / "pyplugin").string()}, "python");
+    assert(nestedIndex.Entries.empty());
+    assert(nestedIndex.Errors.size() == 1);
+    assert(nestedIndex.Errors.front().find("top-level importable .py file") != std::string::npos);
+    fs::remove_all(root);
+}
+
 void TestLoggerContract()
 {
     std::ostringstream captured;
@@ -1777,6 +1857,7 @@ int main()
     TestControllerContracts();
     TestPluginTrustPolicy();
     TestPluginVerifierService();
+    TestPluginSourceDependencies();
     TestLoggerContract();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();

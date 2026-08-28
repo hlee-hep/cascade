@@ -20,18 +20,22 @@ my_package/
   cascade-plugin.yaml  # optional
   include/
     EventModule.hh
+    EventRunner.hh
   src/
     EventModule.cc
+    EventRunner.cc
   python/
     summary_module.py
+    summary_helpers.py
 ```
 
 Rules:
 
-- every `include/*.hh` has a matching `src/*.cc`;
-- a C++ file stem should end in `Module`, producing `lib...Module.so`;
+- every `*Module.hh` has a matching `*Module.cc`, producing `lib...Module.so`;
+- non-module C++ sources are helper sources and must be assigned to at least one module;
 - Python plugin file names end in `module.py`;
 - Python plugin classes inherit `base_module`;
+- Python files without a plugin class are helpers and must be assigned to at least one module;
 - C++ class names match header stems unless `class_map` says otherwise;
 - module class names are globally unique across installed C++ and Python packages.
 
@@ -42,11 +46,18 @@ The optional `cascade-plugin.yaml` declares only departures from the ROOT-free,
 stem-matched defaults:
 
 ```yaml
-schema_version: 1
+schema_version: 2
 root_modules:
   - RootEventModule
 class_map:
   EventModule: experiment::EventModule
+source_dependencies:
+  cpp:
+    EventModule:
+      - src/EventRunner.cc
+  python:
+    summary_module:
+      - python/summary_helpers.py
 metadata:
   experiment::EventModule:
     version: 1.0.0
@@ -66,13 +77,25 @@ show C++ versions, summaries, and tags without loading a shared library. Python
 into the manifest automatically; an explicit configuration entry can override
 them.
 
+`source_dependencies` groups helper implementation files with a module source.
+Keys are source stems: C++ module stems such as `EventModule`, and Python file
+stems such as `summary_module`. One helper may be shared by multiple modules.
+C++ helpers are compiled into each dependent shared library. Python helpers are
+installed as verified runtime dependencies and imported only from the bytes
+verified for the selected module. Undeclared helper sources are rejected.
+
 ## Verified module identity
 
 Plugin sources are compiled or installed without text substitution. After a
 verified artifact is selected, the loader assigns:
 
 - the manifest's C++ registration name or Python class name as the module basename;
-- the verified artifact SHA-256 as the module code hash.
+- the verified module code SHA-256 as the module code hash.
+
+For C++, the shared-library digest already covers every compiled helper. For
+Python, the code digest combines the primary module file and all declared helper
+digests. A helper change therefore invalidates cache identity and is checked again
+inside isolated workers.
 
 Constructors only register analysis parameters and state. They do not call
 `SetBaseName`/`SetCodeHash` or assign Python identity fields. This keeps source
@@ -228,6 +251,7 @@ ${CASCADE_PLUGIN_DIR}/my_package/
 ${CASCADE_PYPLUGIN_DIR}/my_package/
   __init__.py
   summary_module.py
+  summary_helpers.py
   plugin_manifest.json
   plugin_manifest.json.sig  # signed distributions only
 
@@ -245,22 +269,26 @@ CASCADE_PLUGIN_TRUST_STORE=${CASCADE_PREFIX}/share/cascade/trusted_keys
 Keys located inside plugin package directories are ignored. Signed trust is
 granted only through the external trust store.
 
-## Manifest schema 2
+## Manifest schema 3
 
-The template generates manifests; they should not be maintained by hand.
+The template generates manifests; they should not be maintained by hand. Cascade
+continues to read schema 2 packages, whose module code identity is the primary
+artifact digest.
 
 Conceptually:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "package": "my_package",
   "modules": [
     {
       "name": "libEventModule",
       "language": "cpp",
       "path": "libEventModule.so",
-      "sha256": "..."
+      "sha256": "...",
+      "dependencies": [],
+      "code_sha256": "..."
     }
   ]
 }
@@ -270,7 +298,8 @@ Validation requires:
 
 - package name equals the containing directory;
 - paths are relative and remain inside the package;
-- files exist and match SHA-256;
+- primary artifacts and declared dependencies exist and match SHA-256;
+- schema 3 code digests match the primary artifact and dependency list;
 - language-specific filename and class rules hold.
 
 If a signature is present, it must be valid under the package-bound

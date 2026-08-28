@@ -65,7 +65,7 @@ def _load_controller(test_case):
                         continue
                     try:
                         document = json.loads(manifest_path.read_text(encoding="utf-8"))
-                        if document.get("schema") != 2 or document.get("package") != package.name:
+                        if document.get("schema") not in (2, 3) or document.get("package") != package.name:
                             raise RuntimeError("invalid plugin manifest")
                         for item in document.get("modules", []):
                             item_language = item["language"]
@@ -82,6 +82,7 @@ def _load_controller(test_case):
                                     identity=identity,
                                     artifact_path=str((package / item["path"]).resolve()),
                                     declared_sha256=item["sha256"],
+                                    declared_code_sha256=item.get("code_sha256", item["sha256"]),
                                     metadata=types.SimpleNamespace(
                                         name=metadata.get("name", identity),
                                         version=metadata.get("version", ""),
@@ -129,12 +130,25 @@ def _load_controller(test_case):
                 source = artifact_path.read_bytes()
                 if hashlib.sha256(source).hexdigest() != entry["sha256"]:
                     raise RuntimeError("plugin artifact hash mismatch")
+                dependencies = []
+                for dependency in entry.get("dependencies", []):
+                    dependency_path = package_path / dependency["path"]
+                    dependency_source = dependency_path.read_bytes()
+                    if hashlib.sha256(dependency_source).hexdigest() != dependency["sha256"]:
+                        raise RuntimeError("plugin dependency hash mismatch")
+                    dependencies.append(types.SimpleNamespace(
+                        path=str(dependency_path.resolve()),
+                        sha256=dependency["sha256"],
+                        source=dependency_source,
+                    ))
                 artifacts.append(types.SimpleNamespace(
                     name=entry["name"],
                     path=str(artifact_path.resolve()),
                     sha256=entry["sha256"],
+                    code_sha256=entry.get("code_sha256", entry["sha256"]),
                     classes=entry.get("classes", []),
                     source=source,
+                    dependencies=dependencies,
                 ))
             return types.SimpleNamespace(
                 package=package_path.name,
@@ -222,6 +236,20 @@ def _sha256(path):
     digest = hashlib.sha256()
     digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+def _module_code_sha256(path, digest, dependencies):
+    fingerprint = hashlib.sha256()
+    fingerprint.update(path.encode("utf-8"))
+    fingerprint.update(b"\0")
+    fingerprint.update(digest.encode("ascii"))
+    fingerprint.update(b"\n")
+    for dependency in sorted(dependencies, key=lambda item: item["path"]):
+        fingerprint.update(dependency["path"].encode("utf-8"))
+        fingerprint.update(b"\0")
+        fingerprint.update(dependency["sha256"].encode("ascii"))
+        fingerprint.update(b"\n")
+    return fingerprint.hexdigest()
 
 
 class PluginPackageTests(unittest.TestCase):
@@ -474,6 +502,60 @@ class PluginPackageTests(unittest.TestCase):
                         index["ImmutableModule"]["manifest"], "ImmutableModule"
                     )
             self.assertEqual(loaded.VALUE, "verified")
+
+    def test_python_module_imports_only_its_verified_helper_sources(self):
+        controller = _load_controller(self)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            plugin_root = root / "pyplugin"
+            package = plugin_root / "dependency-package"
+            package.mkdir(parents=True)
+            source = package / "basf2_module.py"
+            helper = package / "basf2_runner.py"
+            source.write_text(
+                "from cascade.pymodule import base_module\n"
+                "from .basf2_runner import VALUE\n"
+                "class Basf2Module(base_module):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            helper.write_text("VALUE = 'verified helper'\n", encoding="utf-8")
+            dependencies = [{"path": helper.name, "sha256": _sha256(helper)}]
+            artifact_sha256 = _sha256(source)
+            code_sha256 = _module_code_sha256(source.name, artifact_sha256, dependencies)
+            (package / "plugin_manifest.json").write_text(json.dumps({
+                "schema": 3,
+                "package": package.name,
+                "modules": [{
+                    "name": "basf2_module",
+                    "language": "python",
+                    "path": source.name,
+                    "sha256": artifact_sha256,
+                    "code_sha256": code_sha256,
+                    "dependencies": dependencies,
+                    "classes": ["Basf2Module"],
+                }],
+            }), encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {
+                "CASCADE_PYPLUGIN_DIR": str(plugin_root),
+                "CASCADE_PLUGIN_TRUST_STORE": str(root / "missing-trust-store"),
+            }, clear=False):
+                controller._PYPLUGIN_CACHE = None
+                controller._PYPLUGIN_CACHE_KEY = None
+                index = controller._load_python_plugin_index()
+                info = controller._load_targeted_python_plugin_info(
+                    index["Basf2Module"]["manifest"], "Basf2Module"
+                )
+                helper.write_text("raise RuntimeError('tampered helper executed')\n", encoding="utf-8")
+                loaded = controller._import_python_plugin(info)
+                with self.assertRaisesRegex(RuntimeError, "dependency hash mismatch"):
+                    controller._load_targeted_python_plugin_info(
+                        index["Basf2Module"]["manifest"], "Basf2Module"
+                    )
+
+            self.assertEqual(loaded.VALUE, "verified helper")
+            self.assertEqual(info["code_sha256"], code_sha256)
 
 
 if __name__ == "__main__":

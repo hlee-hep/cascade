@@ -14,6 +14,7 @@ struct PluginManifestEntry
     std::string Identity;
     std::string ArtifactPath;
     std::string DeclaredSha256;
+    std::string DeclaredCodeSha256;
     ModuleMetadata Metadata;
     bool HasSignature = false;
 };
@@ -24,13 +25,22 @@ struct PluginManifestIndexResult
     std::vector<std::string> Errors;
 };
 
+struct VerifiedPluginDependency
+{
+    std::string Path;
+    std::string Sha256;
+    std::string Source;
+};
+
 struct VerifiedPluginArtifact
 {
     std::string Name;
     std::string Language;
     std::string Path;
     std::string Sha256;
+    std::string CodeSha256;
     std::vector<std::string> Classes;
+    std::vector<VerifiedPluginDependency> Dependencies;
     std::string Source;
     PluginOrigin Origin;
 

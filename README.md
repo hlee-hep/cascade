@@ -270,7 +270,7 @@ See [Execution contract](docs/execution.md).
 
 Installed plugins are verified by default when:
 
-1. the package manifest uses schema 2;
+1. the package manifest uses supported schema 2 or 3;
 2. every listed file matches its SHA-256 digest;
 3. module names and paths satisfy package rules;
 4. C++ ABI version and full build fingerprint match the runtime.

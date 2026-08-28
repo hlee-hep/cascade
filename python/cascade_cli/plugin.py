@@ -833,9 +833,16 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
     if len(config_paths) > 1:
         raise ValueError("Plugin source contains multiple cascade-plugin configuration files")
     config = _load_mapping(config_paths[0]) if config_paths else {}
-    _validate_keys(config, {"schema_version", "root_modules", "class_map", "metadata"}, "plugin configuration")
-    if config_paths and config.get("schema_version") != 1:
-        raise ValueError("Plugin configuration requires schema_version: 1")
+    _validate_keys(
+        config,
+        {"schema_version", "root_modules", "class_map", "metadata", "source_dependencies"},
+        "plugin configuration",
+    )
+    schema_version = config.get("schema_version", 1)
+    if config_paths and schema_version not in (1, 2):
+        raise ValueError("Plugin configuration requires schema_version: 1 or 2")
+    if schema_version == 1 and "source_dependencies" in config:
+        raise ValueError("plugin configuration source_dependencies requires schema_version: 2")
     _reject_removed_placeholders(source)
 
     headers = _source_file_stems(os.path.join(source, "include"), ".hh")
@@ -845,22 +852,93 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
         for stem in _source_file_stems(os.path.join(source, "python"), ".py")
         if stem != "__init__"
     ]
-    if headers != sources:
-        missing_sources = sorted(set(headers) - set(sources))
-        missing_headers = sorted(set(sources) - set(headers))
+    cpp_modules = sorted(set(headers) & set(sources) & {name for name in headers + sources if name.endswith("Module")})
+    module_headers = sorted(name for name in headers if name.endswith("Module"))
+    module_sources = sorted(name for name in sources if name.endswith("Module"))
+    if module_headers != module_sources:
+        missing_sources = sorted(set(module_headers) - set(module_sources))
+        missing_headers = sorted(set(module_sources) - set(module_headers))
         details = []
         if missing_sources:
             details.append("missing src/*.cc for " + ", ".join(missing_sources))
         if missing_headers:
             details.append("missing include/*.hh for " + ", ".join(missing_headers))
         raise ValueError("Invalid convention plugin layout: " + "; ".join(details))
-    if not headers and not python_sources:
+    python_modules = {
+        stem: _python_plugin_classes(os.path.join(source, "python", stem + ".py"))
+        for stem in python_sources
+    }
+    python_module_sources = (
+        list(python_sources)
+        if schema_version == 1
+        else sorted(stem for stem, classes in python_modules.items() if classes)
+    )
+    if not cpp_modules and not python_module_sources:
         raise ValueError(
             "Convention plugin source must contain matching include/*.hh and src/*.cc files or python/*.py files"
         )
-    invalid_cpp_names = [name for name in headers if not name.endswith("Module")]
-    if invalid_cpp_names:
-        raise ValueError("C++ plugin source stems must end in Module: " + ", ".join(invalid_cpp_names))
+
+    source_dependencies = config.get("source_dependencies", {})
+    if not isinstance(source_dependencies, dict):
+        raise TypeError("plugin configuration source_dependencies must be a mapping")
+    _validate_keys(source_dependencies, {"cpp", "python"}, "plugin source_dependencies")
+    normalized_dependencies: Dict[str, Dict[str, List[str]]] = {"cpp": {}, "python": {}}
+    dependency_specs = {
+        "cpp": (cpp_modules, "src", ".cc", set(sources) - set(cpp_modules)),
+        "python": (python_module_sources, "python", ".py", set(python_sources) - set(python_module_sources)),
+    }
+    for language, (module_stems, directory, suffix, helper_stems) in dependency_specs.items():
+        declared = source_dependencies.get(language, {})
+        if not isinstance(declared, dict):
+            raise TypeError(f"plugin source_dependencies.{language} must be a mapping")
+        unknown_modules = sorted(set(declared) - set(module_stems))
+        if unknown_modules:
+            raise ValueError(
+                f"plugin source_dependencies.{language} names unknown module sources: "
+                + ", ".join(unknown_modules)
+            )
+        used_helpers = set()
+        for module_stem, dependency_paths in declared.items():
+            if not isinstance(dependency_paths, list) or any(
+                not isinstance(path, str) or not path for path in dependency_paths
+            ):
+                raise TypeError(
+                    f"plugin source_dependencies.{language}.{module_stem} must be a list of non-empty paths"
+                )
+            if len(dependency_paths) != len(set(dependency_paths)):
+                raise ValueError(
+                    f"plugin source_dependencies.{language}.{module_stem} contains duplicate paths"
+                )
+            normalized = []
+            for path in dependency_paths:
+                expected_prefix = directory + "/"
+                if (
+                    not path.startswith(expected_prefix)
+                    or "/" in path[len(expected_prefix):]
+                    or not path.endswith(suffix)
+                ):
+                    raise ValueError(
+                        f"plugin source dependency must be a top-level {directory}/*{suffix} file: {path}"
+                    )
+                stem = os.path.splitext(os.path.basename(path))[0]
+                if language == "python" and not stem.isidentifier():
+                    raise ValueError(
+                        f"Python source dependency must have an importable module name: {path}"
+                    )
+                if stem not in helper_stems:
+                    raise ValueError(
+                        f"plugin source dependency is not a helper source for {language}: {path}"
+                    )
+                normalized.append(path)
+                used_helpers.add(stem)
+            normalized_dependencies[language][module_stem] = normalized
+        unbound_helpers = sorted(helper_stems - used_helpers)
+        if unbound_helpers:
+            paths = [f"{directory}/{stem}{suffix}" for stem in unbound_helpers]
+            raise ValueError(
+                f"Unbound {language} helper sources must be declared in source_dependencies: "
+                + ", ".join(paths)
+            )
 
     root_modules = config.get("root_modules", [])
     if not isinstance(root_modules, list) or any(
@@ -871,7 +949,7 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
         raise ValueError("plugin configuration root_modules contains duplicates")
     if "*" in root_modules and len(root_modules) != 1:
         raise ValueError("plugin configuration root_modules '*' must be the only entry")
-    unknown_root_modules = sorted(set(root_modules) - set(headers) - {"*"})
+    unknown_root_modules = sorted(set(root_modules) - set(cpp_modules) - {"*"})
     if unknown_root_modules:
         raise ValueError(
             "plugin configuration names unknown ROOT modules: " + ", ".join(unknown_root_modules)
@@ -885,7 +963,7 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
         raise TypeError(
             "plugin configuration class_map must map source stems to non-empty class names"
         )
-    unknown_class_map = sorted(set(class_map) - set(headers))
+    unknown_class_map = sorted(set(class_map) - set(cpp_modules))
     if unknown_class_map:
         raise ValueError(
             "plugin configuration class_map names unknown modules: " + ", ".join(unknown_class_map)
@@ -900,11 +978,11 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
     metadata = config.get("metadata", {})
     if not isinstance(metadata, dict):
         raise TypeError("plugin configuration metadata must map module names to metadata objects")
-    known_cpp_identities = set(class_map.get(name, name) for name in headers)
+    known_cpp_identities = set(class_map.get(name, name) for name in cpp_modules)
     known_python_identities = {
         class_name
-        for stem in python_sources
-        for class_name in _python_plugin_classes(os.path.join(source, "python", stem + ".py"))
+        for stem in python_module_sources
+        for class_name in python_modules[stem]
     }
     known_identities = known_cpp_identities | known_python_identities
     for module_name, value in metadata.items():
@@ -926,6 +1004,7 @@ def _load_convention_build(source: str) -> Dict[str, Any]:
         "root_modules": root_modules,
         "class_map": class_map,
         "metadata": metadata,
+        "source_dependencies": normalized_dependencies,
     }
 
 
@@ -977,6 +1056,9 @@ def cmd_plugin_install(args) -> None:
         )
         environment["CASCADE_PLUGIN_METADATA"] = json.dumps(
             convention_build["metadata"], sort_keys=True
+        )
+        environment["CASCADE_PLUGIN_SOURCE_DEPENDENCIES"] = json.dumps(
+            convention_build["source_dependencies"], sort_keys=True
         )
         command = [args.scons, "-f", convention_build["template"], "install", f"-j{args.jobs}"]
         if not args.json:

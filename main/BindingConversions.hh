@@ -146,6 +146,9 @@ inline std::optional<PluginOrigin> PluginOriginFromPython(const py::object &valu
     origin.ManifestPath = py::cast<std::string>(source["manifest_path"]);
     origin.ManifestSha256 = py::cast<std::string>(source["manifest_sha256"]);
     origin.ArtifactSha256 = py::cast<std::string>(source["artifact_sha256"]);
+    origin.CodeSha256 = source.contains("code_sha256")
+                            ? py::cast<std::string>(source["code_sha256"])
+                            : origin.ArtifactSha256;
     if (source.contains("signer_fingerprint") && !source["signer_fingerprint"].is_none())
         origin.SignerFingerprint = py::cast<std::string>(source["signer_fingerprint"]);
     origin.Trust = source.contains("trust") && py::cast<std::string>(source["trust"]) == "Signed"

@@ -44,6 +44,7 @@ struct PluginOrigin
     std::string ManifestPath;
     std::string ManifestSha256;
     std::string ArtifactSha256;
+    std::string CodeSha256;
     std::string SignerFingerprint;
     PluginTrustStatus Trust = PluginTrustStatus::Verified;
 };

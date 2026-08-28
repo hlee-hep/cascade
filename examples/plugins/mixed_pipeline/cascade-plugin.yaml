@@ -1,7 +1,15 @@
-schema_version: 1
+schema_version: 2
 
 root_modules:
   - RootEventModule
+
+source_dependencies:
+  cpp:
+    TextProducerModule:
+      - src/TextFormatting.cc
+  python:
+    text_transform_module:
+      - python/text_transform_helpers.py
 
 metadata:
   RootEventModule:

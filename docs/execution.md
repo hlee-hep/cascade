@@ -179,7 +179,9 @@ force_run    -> execute even if hash is present
 dry_run      -> Skipped before execution
 ```
 
-The verified loader uses the plugin artifact SHA-256 as the stable code hash.
+The verified loader uses the module code SHA-256 as the stable code hash. For a
+C++ module this is the linked shared-library digest. For Python it is the aggregate
+of the primary module and its declared helper-source digests.
 Make external dataset and calibration identifiers explicit parameters. Otherwise
 the cache cannot recognize that an input changed.
 

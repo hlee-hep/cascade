@@ -146,7 +146,9 @@ int main(int argc, char **argv)
         const auto origin = module->GetPluginOrigin();
         if (!origin) throw std::runtime_error("Isolated execution requires a verified plugin origin");
         if (origin->ManifestSha256 != request.at("manifest_sha256").get<std::string>() ||
-            origin->ArtifactSha256 != request.at("artifact_sha256").get<std::string>())
+            origin->ArtifactSha256 != request.at("artifact_sha256").get<std::string>() ||
+            (origin->CodeSha256.empty() ? origin->ArtifactSha256 : origin->CodeSha256) !=
+                request.at("code_sha256").get<std::string>())
             throw std::runtime_error("Plugin changed between isolated execution validation and worker startup");
 
         module->SetCacheDirectory(request.at("cache_directory").get<std::string>());

@@ -44,9 +44,10 @@ cascade plugin install ./my-plugin --prefix /data/cascade-plugins
 ```
 
 The default plugin prefix is the active `CASCADE_PREFIX`. A conventional source directory needs
-only matching `include/*.hh` and `src/*.cc` modules and/or `python/*.py` modules.
-An optional `cascade-plugin.yaml` lists ROOT-dependent modules or C++ class-name
-overrides. Package-owned `SConstruct` files are rejected. Installation first
+only matching `include/*Module.hh` and `src/*Module.cc` modules and/or Python
+module files. An optional `cascade-plugin.yaml` lists ROOT-dependent modules,
+C++ class-name overrides, and helper sources grouped under `source_dependencies`.
+Package-owned `SConstruct` files are rejected. Installation first
 targets a temporary directory inside the destination prefix. Cascade
 publishes the package only after its manifest, hashes, Python declarations, C++
 ABI, and active signature policy pass verification. Existing package directories

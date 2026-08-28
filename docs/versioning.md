@@ -63,8 +63,9 @@ can remain binary-compatible when the public ABI and build fingerprint are stabl
 
 ## Plugin manifest version
 
-Plugin distribution currently uses manifest schema 2. Manifest schema is separate
-from C++ ABI and analysis configuration schema.
+Plugin distribution currently writes manifest schema 3 and continues to read
+schema 2 packages. Manifest schema is separate from C++ ABI and analysis
+configuration schema.
 
 ## Analysis configuration version
 

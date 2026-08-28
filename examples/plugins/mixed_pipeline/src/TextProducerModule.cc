@@ -1,4 +1,5 @@
 #include "TextProducerModule.hh"
+#include "TextFormatting.hh"
 
 #include "Logger.hh"
 
@@ -29,7 +30,7 @@ void TextProducerModule::Execute()
     for (int index = 0; index < Parameters().Get<int>("repeat"); ++index)
     {
         if (index) output << ",\n";
-        output << "    \"" << Parameters().Get<std::string>("message") << " #" << index + 1 << "\"";
+        output << "    \"" << NumberedMessage(Parameters().Get<std::string>("message"), index + 1) << "\"";
     }
     output << "\n  ]\n}\n";
     if (!output) throw std::runtime_error("cannot write staged text output");

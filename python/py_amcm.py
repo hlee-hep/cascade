@@ -3,6 +3,8 @@ from cascade._cascade import AMCM, IAnalysisModule, PluginPaths, PluginTrustPoli
 from cascade import init_interrupt, is_interrupted, log, log_level
 import cascade
 import importlib
+import importlib.abc
+import importlib.util
 import json
 import os
 import sys
@@ -10,6 +12,47 @@ import types
 
 _PYPLUGIN_CACHE = None
 _PYPLUGIN_CACHE_KEY = None
+
+
+class _VerifiedSourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    _cascade_verified_source_finder = True
+
+    def __init__(self):
+        self.sources = {}
+
+    def add(self, module_name, path, source):
+        existing = self.sources.get(module_name)
+        value = (path, bytes(source))
+        if existing is not None and existing != value:
+            raise RuntimeError(f"Verified Python dependency changed in this process: {module_name}")
+        self.sources[module_name] = value
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self.sources:
+            return None
+        return importlib.util.spec_from_loader(fullname, self, origin=self.sources[fullname][0])
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        path, source = self.sources[module.__name__]
+        module.__file__ = path
+        module.__package__ = module.__name__.rsplit(".", 1)[0]
+        exec(compile(source, path, "exec"), module.__dict__)
+
+
+_VERIFIED_SOURCE_FINDER = next(
+    (
+        finder
+        for finder in sys.meta_path
+        if getattr(finder, "_cascade_verified_source_finder", False)
+    ),
+    None,
+)
+if _VERIFIED_SOURCE_FINDER is None:
+    _VERIFIED_SOURCE_FINDER = _VerifiedSourceFinder()
+    sys.meta_path.insert(0, _VERIFIED_SOURCE_FINDER)
 
 
 def _status_text(value):
@@ -24,7 +67,7 @@ def _status_text(value):
 
 def _assign_verified_identity(module_obj, info):
     module_obj.basename = info["class"]
-    module_obj.code_version_hash = f"artifact-sha256:{info['sha256']}"
+    module_obj.code_version_hash = f"code-sha256:{info['code_sha256']}"
 
 
 def _python_plugin_roots():
@@ -51,9 +94,17 @@ def _import_python_plugin(info):
     package_name = module_name.rsplit(".", 1)[0]
     if package_name not in sys.modules:
         package = types.ModuleType(package_name)
-        package.__path__ = [info["package_dir"]]
+        package.__path__ = []
         package.__package__ = package_name
         sys.modules[package_name] = package
+
+    for dependency in info.get("dependencies", []):
+        dependency_name = os.path.splitext(os.path.basename(dependency["path"]))[0]
+        _VERIFIED_SOURCE_FINDER.add(
+            f"{package_name}.{dependency_name}",
+            dependency["path"],
+            dependency["source_bytes"],
+        )
 
     module = types.ModuleType(module_name)
     module.__file__ = info["path"]
@@ -85,7 +136,8 @@ def _python_artifact_entries(package, artifact, package_dir):
         for character in package.package
     )
     package_token = package.manifest_sha256[:12]
-    source_token = artifact.sha256[:12]
+    code_sha256 = getattr(artifact, "code_sha256", "") or artifact.sha256
+    source_token = code_sha256[:12]
     module_name = (
         f"cascade.pyplugin.{safe_package}_{package_token}."
         f"{os.path.splitext(os.path.basename(artifact.path))[0]}_{source_token}"
@@ -96,6 +148,7 @@ def _python_artifact_entries(package, artifact, package_dir):
         "manifest_path": package.manifest_path,
         "manifest_sha256": package.manifest_sha256,
         "artifact_sha256": artifact.sha256,
+        "code_sha256": code_sha256,
         "signer_fingerprint": package.signer_fingerprint or None,
     }
     return {
@@ -107,7 +160,16 @@ def _python_artifact_entries(package, artifact, package_dir):
             "manifest": package.manifest_path,
             "trusted_key": package.trusted_key_path or None,
             "sha256": artifact.sha256,
+            "code_sha256": code_sha256,
             "source_bytes": artifact.source,
+            "dependencies": [
+                {
+                    "path": dependency.path,
+                    "sha256": dependency.sha256,
+                    "source_bytes": dependency.source,
+                }
+                for dependency in getattr(artifact, "dependencies", [])
+            ],
             "origin": origin,
         }
         for class_name in artifact.classes
@@ -167,6 +229,10 @@ def _load_python_plugin_index(require_signed=False):
             "package_dir": os.path.dirname(candidate.manifest_path),
             "manifest": candidate.manifest_path,
             "sha256": candidate.declared_sha256,
+            "code_sha256": (
+                getattr(candidate, "declared_code_sha256", "")
+                or candidate.declared_sha256
+            ),
             "metadata": {
                 "name": candidate.metadata.name,
                 "version": candidate.metadata.version,
@@ -264,7 +330,7 @@ class Controller:
             changed = sorted(
                 name
                 for name in previous_index.keys() & refreshed.keys()
-                if previous_index[name]["sha256"] != refreshed[name]["sha256"]
+                if previous_index[name]["code_sha256"] != refreshed[name]["code_sha256"]
             )
             if changed:
                 raise RuntimeError(

@@ -833,7 +833,59 @@ class CliTests(unittest.TestCase):
                 "root_modules": ["EventModule"],
                 "class_map": {"EventModule": "experiment::EventModule"},
                 "metadata": {},
+                "source_dependencies": {"cpp": {}, "python": {}},
             })
+
+    def test_convention_plugin_groups_cpp_and_python_helper_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            (source / "include").mkdir()
+            (source / "src").mkdir()
+            (source / "python").mkdir()
+            (source / "include" / "EventModule.hh").write_text("", encoding="utf-8")
+            (source / "include" / "EventRunner.hh").write_text("", encoding="utf-8")
+            (source / "src" / "EventModule.cc").write_text("", encoding="utf-8")
+            (source / "src" / "EventRunner.cc").write_text("", encoding="utf-8")
+            (source / "python" / "basf2_module.py").write_text(
+                "from cascade.pymodule import base_module\n"
+                "class Basf2Module(base_module):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            (source / "python" / "basf2_runner.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (source / "cascade-plugin.yaml").write_text(
+                "schema_version: 2\n"
+                "source_dependencies:\n"
+                "  cpp:\n"
+                "    EventModule: [src/EventRunner.cc]\n"
+                "  python:\n"
+                "    basf2_module: [python/basf2_runner.py]\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(cli_plugin, "_plugin_build_template", return_value="/sdk/plugin_sconstruct"):
+                build = cli_plugin._load_convention_build(str(source))
+
+            self.assertEqual(build["source_dependencies"], {
+                "cpp": {"EventModule": ["src/EventRunner.cc"]},
+                "python": {"basf2_module": ["python/basf2_runner.py"]},
+            })
+
+    def test_convention_plugin_rejects_unbound_helper_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            (source / "python").mkdir()
+            (source / "python" / "main_module.py").write_text(
+                "from cascade.pymodule import base_module\n"
+                "class MainModule(base_module):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            (source / "python" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (source / "cascade-plugin.yaml").write_text("schema_version: 2\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Unbound python helper sources"):
+                cli_plugin._load_convention_build(str(source))
 
     def test_convention_plugin_rejects_unmatched_cpp_sources(self):
         with tempfile.TemporaryDirectory() as directory:

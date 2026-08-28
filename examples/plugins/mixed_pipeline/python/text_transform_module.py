@@ -1,6 +1,7 @@
 import json
 
 from cascade.pymodule.base_module import base_module
+from .text_transform_helpers import uppercase_messages
 
 
 class TextTransformModule(base_module):
@@ -23,7 +24,7 @@ class TextTransformModule(base_module):
         with self.final_output(self.get_param("input")).open("r", encoding="utf-8") as source:
             payload = json.load(source)
         transformed = {
-            "messages": [str(message).upper() for message in payload["messages"]],
+            "messages": uppercase_messages(payload["messages"]),
             "producer": "TextTransformModule",
         }
         with self.stage_output(self.get_param("output")).open("w", encoding="utf-8") as output:
