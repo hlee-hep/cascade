@@ -1,6 +1,10 @@
 #include "IAnalysisModule.hh"
 #include "AMCM.hh"
-#include "AnalysisManager.hh"
+#include "AnalysisConfig.hh"
+#include "RootAnalysisHelpers.hh"
+#include <ROOT/RDFHelpers.hxx>
+#include <TTreeFormula.h>
+#include <limits>
 #include "AnalysisModuleRegistry.hh"
 #include "CacheManager.hh"
 #include "DAGManager.hh"
@@ -117,7 +121,7 @@ class TrackedInputModule final : public IAnalysisModule
     void Init() override { TrackInput(Parameters().Get<std::string>("input")); }
     void Execute() override { Executions.fetch_add(1); }
     void Finalize() override {}
-    bool UsesAnalysisManagers() const override { return false; }
+    bool UsesRoot() const override { return false; }
 };
 
 std::atomic<int> TrackedInputModule::Executions{0};
@@ -145,7 +149,7 @@ class SymlinkOutputModule final : public IAnalysisModule
         std::filesystem::create_symlink("target.txt", StageOutput("link.txt"));
     }
     void Finalize() override {}
-    bool UsesAnalysisManagers() const override { return false; }
+    bool UsesRoot() const override { return false; }
 };
 
 class CrashModule final : public IAnalysisModule
@@ -187,7 +191,7 @@ class BlockingModule final : public IAnalysisModule
     void Description() const override {}
 
   protected:
-    bool UsesAnalysisManagers() const override { return false; }
+    bool UsesRoot() const override { return false; }
     void Init() override {}
     void Execute() override
     {
@@ -1029,117 +1033,162 @@ void TestAnalysisConfigExpressions()
 {
     const auto temp = std::filesystem::temp_directory_path() / "cascade-analysis-config";
     std::filesystem::create_directories(temp);
-    const auto inputPath = temp / "input.root";
-    const auto inputConfig = temp / "input.yaml";
-    const auto histogramConfig = temp / "histograms.yaml";
-    const auto histogramOutput = temp / "histograms.root";
-
+    const auto cutsPath = (temp / "cuts.yaml").string();
+    const auto histPath = (temp / "histograms.yaml").string();
+    Cascade::WriteCuts(cutsPath, {{"z_first", "x > 1"}, {"a_second", "x < 4"}});
+    Cascade::WriteHistograms(histPath, {{"doubled", "x * 2", 12, 0, 12}});
+    const auto cuts = Cascade::LoadCuts(cutsPath);
+    const auto histograms = Cascade::LoadHistograms(histPath);
+    assert(cuts.size() == 2 && cuts[0].Name == "z_first");
+    assert(histograms.at(0).Expression == "x * 2");
+    assert(Cascade::SelectCuts(cuts, {}).empty());
+    assert(Cascade::SelectCuts(cuts, {"a_second", "z_first"})[0].Name == "a_second");
+    for (const auto &names : std::vector<std::vector<std::string>>{{"missing"}, {"z_first", "z_first"}})
     {
-        TFile output(inputPath.c_str(), "RECREATE");
-        TTree tree("events", "events");
-        double raw = 0.0;
-        int count = 0;
-        bool accepted = false;
-        tree.Branch("raw", &raw, "raw/D");
-        tree.Branch("count", &count, "count/I");
-        tree.Branch("accepted", &accepted, "accepted/O");
-        for (const double value : {1.0, 2.0, 3.0})
-        {
-            raw = value;
-            count = static_cast<int>(value);
-            accepted = value > 1.0;
-            tree.Fill();
-        }
-        tree.Write();
+        bool rejected = false;
+        try { Cascade::SelectCuts(cuts, names); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        assert(rejected);
     }
+    const auto invalid = (temp / "invalid.yaml").string();
+    for (const auto &document : {
+             "cuts: {}\n", "schema_version: 99\ncuts: {}\n",
+             "schema_version: 1\ncuts: {a: x, a: y}\n",
+             "schema_version: 1\ncuts: {a: '   '}\n",
+             "schema_version: 1\ncuts: {a: '--lambda:test'}\n",
+             "schema_version: 1\ncuts: {a: [x]}\n", "[broken"})
     {
-        std::ofstream output(inputConfig);
-        output << "schema_version: 1\n"
-                  "input:\n"
-                  "  files: ["
-               << inputPath.string()
-               << "]\n"
-                  "  tree: events\n"
-                  "branches:\n"
-                  "  x:\n"
-                  "    name: raw\n"
-                  "    type: Double_t\n"
-                  "  count:\n"
-                  "    name: count\n"
-                  "    type: Int_t\n"
-                  "  accepted:\n"
-                  "    name: accepted\n"
-                  "    type: Bool_t\n";
+        std::ofstream(invalid) << document;
+        assert(!Cascade::PreflightCutConfig(invalid).Valid());
+        bool rejected = false;
+        try { Cascade::LoadCuts(invalid); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        assert(rejected);
     }
+    for (const auto &bins : {"[0, 0, 1]", "[1.5, 0, 1]", "[2, 1, 0]", "[2, 0, .inf]", "[2147483648, 0, 1]", "[2, 0]"})
     {
-        std::ofstream output(histogramConfig);
-        output << "schema_version: 1\n"
-                  "histograms:\n"
-                  "  doubled:\n"
-                  "    expr: x * 2\n"
-                  "    bins: [12, 0, 12]\n";
+        std::ofstream(invalid) << "schema_version: 1\nhistograms:\n  h:\n    expr: x\n    bins: " << bins << '\n';
+        assert(!Cascade::PreflightHistogramConfig(invalid).Valid());
     }
-
-    AnalysisManager manager;
-    assert(manager.PreflightInputConfig(inputConfig.string()).Valid());
-    manager.LoadInputConfig(inputConfig.string());
-    assert(manager.BuildChain());
-    manager.RegisterCut("above_one", "x > 1");
-    manager.EnableAllCuts();
-    assert(manager.PreflightHistogramConfig(histogramConfig.string()).Valid());
-    manager.LoadHistogramConfig(histogramConfig.string());
-    for (Long64_t index = 0; index < manager.GetEntryCount(); ++index)
-    {
-        manager.LoadEvent(index);
-        assert(manager.GetValue("count") == static_cast<double>(index + 1));
-        assert(manager.GetValue("accepted") == (index == 0 ? 0.0 : 1.0));
-        if (index == 0)
-            assert(!manager.PassesAllCuts());
-        else
-            assert(manager.PassesAllCuts());
-        manager.FillHistograms(1.0);
-    }
-    manager.WriteHistograms(histogramOutput.string());
-
-    TFile input(histogramOutput.c_str(), "READ");
-    auto *histogram = input.Get<TH1>("hist_doubled_");
-    assert(histogram);
-    assert(histogram->GetEntries() == 3.0);
-    assert(std::abs(histogram->GetMean() - 4.0) < 1e-9);
-
-    const auto invalidConfig = temp / "invalid-input.yaml";
-    {
-        std::ofstream output(invalidConfig);
-        output << "schema_version: 99\n"
-                  "input:\n"
-                  "  files: []\n"
-                  "branches: []\n";
-    }
-    const auto invalidResult = manager.PreflightInputConfig(invalidConfig.string());
-    assert(!invalidResult.Valid());
-    assert(invalidResult.Errors.size() >= 3);
+    assert(!Cascade::PreflightCutConfig((temp / "missing.yaml").string()).Valid());
+    // Backend-specific expressions remain opaque to structural validation.
+    Cascade::WriteCuts(cutsPath, {{"backend", "custom_backend_expression(x)"}});
+    assert(Cascade::PreflightCutConfig(cutsPath).Valid());
+    // Invalid writes must fail before truncating an existing config.
+    bool rejected = false;
+    try { Cascade::WriteCuts(cutsPath, {{"same", "x"}, {"same", "y"}}); }
+    catch (const std::invalid_argument &) { rejected = true; }
+    assert(rejected && Cascade::LoadCuts(cutsPath)[0].Name == "backend");
 }
 
-void TestBorrowedRootObjectsRemainAlive()
+void TestNativeTreeConfiguration()
 {
-    TTree tree("borrowed_tree", "borrowed_tree");
-    TH1D histogram("borrowed_histogram", "borrowed_histogram", 10, 0.0, 1.0);
+    TTree tree("native_tree", "native_tree");
+    tree.SetDirectory(nullptr);
+    ULong64_t event = 9007199254740993ULL;
+    std::vector<double> values{1.0, 2.0};
+    double x = 2.0;
+    tree.Branch("event", &event);
+    tree.Branch("values", &values);
+    tree.Branch("x", &x);
+    tree.Fill();
+    const Cascade::CutSpec cut{"selected", "x > 1"};
+    const Cascade::HistogramSpec spec{"native_hist", "x * 2", 12, 0, 12};
+    TTreeFormula selection(cut.Name.c_str(), cut.Expression.c_str(), &tree);
+    TTreeFormula expression("value", spec.Expression.c_str(), &tree);
+    TH1D histogram(spec.Name.c_str(), "", spec.Bins, spec.Min, spec.Max);
     histogram.SetDirectory(nullptr);
+    tree.GetEntry(0);
+    assert(event == 9007199254740993ULL && values.size() == 2);
+    if (selection.EvalInstance()) histogram.Fill(expression.EvalInstance());
+    assert(histogram.GetEntries() == 1 && histogram.GetMean() == 4.0);
+}
+
+class NativeConfigModule final : public IAnalysisModule
+{
+  public:
+    NativeConfigModule()
     {
-        AnalysisManager manager;
-        manager.RegisterTree(&tree);
-        manager.RegisterHistogram("borrowed", &histogram);
-        double *derived = manager.RegisterVariable("derived");
-        *derived = 1.0;
-        assert(!manager.AttachBranch(static_cast<TTree *>(nullptr), "derived", TreeOpt::Om::Append));
-        TTree outputTree("output_tree", "output_tree");
-        assert(manager.AttachBranch(&outputTree, "derived", TreeOpt::Om::Append));
-        assert(outputTree.GetBranch("derived"));
-        assert(!manager.AttachBranch(&outputTree, "derived", TreeOpt::Om::Append));
+        SetBaseName("NativeConfigModule");
+        SetCodeHash("native-config-test");
+        Parameters().Register<std::string>("cuts", "");
+        Parameters().Register<std::string>("histograms", "");
+        Parameters().Register<std::vector<std::string>>("selected", {"selected"});
+        Parameters().Register<bool>("fail", false);
     }
-    assert(std::string(tree.GetName()) == "borrowed_tree");
-    histogram.Fill(0.5);
-    assert(histogram.GetEntries() == 1.0);
+    void Description() const override {}
+    int Executions = 0;
+    using IAnalysisModule::ReportProgress;
+  protected:
+    void Init() override
+    {
+        assert(GetProgressSnapshot().empty());
+        const auto cuts = Parameters().Get<std::string>("cuts");
+        const auto histograms = Parameters().Get<std::string>("histograms");
+        TrackInput(cuts);
+        TrackInput(histograms);
+        m_Cuts = Cascade::SelectCuts(Cascade::LoadCuts(cuts), Parameters().Get<std::vector<std::string>>("selected"));
+        m_Histograms = Cascade::LoadHistograms(histograms);
+    }
+    void Execute() override
+    {
+        ++Executions;
+        ROOT::RDataFrame df(3);
+        auto node = Cascade::ApplyCuts(df.Define("x", "double(rdfentry_)"), m_Cuts);
+        auto histogram = Cascade::BookHistogram(node, m_Histograms.at(0));
+        TFile output(StageOutput("native.root").c_str(), "RECREATE");
+        histogram->Write();
+        output.Close();
+        ReportProgress(1.0);
+        if (Parameters().Get<bool>("fail")) throw std::runtime_error("failure after native ROOT write");
+    }
+    void Finalize() override {}
+  private:
+    std::vector<Cascade::CutSpec> m_Cuts;
+    std::vector<Cascade::HistogramSpec> m_Histograms;
+};
+
+void TestNativeModuleCacheAndRollback()
+{
+    const auto temp = std::filesystem::temp_directory_path() / "cascade-native-module";
+    std::filesystem::remove_all(temp);
+    std::filesystem::create_directories(temp);
+    const auto cuts = (temp / "cuts.yaml").string();
+    const auto histograms = (temp / "histograms.yaml").string();
+    Cascade::WriteCuts(cuts, {{"selected", "x > 0"}});
+    Cascade::WriteHistograms(histograms, {{"x", "x", 4, 0, 4}});
+    NativeConfigModule module;
+    module.SetCacheDirectory((temp / "cache").string());
+    module.SetOutputDirectory((temp / "output").string());
+    module.SetParamValue("cuts", cuts);
+    module.SetParamValue("histograms", histograms);
+    assert(module.RequiresRootSerialization());
+    assert(module.Run().Status == ModuleStatus::Done);
+    assert(module.GetProgressSnapshot().at("main") == 1.0);
+    assert(module.Run().Status == ModuleStatus::Skipped);
+    Cascade::WriteCuts(cuts, {{"selected", "x > 1"}});
+    assert(module.Run().Status == ModuleStatus::Done);
+    Cascade::WriteHistograms(histograms, {{"x", "x * 2", 4, 0, 4}});
+    assert(module.Run().Status == ModuleStatus::Done);
+    module.SetParamValue("selected", std::vector<std::string>{});
+    assert(module.Run().Status == ModuleStatus::Done);
+    assert(module.Executions == 4);
+    const auto result = temp / "output" / "native.root";
+    auto bytes = [&]() {
+        std::ifstream input(result, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    const auto previous = bytes();
+    module.SetParamValue("fail", true);
+    assert(module.Run().Status == ModuleStatus::Failed);
+    assert(bytes() == previous);
+    for (double fraction : {-1.0, 1.1, std::numeric_limits<double>::quiet_NaN()})
+    {
+        bool rejected = false;
+        try { module.ReportProgress(fraction); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        assert(rejected);
+    }
 }
 
 void TestPlotDoesNotMutateInputs()
@@ -1201,6 +1250,63 @@ void TestPlotDoesNotMutateInputs()
     assert(ratioCanvas);
     delete ratioCanvas;
 
+    // Export uses the same ROOT ratio intervals and retains borrowed inputs.
+    const auto ratioExport = nlohmann::json::parse(ratioManager.ExportPublication(ratioSpec));
+    TGraphAsymmErrors expectedRatio;
+    expectedRatio.Divide(&numerator, &denominator, "pois");
+    const auto &points = ratioExport.at("ratio").at("points");
+    assert(points.at("y").size() == static_cast<std::size_t>(expectedRatio.GetN()));
+    for (int point = 0; point < expectedRatio.GetN(); ++point)
+    {
+        assert(std::abs(points.at("y").at(point).get<double>() - expectedRatio.GetPointY(point)) < 1e-12);
+        assert(std::abs(points.at("error_low").at(point).get<double>() - expectedRatio.GetErrorYlow(point)) < 1e-12);
+        assert(std::abs(points.at("error_high").at(point).get<double>() - expectedRatio.GetErrorYhigh(point)) < 1e-12);
+    }
+    ratioSpec.Band.Asymm = false;
+    denominator.SetBinContent(2, 0.);
+    const auto symmetricExport = nlohmann::json::parse(ratioManager.ExportPublication(ratioSpec));
+    const auto &symmetricPoints = symmetricExport.at("ratio").at("points");
+    assert(symmetricPoints.at("y").size() == 2); // Undefined denominator bin is omitted.
+    assert(std::abs(symmetricPoints.at("y").at(0).get<double>() - .5) < 1e-12);
+    assert(numerator.GetBinContent(1) == 2. && denominator.GetBinContent(1) == 4.);
+    // The native ROOT symmetric path must also divide, not draw raw counts.
+    TCanvas *symmetricCanvas = ratioManager.Draw(ratioSpec, "ratio_symmetric_test");
+    auto *ratioPad = static_cast<TPad *>(symmetricCanvas->GetPrimitive("ratio_symmetric_test_bot"));
+    auto *ratioHistogram = static_cast<TH1 *>(ratioPad->GetPrimitive("pm_ratio"));
+    assert(ratioHistogram && std::abs(ratioHistogram->GetBinContent(1) - .5) < 1e-12);
+    delete symmetricCanvas;
+
+    const double yEdges[] = {-2., 0., 3.};
+    TH2D density("publication_density", "", 3, edges, 2, yEdges);
+    density.SetDirectory(nullptr);
+    density.GetZaxis()->SetTitle("Weighted events");
+    density.SetMinimum(.1);
+    density.SetMaximum(100.);
+    for (int x = 1; x <= 3; ++x)
+        for (int y = 1; y <= 2; ++y)
+        {
+            density.SetBinContent(x, y, x + 10*y);
+            density.SetBinError(x, y, .5);
+        }
+    DrawSpec densityDraw;
+    densityDraw.SetScale(2.).SetNormBinWidth();
+    densityDraw.DrawOpt = "COLZ";
+    PlotSpec densitySpec;
+    densitySpec.Theme.LogZ = true;
+    densitySpec.Overlay({OverlaySpec::Hist(&density, "Density", ColorSpec(), densityDraw)});
+    const auto densityExport = nlohmann::json::parse(ratioManager.ExportPublication(densitySpec));
+    const auto &heatmap = densityExport.at("overlays").at(0);
+    assert(heatmap.at("kind") == "hist2d" && heatmap.at("log_z").get<bool>());
+    assert(heatmap.at("values").size() == 2 && heatmap.at("values").at(0).size() == 3);
+    for (int x = 1; x <= 3; ++x)
+        for (int y = 1; y <= 2; ++y)
+        {
+            const double area = density.GetXaxis()->GetBinWidth(x)*density.GetYaxis()->GetBinWidth(y);
+            assert(std::abs(heatmap.at("values").at(y-1).at(x-1).get<double>() - 2.*(x+10*y)/area) < 1e-12);
+            assert(std::abs(heatmap.at("errors").at(y-1).at(x-1).get<double>() - 1./area) < 1e-12);
+            assert(density.GetBinContent(x, y) == x+10*y && density.GetBinError(x, y) == .5);
+        }
+
     bool missingDenominatorRejected = false;
     try
     {
@@ -1215,52 +1321,32 @@ void TestPlotDoesNotMutateInputs()
     assert(missingDenominatorRejected);
 }
 
-void TestRdfSnapshotRunsOneEventLoop()
+void TestNativeRdfActions()
 {
     ROOT::DisableImplicitMT();
-    const auto temp = std::filesystem::temp_directory_path() / "cascade-rdf-snapshot";
-    std::filesystem::create_directories(temp);
-    const auto inputPath = temp / "input.root";
-    const auto outputPath = temp / "output.root";
-    {
-        TFile output(inputPath.c_str(), "RECREATE");
-        TTree tree("events", "events");
-        double raw = 0.0;
-        tree.Branch("raw", &raw, "raw/D");
-        for (const double value : {1.0, 2.0, 3.0})
-        {
-            raw = value;
-            tree.Fill();
-        }
-        tree.Write();
-    }
-
+    const auto outputPath = std::filesystem::temp_directory_path() / "cascade-native-snapshot.root";
     std::atomic<int> evaluations{0};
-    AnalysisManager manager;
-    manager.InitRdfFromFile("events", inputPath.string());
-    manager.DefineRdfVariable(
-        "tracked",
-        [&](double value)
-        {
-            ++evaluations;
-            return value * 2.0;
-        },
-        {"raw"});
-    manager.WriteRdfSnapshot("events", outputPath.string(), TreeOpt::Om::Recreate);
-    assert(evaluations.load() == 3);
-
-    const auto forkOutputPath = temp / "fork-output.root";
-    std::unique_ptr<AnalysisManager> forked;
-    {
-        AnalysisManager parent;
-        parent.InitRdfFromFile("events", inputPath.string());
-        forked = parent.Fork();
-    }
-    forked->WriteRdfSnapshot("events", forkOutputPath.string(), TreeOpt::Om::Append);
-    TFile forkOutput(forkOutputPath.c_str(), "READ");
-    auto *forkTree = forkOutput.Get<TTree>("events");
-    assert(forkTree);
-    assert(forkTree->GetEntries() == 3);
+    ROOT::RDataFrame df(3);
+    auto node = df.Define("x", [&](ULong64_t index) { ++evaluations; return double(index + 1); }, {"rdfentry_"})
+                  .Define("weight", "2.0").Define("cascade_hist_value", "-1.0");
+    auto signal = Cascade::ApplyCuts(node, {{"signal", "x > 1"}});
+    auto control = Cascade::ApplyCuts(node, {{"control", "x <= 1"}});
+    auto histogram = Cascade::BookHistogram(signal, {"doubled", "x * 2", 12, 0, 12}, "weight");
+    auto controlCount = control.Count();
+    // Native APIs remain available on helper results, with full snapshot options.
+    auto h2 = signal.Histo2D({"h2", "", 3, 0, 4, 3, 0, 4}, "x", "weight");
+    ROOT::RDF::RSnapshotOptions options;
+    options.fLazy = true;
+    auto snapshot = signal.Snapshot("selected", outputPath.string(), {"x", "weight"}, options);
+    assert(evaluations == 0);
+    ROOT::RDF::RunGraphs({histogram, controlCount, h2, snapshot});
+    assert(evaluations == 3);
+    assert(histogram->GetEntries() == 2 && histogram->Integral() == 4);
+    assert(histogram->GetMean() == 5 && *controlCount == 1);
+    TFile output(outputPath.c_str(), "READ");
+    auto *tree = output.Get<TTree>("selected");
+    assert(tree && tree->GetEntries() == 2);
+    assert(tree->GetBranch("weight") && !tree->GetBranch("cascade_hist_value"));
 }
 
 void TestDagValidationAndReset()
@@ -1861,9 +1947,10 @@ int main()
     TestLoggerContract();
     TestParamRoundTrip();
     TestAnalysisConfigExpressions();
-    TestBorrowedRootObjectsRemainAlive();
+    TestNativeTreeConfiguration();
+    TestNativeModuleCacheAndRollback();
     TestPlotDoesNotMutateInputs();
-    TestRdfSnapshotRunsOneEventLoop();
+    TestNativeRdfActions();
     TestDagValidationAndReset();
     TestDagExecutionLanes();
     TestRandomizedDagAndRuntimeIsolation();

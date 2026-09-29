@@ -5,6 +5,32 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Synchronize the generated test runtime with current outputs, removing retired
+  modules and bytecode. Add clean deployment staging and check the staged runtime
+  in release CI.
+- Define the Python `Controller` type once and use the shared native parameter
+  conversion for both C++ and Python module handles.
+- Unify NumPy and ROOT publication rendering through `PublicationFigure`.
+  Replace `plt_plot_manager` with `histogram_panel`, a NumPy input adapter with
+  shared bin edges and explicit symmetric sumw2 errors.
+- Remove `py_amcm` and `BelleIIPublication` class aliases; use `Controller` and
+  `PublicationFigure`. Remove `SaveRunLog`, `save_run_log`, `save_run_log_all`,
+  and the unused `save_provenance(dag_result=...)` argument; use
+  `SaveProvenance` / `save_provenance` with an explicit path when needed.
+- Replace AnalysisManager with ROOT-independent cut/histogram YAML specs and
+  optional stateless native RDF helpers. Module code owns ROOT graphs, trees,
+  event loops, snapshots, object lifetimes, and output actions.
+- Preserve cut/histogram schema version 1; preserve YAML cut order and provide
+  explicit ordered cut selection. Input YAML/automatic branch binding are removed.
+- Replace `UsesAnalysisManagers` with `UsesRoot`; retain conservative ROOT
+  scheduling and add explicit named module progress via `ReportProgress`.
+- Track YAML/data files in module initialization and declare selection choices as
+  parameters. Snapshot schema is now 5; plugin ABI is now 4. C++ plugins must be
+  migrated and rebuilt. See `docs/analysis-config.md` for migration details.
+
+
 ## [0.3.0] - 2026-08-28
 
 ### Added

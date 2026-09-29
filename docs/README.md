@@ -10,7 +10,7 @@
 2. [Writing analysis modules](module-authoring.md)
 3. [Parameters](parameters.md)
 4. [Configuration schema](configuration.md)
-5. [AnalysisManager](analysis-manager.md)
+5. [Analysis configuration](analysis-config.md)
 6. [Execution contract](execution.md)
 7. [DAG execution](dag.md)
 8. [Provenance manifests](provenance.md)

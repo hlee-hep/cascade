@@ -287,7 +287,7 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
         r->SetBinContent(i, num->GetBinContent(i));
         r->SetBinError(i, num->GetBinError(i));
     }
-    // r->Divide(den);
+
     TGraphAsymmErrors *g = new TGraphAsymmErrors();
     g->SetBit(kCanDelete, true);
     g->SetLineWidth(2);
@@ -297,6 +297,9 @@ std::pair<TH1 *, TGraphAsymmErrors *> PlotManager::MakeRatio_(const TH1 *num, co
         g->SetPointEXhigh(i, 0.0);
         g->SetPointEXlow(i, 0.0);
     }
+    // Keep the symmetric path a ratio too, after forming Poisson intervals.
+    r->SetBinErrorOption(TH1::kNormal);
+    r->Divide(den);
     return {r, g};
 }
 
@@ -658,6 +661,7 @@ TCanvas *PlotManager::Draw(const PlotSpec &spec, const std::string &canvasName)
     padTop->SetBit(kCanDelete, true);
     if (padBot) padBot->SetBit(kCanDelete, true);
     if (spec.Theme.LogY) padTop->SetLogy();
+    if (spec.Theme.LogZ) padTop->SetLogz();
 
     TH1 *frame = plan.Frame; // already kCanDelete=true
     frame->SetDirectory(nullptr);

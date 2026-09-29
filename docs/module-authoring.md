@@ -9,7 +9,7 @@ separately in [Plugin development and distribution](plugins.md).
 | Phase | Put this here | Avoid |
 | --- | --- | --- |
 | Constructor | Register parameters and static module state | Opening inputs or creating final outputs |
-| `Init` / `init` | Validate parameters, load config, build managers and inputs | Long event loops |
+| `Init` / `init` | Validate parameters, load config and track inputs | Long event loops |
 | `Check` | Framework-owned dry-run and snapshot-cache decision | User implementation; this phase is automatic |
 | `Execute` / `execute` | Event loops, RDF definitions, transformations | Publishing final output paths directly |
 | `Finalize` / `finalize` | Serialize staged trees, histograms, summaries, metadata | Irreversible external side effects |
@@ -41,6 +41,7 @@ it needs a richer description.
 #pragma once
 
 #include "IAnalysisModule.hh"
+#include "AnalysisConfig.hh"
 
 class SelectionModule final : public IAnalysisModule
 {
@@ -54,6 +55,10 @@ class SelectionModule final : public IAnalysisModule
     void Execute() override;
     void Finalize() override;
     void OnFailure(ModulePhase phase, const std::string &message) override;
+
+  private:
+    std::vector<Cascade::CutSpec> m_Cuts;
+    std::vector<Cascade::HistogramSpec> m_Histograms;
 };
 ```
 
@@ -63,10 +68,13 @@ class SelectionModule final : public IAnalysisModule
 #include "SelectionModule.hh"
 
 #include "Logger.hh"
+#include "RootAnalysisHelpers.hh"
+#include <TFile.h>
 
 SelectionModule::SelectionModule()
 {
-    Parameters().Register<std::string>("input_config", "input.yaml");
+    Parameters().Register<std::string>("input", "events.root");
+    Parameters().Register<std::string>("tree", "events");
     Parameters().Register<std::string>("cut_config", "cuts.yaml");
     Parameters().Register<std::string>("histogram_config", "histograms.yaml");
     Parameters().Register<std::string>("output", "histograms.root");
@@ -75,7 +83,7 @@ SelectionModule::SelectionModule()
 
 void SelectionModule::Description() const
 {
-    LOG_INFO(BaseName(), "Runs a classic TTree selection.");
+    LOG_INFO(BaseName(), "Runs a native RDF selection.");
 }
 
 ModuleMetadata SelectionModule::GetMetadata() const
@@ -84,36 +92,39 @@ ModuleMetadata SelectionModule::GetMetadata() const
     metadata.Name = BaseName();
     metadata.Version = "1.0.0";
     metadata.Summary = "Example event selection";
-    metadata.Tags = {"selection", "classic-tree"};
+    metadata.Tags = {"selection", "rdf"};
     return metadata;
 }
 
 void SelectionModule::Init()
 {
-    auto *manager = Am();
-    manager->LoadInputConfig(Parameters().Get<std::string>("input_config"));
-    if (!manager->BuildChain()) throw std::runtime_error("cannot build input chain");
-    manager->LoadCutConfig(Parameters().Get<std::string>("cut_config"));
-    manager->EnableAllCuts();
-    manager->LoadHistogramConfig(Parameters().Get<std::string>("histogram_config"));
+    const auto cuts = Parameters().Get<std::string>("cut_config");
+    const auto histograms = Parameters().Get<std::string>("histogram_config");
+    TrackInput(Parameters().Get<std::string>("input"));
+    TrackInput(cuts);
+    TrackInput(histograms);
+    m_Cuts = Cascade::LoadCuts(cuts);
+    m_Histograms = Cascade::LoadHistograms(histograms);
 }
 
 void SelectionModule::Execute()
 {
-    auto *manager = Am();
+    ROOT::RDataFrame df(Parameters().Get<std::string>("tree"), Parameters().Get<std::string>("input"));
+    auto selected = Cascade::ApplyCuts(df, m_Cuts);
     const double weight = Parameters().Get<double>("weight");
-    for (Long64_t index = 0; index < manager->GetEntryCount(); ++index)
-    {
-        if (IsCancellationRequested()) return;
-        manager->LoadEvent(index);
-        if (manager->PassesAllCuts()) manager->FillHistograms(weight);
-    }
+    auto weighted = selected.Define("analysis_weight", [weight]() { return weight; });
+    std::vector<ROOT::RDF::RResultPtr<TH1D>> actions;
+    for (const auto &spec : m_Histograms)
+        actions.push_back(Cascade::BookHistogram(weighted, spec, "analysis_weight"));
+    if (IsCancellationRequested()) return;
+    TFile output(StageOutput(Parameters().Get<std::string>("output")).c_str(), "RECREATE");
+    if (output.IsZombie()) throw std::runtime_error("cannot create histogram output");
+    for (auto &histogram : actions) histogram->Write();
+    output.Close();
+    ReportProgress(1.0);
 }
 
-void SelectionModule::Finalize()
-{
-    Am()->WriteHistograms(StageOutput(Parameters().Get<std::string>("output")).string());
-}
+void SelectionModule::Finalize() {}
 
 void SelectionModule::OnFailure(ModulePhase phase, const std::string &message)
 {
@@ -121,17 +132,12 @@ void SelectionModule::OnFailure(ModulePhase phase, const std::string &message)
 }
 ```
 
-The framework creates the `main` analysis manager before `Init`. Use `Am()` for it.
-Call `RegisterAnalysisManager("name")` only when a module needs additional isolated
-manager state.
-
-`IAnalysisModule.hh` intentionally exposes declarations and stable accessors, not
-its lifecycle/manager storage. The verified loader assigns identity and code hash;
-plugin constructors only use `Parameters()` and their own state. A ROOT-free
-module can include this header and compile without ROOT headers. Include
-`AnalysisManager.hh` or ROOT headers only in modules that actually use those
-facilities, and list those module stems under `root_modules` in the optional
-package `cascade-plugin.yaml`.
+Analysis code owns its ROOT objects and graph. `IAnalysisModule.hh` does not
+include ROOT; include `RootAnalysisHelpers.hh` only when using the optional
+configuration adapters, or include native ROOT headers directly. List ROOT module
+stems under `root_modules` in the package `cascade-plugin.yaml`.
+ROOT-free modules can override `UsesRoot()` to false; the default preserves
+process-wide serialization for native ROOT work.
 
 When one module uses multiple implementation files, declare the helper sources
 under `source_dependencies` instead of turning them into artificial modules. C++
@@ -274,8 +280,8 @@ ModuleMetadata SelectionMetadata()
     ModuleMetadata metadata;
     metadata.Name = "SelectionModule";
     metadata.Version = "1.0.0";
-    metadata.Summary = "Runs a classic TTree selection.";
-    metadata.Tags = {"selection", "classic-tree"};
+    metadata.Summary = "Runs a native RDF selection.";
+    metadata.Tags = {"selection", "rdf"};
     return metadata;
 }
 } // namespace
@@ -367,12 +373,12 @@ The default snapshot includes:
 
 - module basename and code hash;
 - registered parameter values;
-- every registered `AnalysisManager` snapshot;
+- tracked input identity and optional `AnalysisSnapshotState()`;
 - execution state that affects output identity.
 
 Do not hide meaningful inputs in global variables. Put file names, systematic
-choices, calibration versions, and thresholds in registered parameters or manager
-configuration. Python modules can add stable custom fields via `snapshot_state()`.
+choices, calibration versions, and thresholds in registered parameters; track YAML/data paths with `TrackInput()` in `Init`.
+Native graphs are not introspected. Python modules can add stable custom fields via `snapshot_state()`.
 
 `force_run` bypasses lookup but still records the completed snapshot.
 

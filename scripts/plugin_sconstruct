@@ -205,7 +205,7 @@ env.ParseConfig(f'{shlex.quote(pkg_config)} --cflags --libs yaml-cpp')
 env.Append(CPPPATH=[core_inc, "include", "build/include"])
 env.Append(LIBPATH=[core_lib])
 env.Append(RPATH=[core_lib])
-env.Append(LIBS=["AMCM", "ParamManager", "utils"])
+env.Append(LIBS=["AMCM", "AnalysisConfig", "ParamManager", "utils"])
 
 build_config_path = os.path.join(core_inc, "CascadeBuildConfig.hh")
 build_config = read_text(build_config_path)
@@ -236,7 +236,7 @@ if root_modules:
     root_env.ParseConfig(f'{shlex.quote(root_config)} --cflags --libs')
     root_env["CXXFLAGS"] = [flag for flag in root_env.get("CXXFLAGS", []) if not str(flag).startswith("-std=")]
     root_env.AppendUnique(CXXFLAGS=[f"-std={cascade_standard}"])
-    root_env.AppendUnique(LIBS=["AnalysisManager", "PlotManager"])
+    root_env.AppendUnique(LIBS=["PlotManager"])
 
 install_targets = []
 libs = []

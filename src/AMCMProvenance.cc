@@ -83,5 +83,3 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
     LOG_INFO("CONTROL", "Workflow provenance '" << saved << "' is saved.");
     return saved;
 }
-
-void AMCM::SaveRunLog() const { SaveProvenance(); }

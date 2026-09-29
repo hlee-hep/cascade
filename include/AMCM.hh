@@ -1,5 +1,4 @@
 #pragma once
-#include "AnalysisManager.hh"
 #include "AnalysisModuleRegistry.hh"
 #include "DAGManager.hh"
 #include "IAnalysisModule.hh"
@@ -36,7 +35,6 @@ class AMCM
     std::string GetStatus(const std::string &name) const;
     std::map<std::string, std::map<std::string, double>> GetAllProgress() const;
     std::string SaveProvenance(const std::string &path = "", bool failFast = true) const;
-    void SaveRunLog() const;
 
     RunResult RunAModule(std::shared_ptr<IAnalysisModule> mod);
     RunResult RunAModule(const std::string &name);

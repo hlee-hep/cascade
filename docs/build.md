@@ -25,6 +25,7 @@ pointer-width, language-standard, and build-mode settings.
 
 ```bash
 scons -j2          # Build core libraries and Python binding
+scons test-runtime # Build and synchronize the generated Python test package
 scons test -j2     # Build and run C++ and Python tests
 scons verify -j2   # Run the complete local release gate
 scons install      # Install to the configured prefix
@@ -38,6 +39,30 @@ native plugin fixture using no ROOT include/link flags, checks whitespace, and
 runs `doctor runtime` plus manifest/hash/ABI verification against the built test
 package. Plugin smoke tests should still be run against the exact installed prefix
 intended for use.
+
+The `test-runtime` target removes obsolete files and bytecode from its owned
+`build/test-runtime` tree after current outputs are built. `test` and `verify`
+depend on this synchronization. The retired `build/AnalysisManager` generated
+output directory is also removed. These paths must not contain user files.
+
+## Clean deployment staging
+
+For packaging or deployment, create a fresh runtime instead of copying `build/`
+or installing over an older release:
+
+```bash
+python scripts/stage_runtime.py --output "$PWD/build/cascade-release" \
+  --python /path/to/runtime/bin/python \
+  --root-config /path/to/root/bin/root-config
+```
+
+The destination must not exist. Installation runs in an empty sibling temporary
+prefix; only a successful installation is moved into place. Failed staging leaves
+no partial destination. The result contains Cascade libraries, headers, Python
+modules, and workers; Python, ROOT, and other dependencies remain external.
+Use the matching Python and ROOT environment when checking or deploying it.
+Ordinary `scons install` remains an in-place operation and does not prune existing
+prefixes or user plugins.
 
 ## Install variables
 
@@ -89,12 +114,13 @@ ${PREFIX}/
     cascade
   include/cascade/
     IAnalysisModule.hh
-    AnalysisManager.hh
+    AnalysisConfig.hh
+    RootAnalysisHelpers.hh
     ...
   lib/
     libCascade.so
     libAMCM.so
-    libAnalysisManager.so
+    libAnalysisConfig.so
     libParamManager.so
     libPlotManager.so
     libutils.so

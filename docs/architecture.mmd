@@ -30,7 +30,7 @@ flowchart TB
         PREFIXES["Runtime + persistent prefixes<br/>config.json"]
         DISCOVERY["Package discovery<br/>C++ and Python roots"]
         VERIFY["PluginVerifier<br/>path boundary · manifest · SHA-256 · trust"]
-        CPPABI["C++ ABI 3 gate<br/>compiler · stdlib · C++ mode · ROOT"]
+        CPPABI["C++ ABI 4 gate<br/>compiler · stdlib · C++ mode · ROOT"]
         CPPLIB["Verified native library<br/>CascadeRegisterPlugin()"]
         PYIMPORT["Verified Python artifact<br/>restricted class import"]
         INDEX["Unified module index<br/>metadata + duplicate-name checks"]
@@ -92,19 +92,19 @@ flowchart TB
     subgraph ANALYSIS["ROOT-facing analysis services"]
         direction TB
         ROOT["ROOT runtime"]
-        MANAGER["AnalysisManager<br/>inputs · trees · cuts · metadata"]
+        MANAGER["AnalysisConfig<br/>cut and histogram specifications"]
         CLASSIC["Classic TTree loop<br/>branches + histograms"]
         RDF["RDataFrame pipeline<br/>defines · filters · snapshots"]
         PLOT["PlotManager<br/>stack · overlay · ratio · canvas"]
 
-        ROOT --> MANAGER
+        MODULE -.-> MANAGER
         ROOT --> PLOT
-        MANAGER --> CLASSIC
-        MANAGER --> RDF
+        ROOT --> CLASSIC
+        ROOT --> RDF
     end
 
     ROOTAPI --> ROOT
-    LIFECYCLE -.->|ROOT modules only| MANAGER
+    MANAGER -.->|optional helpers| RDF
 
     %% ------------------------------------------------------------------
     %% Transactional and reproducible outputs

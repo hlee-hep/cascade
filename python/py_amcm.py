@@ -275,10 +275,7 @@ class _ModuleHandle:
         return self._module.get_code_hash()
 
     def get_parameters(self):
-        if self.language == "python":
-            return self._module.get_parameters()
-        data = json.loads(self._module.dump_params_to_json(4))
-        return {key: value["value"] for key, value in data.items()}
+        return self._module.get_parameters()
 
     def set_param(self, key, value):
         return self._module.set_param(key, value)
@@ -520,9 +517,6 @@ class Controller:
         )
         return result
 
-    def save_run_log(self):
-        return self.save_provenance()
-
     def run_group(self, group, fail_fast=True):
         if isinstance(group, (list, tuple)):
             names = [item if isinstance(item, str) else item.name() for item in group]
@@ -530,22 +524,10 @@ class Controller:
         else:
             raise TypeError(f"Unsupported argument type: {type(group)}")
 
-    def save_provenance(self, path=None, fail_fast=True, dag_result=None):
+    def save_provenance(self, path=None, fail_fast=True):
         saved = self.ctrl.save_provenance(
             os.path.abspath(os.path.expanduser(path)) if path else "",
             bool(fail_fast),
         )
         self.last_workflow_provenance_path = saved
         return saved
-
-    def save_run_log_all(self, log_dir=None):
-        if log_dir:
-            workflow_id = cascade.ProvenanceRecorder.make_workflow_run_id()
-            return self.save_provenance(
-                os.path.join(log_dir, f"{workflow_id}.json")
-            )
-        return self.save_provenance()
-
-
-# Short spelling retained as an alias; Controller is the documented public name.
-py_amcm = Controller

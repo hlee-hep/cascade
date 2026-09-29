@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 
 class RuntimeOptions:
     input_hash: str
@@ -8,17 +8,7 @@ class RuntimeOptions:
     progress_interval_ms: int
     artifact_hash_cache_entries: int
 
-class Controller:
-    def __init__(self, require_signed: bool = ..., discover_plugins: bool = ...,
-                 runtime_options: Optional[RuntimeOptions] = ...) -> None: ...
-    def register_module(self, class_name: str, name: Optional[str] = ...) -> Any: ...
-    def run_module(self, name_or_mod: Any, isolated: bool = ...) -> Any: ...
-    def add_module_to_dag(self, name: str, dependencies: Optional[Any] = ...,
-                          isolated: bool = ...) -> None: ...
-    def run_dag(self, fail_fast: bool = ..., provenance_path: Optional[str] = ...) -> Any: ...
-    def get_dag(self) -> Any: ...
-    def save_provenance(self, path: Optional[str] = ..., fail_fast: bool = ...,
-                        dag_result: Any = ...) -> str: ...
+from .py_amcm import Controller as Controller
 
 def configure_runtime(**values: Any) -> RuntimeOptions: ...
 def get_runtime_options() -> RuntimeOptions: ...
@@ -31,3 +21,11 @@ def __getattr__(name: str) -> Any: ...
 __version__: str
 __abi_version__: int
 __abi_tag__: str
+
+from .plot_data import histogram_panel as histogram_panel
+
+from .publication import PublicationFigure as PublicationFigure
+
+from .publication import PublicationLayout as PublicationLayout
+
+from .publication import PublicationStyle as PublicationStyle

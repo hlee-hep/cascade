@@ -57,12 +57,25 @@ jobs:
             build/benchmarks/cascade-input-hash-bench \
             build/benchmarks/cascade-output-hash-bench
 
-      - name: Check tagged runtime version
-        env:
-          PYTHONPATH: ${{ github.workspace }}/build/test-runtime
-          LD_LIBRARY_PATH: ${{ github.workspace }}/build/src:${{ github.workspace }}/build/utils:${{ github.workspace }}/build/AnalysisManager:${{ github.workspace }}/build/ParamManager:${{ github.workspace }}/build/PlotManager:${{ github.workspace }}/build/main
+      - name: Stage a clean release runtime
         run: |
-          python -c 'import cascade, os; assert cascade.__version__ == os.environ["GITHUB_REF_NAME"][1:]; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__)'
+          python scripts/stage_runtime.py --output "$RUNNER_TEMP/cascade-runtime"
+
+      - name: Check staged runtime version
+        run: |
+          export PYTHONPATH="$RUNNER_TEMP/cascade-runtime/lib"
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/cascade-runtime/lib:${LD_LIBRARY_PATH:-}"
+          python - <<'PYTHON'
+          import os
+          import pathlib
+          import re
+          import cascade
+          header = pathlib.Path("include/PluginABI.hh").read_text()
+          abi = int(re.search(r"^#define CASCADE_PLUGIN_ABI_VERSION (\d+)$", header, re.M)[1])
+          assert cascade.__version__ == os.environ["GITHUB_REF_NAME"][1:]
+          assert cascade.__abi_version__ == abi
+          print(cascade.__version__, cascade.__abi_version__)
+          PYTHON
 
       - name: Capture release benchmark baseline
         run: |

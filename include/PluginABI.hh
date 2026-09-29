@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <memory>
 
-#define CASCADE_PLUGIN_ABI_VERSION 3
+#define CASCADE_PLUGIN_ABI_VERSION 4
 
 #if (__cplusplus >= 202100L && CASCADE_CXX_STANDARD_LEVEL != 23) ||                                                       \
     (__cplusplus >= 202002L && __cplusplus < 202100L && CASCADE_CXX_STANDARD_LEVEL != 20) ||                            \

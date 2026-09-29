@@ -2,14 +2,14 @@ import pathlib
 import tempfile
 import unittest
 
-from cascade.py_amcm import py_amcm
+from cascade import Controller
 
 
 class PythonWorkerIntegrationTests(unittest.TestCase):
     def test_verified_python_plugin_runs_in_exec_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            controller = py_amcm()
+            controller = Controller()
             module = controller.register_module(
                 "WorkerTestPythonModule", "python-worker-instance"
             )

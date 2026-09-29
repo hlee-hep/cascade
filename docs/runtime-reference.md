@@ -39,7 +39,7 @@ Parameters are frozen before `Init`. After `Init` returns, Cascade checks
 cancellation and enters `Check`, which follows this order:
 
 1. return `Skipped` for `dry_run`, without computing a snapshot;
-2. capture manager state and tracked-input identity using the configured
+2. capture explicit custom state and tracked-input identity using the configured
    `input_hash` policy;
 3. hash the complete snapshot;
 4. bypass lookup when `force_run=true`;
@@ -144,8 +144,8 @@ created the record. A `full` directory can still require a complete recursive wa
 | Lane | Typical node | Concurrency rule |
 | --- | --- | --- |
 | `Serial` | Generic callback or in-process Python module | Runs exclusively after active pooled work drains |
-| `Root` | In-process module using `AnalysisManager` | One process-wide ROOT node at a time; may overlap ROOT-free pooled work |
-| `Parallel` | C++ module with `UsesAnalysisManagers()==false` | Uses the bounded worker pool |
+| `Root` | In-process module declaring `UsesRoot()` | One process-wide ROOT node at a time; may overlap ROOT-free pooled work |
+| `Parallel` | C++ module with `UsesRoot()==false` | Uses the bounded worker pool |
 | `Isolated` | Verified module in a clean worker process | Uses the bounded worker pool |
 
 The scheduler is completion-driven: a dependent can start as soon as its own

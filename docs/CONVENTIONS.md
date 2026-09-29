@@ -29,8 +29,7 @@ Use `_` for intentionally unused structured bindings.
 
 - Prefer RAII and standard smart pointers.
 - State ownership explicitly when accepting ROOT pointers.
-- `AnalysisManager::RegisterTree` and `RegisterHistogram` borrow by default.
-- Use `ResourceOwnership::Owned` only for deliberate ownership transfer.
+- Module code owns ROOT lifetimes directly; configuration helpers retain no objects.
 - Do not delete borrowed ROOT objects.
 
 ## Module code

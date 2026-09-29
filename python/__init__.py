@@ -38,7 +38,10 @@ __abi_tag__ = get_abi_tag()
 
 _LAZY_MODULES = {
     "Controller": "py_amcm",
-    "plt_plot_manager": "plt_plot_manager",
+    "histogram_panel": "plot_data",
+    "PublicationFigure": "publication",
+    "PublicationLayout": "publication",
+    "PublicationStyle": "publication",
     "plugin_paths": "plugin_paths",
 }
 

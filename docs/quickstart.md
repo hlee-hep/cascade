@@ -80,7 +80,7 @@ A healthy local result reports:
 
 - `VERIFIED` package status;
 - matching SHA-256 hashes;
-- `RootEventModule` and `TextProducerModule` at ABI 3;
+- `RootEventModule` and `TextProducerModule` at ABI 4;
 - `RootSummaryModule` and `TextTransformModule` in the Python package;
 - zero errors.
 
@@ -177,7 +177,7 @@ does not require either key.
 - [Writing analysis modules](module-authoring.md)
 - [Parameters](parameters.md)
 - [Configuration schema](configuration.md)
-- [AnalysisManager](analysis-manager.md)
+- [Analysis configuration](analysis-config.md)
 - [Execution contract](execution.md)
 - [DAG execution](dag.md)
 - [Plotting](plotting.md)

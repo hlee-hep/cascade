@@ -30,7 +30,7 @@ def _load_base_module():
     for library in (
         build_root / "utils" / "libutils.so",
         build_root / "ParamManager" / "libParamManager.so",
-        build_root / "AnalysisManager" / "libAnalysisManager.so",
+        build_root / "AnalysisConfig" / "libAnalysisConfig.so",
         build_root / "PlotManager" / "libPlotManager.so",
         build_root / "src" / "libAMCM.so",
     ):

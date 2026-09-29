@@ -67,7 +67,7 @@ metadata:
 
 Omitting `root_modules` keeps every C++ module ROOT-free. Use `['*']` only when
 every module in the package needs ROOT. List only modules that include ROOT or
-use `AnalysisManager`/`PlotManager`. The build template reads the installed
+use ROOT or `RootAnalysisHelpers.hh`/`PlotManager`. The build template reads the installed
 `CascadeBuildConfig.hh`, applies the same C++ language mode as Cascade, and rejects
 a different ROOT version or C++ mode for ROOT-using modules.
 
@@ -345,7 +345,7 @@ Under the default policy, unsigned packages may load as `VERIFIED`. Invalid or
 untrusted signatures are always rejected; there is no downgrade to unsigned
 trust. Under `RequireSigned`, missing signatures are rejected as well.
 
-## ABI 3
+## ABI 4
 
 Cascade first compares the integer ABI, then the complete ABI tag. The tag covers:
 
@@ -369,9 +369,9 @@ print(cascade.__abi_tag__)
 
 ABI mismatch is resolved by rebuilding, not by editing the manifest.
 
-ABI 3's public `IAnalysisModule.hh` is declaration-only and ROOT-free. Plugin code
+ABI 4's public `IAnalysisModule.hh` is declaration-only and ROOT-free. Plugin code
 accesses parameters through `Parameters()` while the verified loader assigns
-identity. Lifecycle/manager implementation is linked from `libAMCM` instead of
+identity. Lifecycle implementation is linked from `libAMCM` instead of
 embedding those fields and inline methods in every plugin library.
 
 ## Refreshing discovery in a long-running process

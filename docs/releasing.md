@@ -44,17 +44,19 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 ## Release commands
 
 The exact prefix is operator-specific; an isolated staging prefix keeps the
-verification reproducible:
+verification reproducible. The destination must not already exist; use a fresh
+versioned path for each staged release. Run these commands in the matching Python
+and ROOT environment:
 
 ```bash
 scons -j2
 scons verify -j2
-scons install PREFIX=/tmp/cascade-release
+python scripts/stage_runtime.py --output "$PWD/build/cascade-release"
 
-/tmp/cascade-release/bin/cascade info
-/tmp/cascade-release/bin/cascade doctor env
-/tmp/cascade-release/bin/cascade doctor runtime
-/tmp/cascade-release/bin/cascade doctor plugins
+"$PWD/build/cascade-release/bin/cascade" info
+"$PWD/build/cascade-release/bin/cascade" doctor env
+"$PWD/build/cascade-release/bin/cascade" doctor runtime
+"$PWD/build/cascade-release/bin/cascade" doctor plugins
 ```
 
 Do not publish private signing keys or copy them into a plugin package. Only

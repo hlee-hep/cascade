@@ -177,9 +177,7 @@ std::string Logger::ApplyColor_(LogLevel level, const std::string &module, const
     std::string levelStr = Colored_("[" + ToString_(level) + "]", LevelToColor_(level));
     std::string modStr;
 
-    if (module == "AnalysisManager")
-        modStr = Colored_(module, "blue");
-    else if (module == "PlotManager")
+    if (module == "PlotManager")
         modStr = Colored_(module, "blue", "bold");
     else if (module == "CONTROL")
         modStr = Colored_(module, "green");

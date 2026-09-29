@@ -1,12 +1,12 @@
 import os
-Import("env", "lib_param_obj", "lib_analysis_obj", "utils_obj")
+Import("env", "lib_param_obj", "utils_obj")
 
 modenv = env.Clone()
 modenv.AppendUnique(LINKFLAGS=[
     "-Wl,-soname,libAMCM.so",
     r"-Wl,-rpath=\$$ORIGIN:\$$ORIGIN/../ParamManager:\$$ORIGIN/../utils",
 ])
-dependencies = lib_param_obj + lib_analysis_obj + utils_obj
+dependencies = lib_param_obj + utils_obj
 for dependency in dependencies:
     libname = os.path.basename(dependency.name)[3:-3]
     modenv.AppendUnique(LIBPATH=[os.path.dirname(str(dependency))], LIBS=[libname])

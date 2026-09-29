@@ -12,8 +12,6 @@
 #include <optional>
 #include <string>
 
-class AnalysisManager;
-
 class IAnalysisModule
 {
   public:
@@ -83,16 +81,16 @@ class IAnalysisModule
     virtual void Execute() = 0;
     virtual void Finalize() = 0;
     virtual void OnFailure(ModulePhase, const std::string &) {}
-    virtual bool UsesAnalysisManagers() const { return true; }
+    // Conservative default: native ROOT work uses the process-wide serial lane.
+    virtual bool UsesRoot() const { return true; }
     virtual std::string RuntimeLanguage() const { return "cpp"; }
     virtual void ConfigureProvenance();
+    // Deterministic custom state; native ROOT graphs are not introspected.
     virtual std::string AnalysisSnapshotState() const;
 
     ParamManager &Parameters();
     const ParamManager &Parameters() const;
-    void RegisterAnalysisManager(const std::string &name = "main");
-    AnalysisManager *GetAnalysisManager(const std::string &name) const;
-    AnalysisManager *Am(const std::string &name = "main") const;
+    void ReportProgress(double fraction, const std::string &name = "main");
     std::filesystem::path StageOutput(const std::filesystem::path &path);
     std::filesystem::path FinalOutput(const std::filesystem::path &path) const;
     void TrackInput(const std::filesystem::path &path);

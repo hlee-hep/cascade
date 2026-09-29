@@ -16,7 +16,8 @@ flowchart LR
     X --> K["Snapshot cache"]
     O --> V["Module provenance"]
     K --> V
-    M --> A["AnalysisManager"]
+    M -.-> A["Optional configuration helpers"]
+    M --> N["Native ROOT"]
     C --> D["DAGManager"]
     C --> I["Subprocess isolation"]
 ```
@@ -31,10 +32,10 @@ packages, with optional publisher signatures for distribution.
 This keeps the runtime reusable and makes module provenance explicit.
 
 The public `IAnalysisModule.hh` is declaration-only and does not include ROOT.
-Lifecycle, cache, provenance, and `AnalysisManager` ownership live in the core
+Lifecycle, cache, and provenance live in the core
 library behind an implementation object. This keeps the plugin class layout small
-and prevents internal manager fields from becoming a permanent ABI contract.
-Plugins that actually use ROOT may include ROOT/manager headers in their own source;
+and prevents internal runtime fields from becoming a permanent ABI contract.
+Plugins that actually use ROOT may include ROOT headers in their own source;
 ROOT-free modules do not need them.
 
 ## Boundary 2: module logic versus execution
@@ -63,13 +64,13 @@ a second execution implementation.
 ## Boundary 3: durable versus in-memory state
 
 Transactional files, provenance manifests, and snapshot cache records are
-durable. Manager instances and module fields are process memory. This distinction
+durable. Native ROOT objects and module fields are process memory. This distinction
 matters in isolated execution: durable results survive, child memory does not
 return to the parent.
 
 ## Boundary 4: analysis config versus module parameters
 
-`AnalysisManager` config describes ROOT structure and expressions. Module
+`AnalysisConfig` describes cut and histogram expressions without owning ROOT state. Module
 parameters describe one module instance's externally configurable choices. Both
 contribute to reproducibility, but they have different schemas and validation
 paths.
@@ -92,7 +93,7 @@ persistent prefix config + runtime prefix
 ### Execution
 
 ```text
-registered parameters + manager config + tracked-input identity + code hash
+registered parameters + custom snapshot + tracked-input identity + code hash
   -> snapshot
   -> cache decision
   -> analysis phases
@@ -118,11 +119,8 @@ validated nodes/dependencies
 ## Ownership
 
 - Controller owns registered module handles.
-- Each C++ module owns its `AnalysisManager` instances.
-- Manager-created ROOT objects are owned by the manager.
-- User-supplied trees/histograms are borrowed unless ownership is explicitly
-  transferred.
-- RDF forks share the input-chain lifetime needed by their nodes.
+- Analysis code owns its native ROOT objects and graph lifetimes.
+- Configuration helpers return values and retain no execution state.
 - `ExecutionContext` owns active staging and rollback state.
 
 ## Concurrency
@@ -133,8 +131,7 @@ the duration of a run. Hierarchical inter-process locks protect overlapping stag
 output commits, and recovery uses recorded artifact identity to avoid reverting a
 newer publisher.
 
-ROOT work remains process-wide serialized. C++ modules that declare no analysis
-manager use, plus isolated processes, may use the bounded DAG pool. Python
+ROOT work remains process-wide serialized. C++ modules that declare `UsesRoot() == false`, plus isolated processes, may use the bounded DAG pool. Python
 in-process modules use the conservative serial lane because the framework cannot
 prove that plugin globals and imported libraries are thread-safe. External side
 effects and unregistered direct output paths remain the module author's

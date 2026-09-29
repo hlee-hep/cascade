@@ -1,7 +1,6 @@
 #include "AMCM.hh"
 #include "BindingConversions.hh"
 #include "Bindings.hh"
-#include "AnalysisManager.hh"
 #include "AnalysisModuleRegistry.hh"
 #include "CacheManager.hh"
 #include "DAGManager.hh"
@@ -59,7 +58,7 @@ class PythonAnalysisModule : public IAnalysisModule
     void Execute() override { CallVoid_("execute"); }
     void Finalize() override { CallVoid_("finalize"); }
     void OnFailure(ModulePhase phase, const std::string &message) override { CallVoid_("on_failure", phase, message); }
-    bool UsesAnalysisManagers() const override { return false; }
+    bool UsesRoot() const override { return false; }
     std::string RuntimeLanguage() const override { return "python"; }
 
     std::string AnalysisSnapshotState() const override

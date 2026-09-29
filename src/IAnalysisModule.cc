@@ -1,6 +1,5 @@
 #include "IAnalysisModule.hh"
 
-#include "AnalysisManager.hh"
 #include "CacheManager.hh"
 #include "ExecutionContext.hh"
 #include "Logger.hh"
@@ -9,6 +8,7 @@
 #include "Version.hh"
 
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -23,8 +23,8 @@ struct IAnalysisModule::Impl
     std::string BaseName = "Interface";
     std::string Name;
     std::string CodeVersionHash;
-    std::map<std::string, std::unique_ptr<AnalysisManager>> Managers;
-    mutable std::mutex ManagerMutex;
+    std::map<std::string, double> Progress;
+    mutable std::mutex ProgressMutex;
     std::atomic<ModuleStatus> Status{ModuleStatus::Pending};
     mutable std::mutex ResultMutex;
     mutable std::recursive_mutex RunMutex;
@@ -123,11 +123,9 @@ RunResult IAnalysisModule::RunImpl_(bool externalPrepared)
     m_Impl->SnapshotHash.clear();
     m_Impl->CacheDecision = "not_checked";
     m_Impl->CacheReason = "cache check not reached";
-    if (UsesAnalysisManagers())
     {
-        std::lock_guard<std::mutex> managerLock(m_Impl->ManagerMutex);
-        m_Impl->Managers.clear();
-        m_Impl->Managers["main"] = std::make_unique<AnalysisManager>();
+        std::lock_guard<std::mutex> progressLock(m_Impl->ProgressMutex);
+        m_Impl->Progress.clear();
     }
     SetStatus(ModuleStatus::Initializing);
     try
@@ -311,7 +309,7 @@ std::string IAnalysisModule::GetRuntimeLanguage() const { return RuntimeLanguage
 
 bool IAnalysisModule::RequiresRootSerialization() const
 {
-    return UsesAnalysisManagers() || RuntimeLanguage() == "python";
+    return UsesRoot() || RuntimeLanguage() == "python";
 }
 
 ExecutionContext &IAnalysisModule::GetExecutionContext() { return m_Impl->Context; }
@@ -426,10 +424,8 @@ const ParamManager &IAnalysisModule::GetParamManager() const { return m_Impl->Pa
 
 std::map<std::string, double> IAnalysisModule::GetProgressSnapshot() const
 {
-    std::lock_guard<std::mutex> lock(m_Impl->ManagerMutex);
-    std::map<std::string, double> result;
-    for (const auto &[name, manager] : m_Impl->Managers) result[name] = manager->GetProgress();
-    return result;
+    std::lock_guard<std::mutex> lock(m_Impl->ProgressMutex);
+    return m_Impl->Progress;
 }
 
 void IAnalysisModule::SetStatus(ModuleStatus status)
@@ -445,32 +441,20 @@ void IAnalysisModule::ConfigureProvenance()
 
 std::string IAnalysisModule::AnalysisSnapshotState() const
 {
-    std::lock_guard<std::mutex> lock(m_Impl->ManagerMutex);
-    nlohmann::json state = nlohmann::json::array();
-    for (const auto &[name, manager] : m_Impl->Managers)
-        state.push_back({{"name", name}, {"state", nlohmann::json::parse(manager->SnapshotState())}});
-    return state.dump();
+    return "{}";
 }
 
 ParamManager &IAnalysisModule::Parameters() { return m_Impl->Parameters; }
 
 const ParamManager &IAnalysisModule::Parameters() const { return m_Impl->Parameters; }
 
-void IAnalysisModule::RegisterAnalysisManager(const std::string &name)
+void IAnalysisModule::ReportProgress(double fraction, const std::string &name)
 {
-    std::lock_guard<std::mutex> lock(m_Impl->ManagerMutex);
-    if (m_Impl->Managers.count(name)) throw std::runtime_error("Analysis manager already exists: " + name);
-    m_Impl->Managers[name] = std::make_unique<AnalysisManager>();
+    if (!std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0 || name.empty())
+        throw std::invalid_argument("Progress requires a name and a finite fraction in [0, 1]");
+    std::lock_guard<std::mutex> lock(m_Impl->ProgressMutex);
+    m_Impl->Progress[name] = fraction;
 }
-
-AnalysisManager *IAnalysisModule::GetAnalysisManager(const std::string &name) const
-{
-    std::lock_guard<std::mutex> lock(m_Impl->ManagerMutex);
-    const auto iterator = m_Impl->Managers.find(name);
-    return iterator == m_Impl->Managers.end() ? nullptr : iterator->second.get();
-}
-
-AnalysisManager *IAnalysisModule::Am(const std::string &name) const { return GetAnalysisManager(name); }
 
 std::filesystem::path IAnalysisModule::StageOutput(const std::filesystem::path &path)
 {
@@ -588,12 +572,7 @@ IAnalysisModule::CheckDecision IAnalysisModule::RunCheck_()
         m_Impl->CacheDecision = "not_checked";
         m_Impl->CacheReason = "dry_run enabled";
         LOG_INFO(Name(), "DRY run is enabled. variables and setting will be shown.");
-        for (auto &[_, manager] : m_Impl->Managers)
-        {
-            manager->PrintConfigSummary();
-            manager->PrintHistogramSummary();
-            manager->PrintCutSummary();
-        }
+        LOG_INFO(Name(), "Analysis state: " << AnalysisSnapshotState());
         LOG_INFO("ParamManager", m_Impl->Parameters.DumpJSON());
         return {false, "dry_run enabled"};
     }

@@ -16,7 +16,7 @@ class WorkerTestModule final : public IAnalysisModule
     void Description() const override {}
 
   protected:
-    bool UsesAnalysisManagers() const override { return false; }
+    bool UsesRoot() const override { return false; }
     void Init() override {}
     void Execute() override
     {

@@ -1,0 +1,8 @@
+Import("env")
+modenv = env.Clone()
+# Configuration parsing has no ROOT dependency or dictionary.
+modenv.Replace(LIBS=["yaml-cpp"])
+modenv.AppendUnique(LINKFLAGS=["-Wl,-soname,libAnalysisConfig.so"])
+lib = modenv.SharedLibrary("AnalysisConfig", ["AnalysisConfig.cc"])
+install_targets = modenv.Install(modenv["LIBDIR"], lib)
+Return("lib install_targets")

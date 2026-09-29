@@ -4,7 +4,8 @@ import SCons.Util
 
 def generate_init_py(target, source, env):
     target_dir = os.path.dirname(str(target[0]))
-    files = [f for f in os.listdir(target_dir) if f.endswith(".py") and f != "__init__.py"]
+    files = [os.path.basename(str(node)) for node in source
+             if str(node).endswith(".py") and os.path.basename(str(node)) != "__init__.py"]
     lines = ["# Auto-generated cascade __init__.py\n"]
     for fname in sorted(files):
         modulename = fname[:-3]
@@ -12,6 +13,19 @@ def generate_init_py(target, source, env):
     with open(str(target[0]), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[SCons] __init__.py for cascade generated in {target_dir}")
+    return 0
+
+def sync_test_runtime(target, source, env):
+    import runpy
+    prune = runpy.run_path("scripts/runtime_layout.py")["prune_runtime"]
+    prune("build/test-runtime", [str(node) for node in source])
+    # Retired generated output, never an installed/user plugin directory.
+    retired = "build/AnalysisManager"
+    if os.path.lexists(retired):
+        prune(retired, [])
+        os.rmdir(retired)
+    with open(str(target[0]), "w", encoding="utf-8") as stream:
+        stream.write("Current test runtime synchronized.\n")
     return 0
 
 def make_executable(target, source, env):
@@ -101,7 +115,7 @@ def run_tests(target, source, env):
     build_library_paths = [
         os.path.abspath("build/src"),
         os.path.abspath("build/utils"),
-        os.path.abspath("build/AnalysisManager"),
+        os.path.abspath("build/AnalysisConfig"),
         os.path.abspath("build/ParamManager"),
         os.path.abspath("build/PlotManager"),
         os.path.abspath("build/main"),
@@ -131,7 +145,8 @@ def run_tests(target, source, env):
     )
     for python_source in (
         "python/py_amcm.py",
-        "python/plt_plot_manager.py",
+        "python/plot_data.py",
+        "python/publication.py",
         "python/cascade",
         "modules/python/base_module.py",
         "scripts/plugin_sconstruct",
@@ -176,7 +191,7 @@ def run_tests(target, source, env):
     else:
         for test_source in python_test_sources:
             python_test_environment = test_environment
-            if test_source.endswith("test_python_api.py"):
+            if test_source.endswith(("test_python_api.py", "test_publication.py")):
                 python_test_environment = {
                     **python_test_environment,
                     "PYTHONPATH": os.path.abspath("build/test-runtime"),
@@ -205,7 +220,7 @@ def run_verification(target, source, env):
     build_library_paths = [
         os.path.abspath("build/src"),
         os.path.abspath("build/utils"),
-        os.path.abspath("build/AnalysisManager"),
+        os.path.abspath("build/AnalysisConfig"),
         os.path.abspath("build/ParamManager"),
         os.path.abspath("build/PlotManager"),
         os.path.abspath("build/main"),
@@ -425,7 +440,7 @@ if existing_generated_config != generated_config_content:
 env.Prepend(CPPPATH=[generated_include])
 VariantDir("build/src", "src", duplicate=0)
 VariantDir("build/utils", "utils", duplicate=0)
-VariantDir("build/AnalysisManager", "AnalysisManager", duplicate=0)
+VariantDir("build/AnalysisConfig", "AnalysisConfig", duplicate=0)
 VariantDir("build/PlotManager", "PlotManager", duplicate=0)
 VariantDir("build/ParamManager", "ParamManager", duplicate=0)
 VariantDir("build/python", "python", duplicate=0)
@@ -435,7 +450,7 @@ TOP = os.getcwd()
 env.Append(CPPPATH=[
     os.path.join(TOP, "modules/base"),
     os.path.join(TOP, "src"),
-    os.path.join(TOP, "AnalysisManager"),
+    os.path.join(TOP, "AnalysisConfig"),
     os.path.join(TOP, "PlotManager"),
     os.path.join(TOP, "ParamManager"),
     os.path.join(TOP, "include"),
@@ -474,7 +489,7 @@ env.Append(BUILDERS={'Tidy': Tidy})
 
 all_srcs = []
 all_srcs += Glob('src/*.cc') + Glob('src/*.hh')
-all_srcs += Glob('AnalysisManager/*.cc') + Glob('AnalysisManager/*.hh')
+all_srcs += Glob('AnalysisConfig/*.cc') + Glob('AnalysisConfig/*.hh')
 all_srcs += Glob('PlotManager/*.cc') + Glob('PlotManager/*.hh')
 all_srcs += Glob('ParamManager/*.cc') + Glob('ParamManager/*.hh')
 all_srcs += Glob('modules/base/IAnalysisModule.hh')
@@ -487,12 +502,12 @@ Depends('tidy', '.clang-tidy')
 
 # SConscripts
 utils_obj, utils_install = SConscript("build/utils/SConscript", exports=["env", "TOP"])
-lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisManager/SConscript", exports=["env","TOP"])
+lib_analysis_obj, lib_analysis_install = SConscript("build/AnalysisConfig/SConscript", exports=["env","TOP"])
 lib_plot_obj, lib_plot_install = SConscript("build/PlotManager/SConscript", exports=["env","TOP"])
 lib_param_obj, lib_param_install = SConscript("build/ParamManager/SConscript", exports=["env","TOP"])
 core_objs, core_install = SConscript(
     "build/src/SConscript",
-    exports=["env", "lib_param_obj", "lib_analysis_obj", "utils_obj"],
+    exports=["env", "lib_param_obj", "utils_obj"],
 )
 pybind_obj, pybind_install = SConscript("build/main/SConscript", exports=[
     "env", "core_objs", "utils_obj", "lib_param_obj", "lib_analysis_obj", "lib_plot_obj"
@@ -506,13 +521,13 @@ worker_env.AppendUnique(
     LIBPATH=[
         os.path.join(TOP, "build", "src"),
         os.path.join(TOP, "build", "utils"),
-        os.path.join(TOP, "build", "AnalysisManager"),
+        os.path.join(TOP, "build", "AnalysisConfig"),
         os.path.join(TOP, "build", "ParamManager"),
         os.path.join(TOP, "build", "PlotManager"),
     ],
-    LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
+    LIBS=["AMCM", "AnalysisConfig", "ParamManager", "PlotManager", "utils"],
     LINKFLAGS=[
-        r"-Wl,-rpath=\$$ORIGIN/../lib:\$$ORIGIN/../src:\$$ORIGIN/../utils:\$$ORIGIN/../AnalysisManager:\$$ORIGIN/../ParamManager:\$$ORIGIN/../PlotManager",
+        r"-Wl,-rpath=\$$ORIGIN/../lib:\$$ORIGIN/../src:\$$ORIGIN/../utils:\$$ORIGIN/../AnalysisConfig:\$$ORIGIN/../ParamManager:\$$ORIGIN/../PlotManager",
     ],
 )
 cpp_worker_object = worker_env.Object(
@@ -568,7 +583,7 @@ if os.path.isdir('include'):
     hdr_install += env.Install(env['INCLUDEDIR'], Glob('include/*.hh'))
 hdr_install += env.Install(env['INCLUDEDIR'], generated_config)
 
-for sub in ['AnalysisManager', 'PlotManager', 'ParamManager', 'utils', 'src']:
+for sub in ['AnalysisConfig', 'PlotManager', 'ParamManager', 'utils', 'src']:
     if os.path.isdir(sub):
         globs = Glob(f'{sub}/*.hh')
         if globs:
@@ -591,7 +606,7 @@ test_env = env.Clone()
 test_rpath = [
     os.path.join(TOP, "build", "src"),
     os.path.join(TOP, "build", "utils"),
-    os.path.join(TOP, "build", "AnalysisManager"),
+    os.path.join(TOP, "build", "AnalysisConfig"),
     os.path.join(TOP, "build", "ParamManager"),
     os.path.join(TOP, "build", "PlotManager"),
 ]
@@ -600,11 +615,11 @@ test_env.Append(
     LIBPATH=[
         os.path.join(TOP, "build", "src"),
         os.path.join(TOP, "build", "utils"),
-        os.path.join(TOP, "build", "AnalysisManager"),
+        os.path.join(TOP, "build", "AnalysisConfig"),
         os.path.join(TOP, "build", "ParamManager"),
         os.path.join(TOP, "build", "PlotManager"),
     ],
-    LIBS=["AMCM", "AnalysisManager", "ParamManager", "PlotManager", "utils"],
+    LIBS=["AMCM", "AnalysisConfig", "ParamManager", "PlotManager", "utils"],
 )
 
 benchmark_env = test_env.Clone()
@@ -649,7 +664,7 @@ env.Alias("bench", benchmark_stamp)
 env.Alias("benchmark", benchmark_stamp)
 
 test_plugin_env = test_env.Clone()
-test_plugin_env.AppendUnique(LINKFLAGS=[r"-Wl,-rpath=\$$ORIGIN/../../../src:\$$ORIGIN/../../../utils:\$$ORIGIN/../../../AnalysisManager:\$$ORIGIN/../../../ParamManager:\$$ORIGIN/../../../PlotManager"])
+test_plugin_env.AppendUnique(LINKFLAGS=[r"-Wl,-rpath=\$$ORIGIN/../../../src:\$$ORIGIN/../../../utils:\$$ORIGIN/../../../AnalysisConfig:\$$ORIGIN/../../../ParamManager:\$$ORIGIN/../../../PlotManager"])
 test_plugin_object = test_plugin_env.SharedObject(
     "build/tests/fixtures/WorkerTestModule.os",
     "tests/fixtures/WorkerTestModule.cc",
@@ -689,6 +704,12 @@ test_runtime_extension = env.Command(
     create_symlink,
 )
 test_runtime = test_runtime_python + test_runtime_pymodule + test_runtime_pymodule_init + test_runtime_extension
+test_runtime_sync = env.Command(
+    "build/.test-runtime-synced", test_runtime, sync_test_runtime,
+)
+Depends(test_runtime_sync, "scripts/runtime_layout.py")
+AlwaysBuild(test_runtime_sync)
+test_runtime += test_runtime_sync
 env.Alias("test-runtime", test_runtime)
 
 # Compile the native fixture with no ROOT include or link flags. This guards the

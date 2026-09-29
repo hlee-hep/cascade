@@ -6,9 +6,9 @@ and returns a `DAGRunResult`.
 
 Controller-managed modules are assigned execution lanes automatically:
 
-- in-process modules using `AnalysisManager` enter the process-wide ROOT lane;
+- in-process modules declaring `UsesRoot()` enter the process-wide ROOT lane;
 - in-process Python modules share the ROOT-safe serial lane because of the GIL and unknown global state;
-- C++ modules that override `UsesAnalysisManagers()` to return `false` may run in parallel;
+- C++ modules that override `UsesRoot()` to return `false` may run in parallel;
 - isolated modules may run concurrently in separate worker processes.
 
 Only one in-process ROOT module runs at a time, including across controller
@@ -35,7 +35,7 @@ cascade dag run workflow.yaml --no-progress
 
 Pending nodes distinguish unsatisfied dependencies from a ready node waiting for a
 ROOT/serial/worker lane. A running module reports the mean of its available
-`AnalysisManager` progress values. Final node results remain unchanged, and JSON
+named progress values set with `ReportProgress()`. Final node results remain unchanged, and JSON
 stdout is never mixed with progress output.
 
 `--input-hash`, `--output-hash`, `--timeout`, `--progress-interval-ms`, and

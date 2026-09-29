@@ -200,9 +200,10 @@ delete them. Manager-created trees and histograms remain owned by the manager.
 
 ## 9. Replace run-log consumers with provenance
 
-`save_run_log` and `save_run_log_all` now write workflow provenance JSON rather
-than a duplicate YAML summary. Prefer `SaveProvenance` / `save_provenance`, and
-read module details from the referenced `cascade.module-run` documents.
+Replace `SaveRunLog`, `save_run_log`, and `save_run_log_all` with
+`SaveProvenance` / `save_provenance`. The compatibility names are removed in the
+current development tree. Read module details from the referenced
+`cascade.module-run` documents.
 
 Declare material inputs with `TrackInput` / `track_input`. Transactional outputs
 are discovered automatically. Legacy hash-only snapshot cache files are accepted

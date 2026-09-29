@@ -46,7 +46,7 @@ struct ColorSpec
     int LineWidth = 2;
     int FillStyle = 1001;
     float MarkerSize = 0.9;
-    ColorSpec() = default;
+    ColorSpec() {} // Explicit body preserves member defaults through PyROOT.
     ColorSpec(int line, int fill, int marker, int markerStyle = 20, int lineWidth = 2, int fillStyle = 1001)
         : Line(line), Fill(fill), Marker(marker), MarkerStyle(markerStyle), LineWidth(lineWidth), FillStyle(fillStyle)
     {
@@ -128,7 +128,7 @@ struct DrawSpec
     bool VisibleInLegend = true;
     std::string LegendOption;
     std::optional<int> LegendPriority;
-    DrawSpec() = default;
+    DrawSpec() {} // Explicit body preserves member defaults through PyROOT.
 
     // fluent setters
     DrawSpec &SetOpt(std::string v)
@@ -318,6 +318,7 @@ struct ThemeSpec // global
     float PadLeftMargin = 0.15;
     float PadBottomMargin = 0.15;
     bool LogY = false;
+    bool LogZ = false; // TH2 color scale; independent of the Y coordinate axis.
 };
 
 struct BandSpec
@@ -449,6 +450,37 @@ struct RenderPlan
     }
 };
 
+// Publication geometry is independent of ROOT's per-panel LayoutSpec.
+struct PublicationLayout
+{
+    PublicationLayout() {}
+    int Rows = 1, Columns = 1;
+    double Width = 3.4, Height = 2.65; // Inches at final publication size.
+    double Left = .17, Right = .06, Bottom = .20, Top = .13;
+    double HGap = .08, VGap = .12; // Canvas fractions, like margins.
+    std::string Legend = "inside", LegendLocation = "upper right";
+    int LegendColumns = 0; // Zero follows the panel or shared entry count.
+    bool ShareX = false, ShareY = true, PanelLabels = true;
+    double RatioGap = 4; // Points between main and ratio axes.
+    double ColorbarSpace = .22; // Fraction of each cell reserved for colorbar furniture.
+};
+
+struct PublicationStyle
+{
+    PublicationStyle() {}
+    double FontSize = 9, AxisSize = 10, LegendSize = 9;
+    double MarkerSize = 3.2, LineWidth = 1.5, HeaderGap = 3; // Points.
+    bool UseTex = true;
+    std::string ColorMap = "viridis";
+};
+
+struct PublicationOptions
+{
+    PublicationOptions() {}
+    PublicationLayout Layout;
+    PublicationStyle Style;
+};
+
 class PlotManager
 {
   public:
@@ -467,6 +499,14 @@ class PlotManager
     void OnMainFrame(FrameHook f) { m_MainFrameHook = std::move(f); }
     void OnRatioFrame(FrameHook f) { m_RatioFrameHook = std::move(f); }
     TCanvas *Draw(const PlotSpec &spec, const std::string &canvasName = "c1");
+
+    // Export transformed copies, never borrowed ROOT inputs. No ROOT hooks run.
+    std::string ExportPublication(const PlotSpec &spec) const;
+    // Optional Python/Matplotlib/LaTeX backend; Draw() remains ROOT-only.
+    void SavePublication(const std::vector<PlotSpec> &panels, const std::string &output,
+                         const std::string &layout = "single", const std::string &python = "python3") const;
+    void SavePublication(const std::vector<PlotSpec> &panels, const std::string &output,
+                         const PublicationOptions &options, const std::string &python = "python3") const;
 
   private:
     // MutateSpecHook m_MutateHook;

@@ -14,7 +14,7 @@ void RootManagersExample()
         x = i * 0.1;
         t.Fill();
     }
-    AnalysisManager::WriteInputConfig(&t, "input_example.yaml", {"dummy.root"});
+    // Trees and branches remain native ROOT objects; no manager registration is needed.
 
     auto *h = new TH1D("h", "Example", 10, 0, 1);
     for (int i = 0; i < 100; ++i) h->Fill(gRandom->Rndm());

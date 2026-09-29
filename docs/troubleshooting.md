@@ -154,7 +154,7 @@ The integer plugin ABI differs. Rebuild against the current Cascade headers.
 
 ### ABI tag mismatch
 
-ABI 3 matches but compiler, standard library, ROOT, pointer width, or build mode
+ABI 4 matches but compiler, standard library, ROOT, pointer width, or build mode
 differs. Compare:
 
 ```python
@@ -271,7 +271,7 @@ restored.
 
 ### Snapshot cache appears stale
 
-The snapshot knows explicit parameters, manager state, code hash, execution state,
+The snapshot knows explicit parameters, explicit custom state, code hash, execution state,
 and inputs declared with `TrackInput`/`track_input`. Make hidden external inputs
 explicit. For one diagnostic rerun, set `force_run=true`.
 

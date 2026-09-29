@@ -143,7 +143,7 @@ Run in an environment where Cascade ROOT dictionaries are discoverable:
 root -l 'examples/RootManagersExample.C()'
 ```
 
-See [AnalysisManager](analysis-manager.md), [Parameters](parameters.md), and
+See [Analysis configuration](analysis-config.md), [Parameters](parameters.md), and
 [Plotting](plotting.md) for the complete manager contracts.
 
 ## Choosing an example

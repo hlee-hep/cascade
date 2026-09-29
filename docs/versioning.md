@@ -34,14 +34,13 @@ C++ definition:
 CASCADE_PLUGIN_ABI_VERSION
 ```
 
-Cascade 0.3 uses ABI 3 as its public plugin baseline. ABI 1 and 2 existed only
-during pre-release development. ABI 3 places `IAnalysisModule` lifecycle and
-manager state behind an implementation object and gives plugins a declaration-only,
-ROOT-free module header; no external plugins had been published at the transition.
+The native ROOT transition uses ABI 4. It removes the AnalysisManager API and
+renames the ROOT scheduling hook to `UsesRoot`. Rebuild C++ plugins against the
+new headers and libraries. Cascade 0.3 used ABI 3; ABI 1 and 2 were pre-release.
 
 ## ABI fingerprint
 
-The integer alone cannot detect toolchain incompatibility. ABI 3 also compares:
+The integer alone cannot detect toolchain incompatibility. ABI 4 also compares:
 
 - compiler family and exact version;
 - `__cplusplus`;
@@ -78,7 +77,7 @@ schema version.
 Module and workflow manifests use separate document identities,
 `cascade.module-run` and `cascade.workflow-run`, both at `schema_version: 1`.
 Snapshot cache schema 1 links hashes to module manifests. These document versions
-are independent of plugin ABI 3.
+are independent of plugin ABI 4.
 
 ## Release policy
 

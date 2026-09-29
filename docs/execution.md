@@ -18,7 +18,7 @@ framework phases.
 
 | Phase | Framework behavior |
 | --- | --- |
-| `Init` | Starts `ExecutionContext`, recreates analysis-manager state, invokes module initialization |
+| `Init` | Starts `ExecutionContext`, clears named progress, invokes module initialization |
 | `Check` | Handles `dry_run`, computes snapshot hash, checks cache, applies `force_run` |
 | `Execute` | Runs analysis logic |
 | `Finalize` | Runs user serialization/finalization logic |
@@ -110,7 +110,9 @@ Register every protected output by asking the context for a staging path:
 
 ```cpp
 auto staged = StageOutput("histograms.root");
-Am()->WriteHistograms(staged.string());
+TFile output(staged.c_str(), "RECREATE");
+histogram.Write();
+output.Close();
 ```
 
 ```python
@@ -163,7 +165,7 @@ The snapshot is derived from:
 
 - module basename;
 - registered parameter values;
-- registered `AnalysisManager` state;
+- deterministic custom `AnalysisSnapshotState()`;
 - code-version hash;
 - execution state affecting output identity;
 - tracked input identity according to the configured `input_hash` runtime option.
@@ -279,7 +281,7 @@ Committed files and cache records cross the boundary. These do not:
 
 - module member variables;
 - Python object mutations;
-- `AnalysisManager` instances;
+- native ROOT objects;
 - open handles intended for later parent use;
 - child-only global state.
 
@@ -333,7 +335,7 @@ throughput-versus-integrity tradeoff.
 - Different module instances may run concurrently.
 - Registry/controller metadata is protected for concurrent access.
 - DAG structure cannot be mutated while execution is active.
-- In-process `AnalysisManager` modules share one process-wide ROOT execution lane.
+- In-process ROOT modules share one process-wide ROOT execution lane.
 - Isolated nodes and C++ modules without analysis managers use bounded DAG worker
   lanes. In-process Python nodes share the ROOT-safe serial lane.
 - `dag_workers` bounds a DAG's concurrent work and defaults to detected hardware
@@ -346,7 +348,7 @@ Progress state is updated for every callback, while terminal rendering is thrott
 to once every 200 ms. Set `progress_interval_ms=0` to render every update or choose
 a different non-negative interval.
 
-## Provenance and run-log compatibility
+## Workflow provenance
 
 The canonical execution record is a versioned JSON provenance manifest. It
 combines module metadata, code/snapshot identity, resolved parameters, lifecycle
@@ -355,17 +357,16 @@ result, artifact hashes, cache lineage, and DAG relationships.
 C++:
 
 ```cpp
-controller.SaveRunLog();
+controller.SaveProvenance();
 ```
 
 Python:
 
 ```python
-controller.save_run_log_all()
+controller.save_provenance()
 ```
 
-These names remain compatibility aliases and now write `cascade.workflow-run`
-JSON. Prefer `SaveProvenance()` / `save_provenance()`. See
+These methods write `cascade.workflow-run` JSON. See
 [Provenance manifests](provenance.md) for locations, input tracking, redaction,
 and cache linkage. The complete setting and decision reference is
 [Runtime reliability and performance](runtime-reference.md).

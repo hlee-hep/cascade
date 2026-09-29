@@ -15,5 +15,8 @@
 #pragma link C++ struct BandSpec;
 #pragma link C++ struct LayoutSpec;
 #pragma link C++ struct PlotSpec;
+#pragma link C++ struct PublicationLayout;
+#pragma link C++ struct PublicationStyle;
+#pragma link C++ struct PublicationOptions;
 #pragma link C++ class PlotManager;
 #endif

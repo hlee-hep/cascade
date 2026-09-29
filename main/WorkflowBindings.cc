@@ -59,12 +59,6 @@ void BindWorkflow(py::module_ &m)
                  py::gil_scoped_release release;
                  return self.GetAllProgress();
              })
-        .def("save_run_log",
-             [](const AMCM &self)
-             {
-                 py::gil_scoped_release release;
-                 self.SaveRunLog();
-             })
         .def("save_provenance",
              [](const AMCM &self, const std::string &path, bool failFast)
              {

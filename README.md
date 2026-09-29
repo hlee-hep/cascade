@@ -7,12 +7,12 @@
 Cascade is a C++/Python analysis framework for ROOT-based workflows. Analysis
 code is packaged as verified plugins with optional publisher signing; the core
 supplies lifecycle management,
-typed parameters, ROOT I/O, DAG execution, reproducible caching, transactional
+typed parameters, analysis configuration, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
-The current release is **0.3.0** with
-**plugin ABI 3**. The full build fingerprint is checked in addition to the
-integer ABI.
+The latest release is **0.3.0** (plugin ABI 3). This development tree uses
+**plugin ABI 4** for the native ROOT transition; C++ plugins must be rebuilt.
+The full build fingerprint is checked in addition to the integer ABI.
 
 Release notes are tracked in [CHANGELOG.md](CHANGELOG.md), and the verification
 process is documented in [Preparing a release](docs/releasing.md).
@@ -40,7 +40,7 @@ owns the operational boundary:
 | --- | --- |
 | `IAnalysisModule` / `base_module` | C++/Python module lifecycle and framework contract |
 | `ExecutionContext` | Run ID, output/cache roots, cancellation, logging, output transaction |
-| `AnalysisManager` | ROOT inputs, branches, cuts, histograms, metadata, RDF |
+| `AnalysisConfig` | ROOT-independent cut/histogram YAML, optional stateless ROOT helpers |
 | `ParamManager` | Registered typed parameters and YAML/JSON serialization |
 | `DAGManager` | Stateful dependency execution, failure propagation, and generic data links |
 | `PlotManager` | ROOT stack, overlay, ratio, legend, and style helpers |
@@ -64,7 +64,7 @@ binding are internal integration surfaces.
 - OpenSSL;
 - nlohmann/json headers.
 
-Matplotlib is optional for `plt_plot_manager`; PyROOT is optional for Python code
+NumPy and Matplotlib are optional for `PublicationFigure`; PyROOT is optional for Python code
 that reads ROOT objects directly.
 
 Make sure the dependency probes succeed:
@@ -211,33 +211,32 @@ Important contracts:
 - do not depend on child-only object mutations after isolated execution.
 
 The complete authoring guide is [Writing analysis modules](docs/module-authoring.md).
-The manager-specific references are
+The supporting references are
 [Parameters](docs/parameters.md),
-[AnalysisManager](docs/analysis-manager.md),
+[Analysis configuration](docs/analysis-config.md),
 [DAG execution](docs/dag.md), and
 [Plotting](docs/plotting.md).
 
 ## Configuration
 
-AnalysisManager configuration uses schema version 1:
+Cut and histogram configuration uses schema version 1:
 
 ```yaml
 schema_version: 1
-input:
-  files: [events.root]
-  tree: events
-branches:
+cuts:
+  selected: pt > 25
+histograms:
   pt:
-    name: jet_pt
-    type: Float_t
+    expr: pt
+    bins: [50, 0, 250]
 ```
 
-`LoadInputConfig`, `LoadCutConfig`, and `LoadHistogramConfig` run preflight
-automatically. Their `Preflight*Config` counterparts collect errors without
-mutating manager state.
-
-See [Configuration schema](docs/configuration.md) for complete input, cut, and
-histogram examples and supported branch types.
+`Cascade::LoadCuts` and `Cascade::LoadHistograms` validate YAML and return plain
+specifications. Analysis code uses native ROOT objects and APIs. Optional stateless
+helpers apply cuts to an `RNode` or book a lazy histogram without executing it.
+Track configuration/data files in `Init` and stage output paths through the module.
+See [Configuration schema](docs/configuration.md) and
+[Native ROOT](docs/analysis-config.md), including the breaking API migration.
 
 ## Execution results
 
@@ -300,7 +299,7 @@ See [Plugin development and distribution](docs/plugins.md) and
 | [Writing analysis modules](docs/module-authoring.md) | Implementing C++ or Python analysis logic |
 | [Parameters](docs/parameters.md) | Declaring typed contracts and loading YAML/JSON values |
 | [Configuration schema](docs/configuration.md) | Authoring input, cut, histogram, and parameter files |
-| [AnalysisManager](docs/analysis-manager.md) | Building classic TTree and RDataFrame analyses |
+| [Analysis configuration](docs/analysis-config.md) | Building classic TTree and RDataFrame analyses |
 | [Execution contract](docs/execution.md) | Understanding lifecycle, cache, transactions, cancellation, isolation |
 | [Runtime reliability and performance](docs/runtime-reference.md) | Choosing hashing, cache, DAG, worker, and isolation settings |
 | [DAG execution](docs/dag.md) | Composing modules and propagating failures or parameters |
@@ -318,7 +317,7 @@ See [Plugin development and distribution](docs/plugins.md) and
 
 - Files written directly to final paths are outside the output transaction.
 - Subprocess isolation contains plugin crashes; it is not a security sandbox.
-- Snapshot caching assumes a module's parameters, manager state, verified artifact
+- Snapshot caching assumes a module's parameters, explicit custom state, tracked inputs, verified artifact
   hash, and output root describe its deterministic inputs.
 - Python plugin discovery accepts only verified manifest entries ending in
   `module.py`.

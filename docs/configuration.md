@@ -1,122 +1,36 @@
 # Configuration schema
 
-Cascade separates two kinds of configuration:
+Analysis configuration is independent of ROOT execution and module parameters.
+`AnalysisConfig.hh` contains plain cut and histogram specs in namespace `Cascade`.
+Every cut/histogram YAML document requires `schema_version: 1`.
 
-- `AnalysisManager` YAML documents describe ROOT inputs, cuts, and histograms;
-- module parameter YAML/JSON documents assign values to parameters already
-  registered by a module.
-
-They are intentionally different formats.
-
-## Analysis config version
-
-Every input, cut, and histogram document requires:
+## Cuts
 
 ```yaml
 schema_version: 1
-```
-
-Missing or unsupported versions fail preflight. This prevents older files from
-silently acquiring new semantics.
-
-## Input config
-
-```yaml
-schema_version: 1
-
-input:
-  files:
-    - data/run-001.root
-    - data/run-002.root
-  tree: events
-
-branches:
-  event:
-    name: event_number
-    type: Long64_t
-  pt:
-    name: jet_pt
-    type: Float_t
-  accepted:
-    name: pass_selection
-    type: Bool_t
-```
-
-`input.files` must be a non-empty sequence. Preflight opens every file and verifies
-that the configured tree and scalar branches exist in all of them.
-
-Supported classic branch types:
-
-| ROOT spelling | C++ spelling | Value returned by `GetValue` |
-| --- | --- | --- |
-| `Double_t` | `double` | `double` |
-| `Float_t` | `float` | `double` |
-| `Int_t` | `int` | `double` |
-| `UInt_t` | `unsigned int` | `double` |
-| `Long64_t` | `long long` | `double` |
-| `ULong64_t` | `unsigned long long` | `double` |
-| `Bool_t` | `bool` | `0.0` or `1.0` |
-
-The `type` field is optional. `BuildChain()` infers it from the scalar leaf when
-omitted. An explicit type is useful because preflight then reports differences
-before branch attachment.
-
-Aliases such as `pt` are used in cuts and histogram expressions. The original ROOT
-name remains in `name`.
-
-```cpp
-AnalysisManager manager;
-auto report = manager.PreflightInputConfig("input.yaml");
-if (!report.Valid())
-{
-    for (const auto &error : report.Errors)
-        std::cerr << error << '\n';
-}
-manager.LoadInputConfig("input.yaml");
-TChain *chain = manager.BuildChain();
-```
-
-`LoadInputConfig` runs the same preflight automatically and throws one aggregated
-diagnostic.
-
-## Cut config
-
-```yaml
-schema_version: 1
-
 cuts:
   positive_pt: pt > 0
   selected: accepted && pt > 25
   central: abs(eta) < 2.5
 ```
 
-Cut values are classic ROOT expressions. Aliases from the loaded input config are
-expanded before `TTreeFormula` compilation.
-
-Recommended order:
-
-```cpp
-manager.LoadInputConfig("input.yaml");
-manager.BuildChain();
-manager.PreflightCutConfig("cuts.yaml").ThrowIfInvalid("cuts.yaml");
-manager.LoadCutConfig("cuts.yaml");
-manager.EnableAllCuts();
-```
-
-Preflighting after `BuildChain()` enables formula compilation against the actual
-tree. Structural validation still works before a tree is available.
-
-Select individual cuts with:
+Names must be unique and non-empty; expressions must be non-empty scalar text.
+Lambda markers cannot be restored from YAML and are rejected. Expressions are
+passed unchanged to the chosen backend. Alias definitions belong in native ROOT
+code. YAML order is preserved.
 
 ```cpp
-manager.EnableCuts({"positive_pt", "central"});
+auto cuts = Cascade::LoadCuts("cuts.yaml");
+auto selected = Cascade::SelectCuts(cuts, {"positive_pt", "central"});
+Cascade::WriteCuts("selected-cuts.yaml", selected);
 ```
 
-## Histogram config
+An empty selection selects no cuts. Unknown or repeated selected names fail.
+
+## Histograms
 
 ```yaml
 schema_version: 1
-
 histograms:
   jet_pt:
     expr: pt
@@ -126,40 +40,34 @@ histograms:
     bins: [100, 0, 500]
 ```
 
-Each `bins` value is:
-
-```text
-[positive integer number of bins, finite minimum, finite maximum]
-```
-
-The maximum must be greater than the minimum. Histogram expressions use the same
-alias expansion as cuts.
+`bins` is `[positive integer number of bins, finite minimum, finite maximum]`.
+The maximum must exceed the minimum and the count must fit a C++ `int`.
+This convenience schema describes uniform 1D histograms. It does not restrict
+native ROOT histogram models, types, or dimensionality used by module code.
 
 ```cpp
-manager.PreflightHistogramConfig("histograms.yaml").ThrowIfInvalid("histograms.yaml");
-manager.LoadHistogramConfig("histograms.yaml");
+auto histograms = Cascade::LoadHistograms("histograms.yaml");
+Cascade::WriteHistograms("copy.yaml", histograms);
 ```
 
-When the classic tree exists, preflight compiles every expression. RDF histogram
-booking uses the same raw configuration structure.
+## Validation
 
-## Generating config
-
-Use framework writers when possible:
+Loaders validate before returning specs and report the path and errors. Structural
+preflight collects errors without opening ROOT files or compiling expressions:
 
 ```cpp
-AnalysisManager::WriteInputConfig(tree, "input.yaml", {"events.root"});
-manager.WriteCutConfig("cuts.yaml");
-manager.WriteHistogramConfig("histograms.yaml");
+auto report = Cascade::PreflightCutConfig("cuts.yaml");
+report.ThrowIfInvalid("cuts.yaml");
+auto histReport = Cascade::PreflightHistogramConfig("histograms.yaml");
 ```
 
-Generated files include the current schema version.
+Malformed YAML, unsupported/missing schema versions, duplicate names, malformed
+expressions, and invalid bins fail. ROOT checks actual columns/types/expressions
+when native APIs or the optional helpers consume the specs. Writers also validate
+before opening output files. See [Native ROOT](analysis-config.md) for examples.
 
-Runtime RDF lambda filters are intentionally not part of the YAML format.
-`WriteCutConfig` rejects a manager containing one, and preflight rejects
-`--lambda:` markers from external files because a callable cannot be restored
-from text. Register those filters in module code after loading serializable
-cuts.
+Input files, trees, aliases, and branch types are configured directly through ROOT;
+the former AnalysisManager input schema is no longer interpreted by Cascade.
 
 ## Parameter YAML
 
@@ -215,7 +123,7 @@ with open("resolved-params.json", "w", encoding="utf-8") as output:
 
 ## Preflight boundary
 
-Preflight checks structure and the resources it can inspect. It does not prove:
+Preflight checks YAML structure only. It does not prove:
 
 - remote files will remain available during execution;
 - a formula has the intended physics meaning;

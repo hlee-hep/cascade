@@ -1,8 +1,8 @@
 # Provenance manifests
 
 Cascade records reproducibility data as versioned JSON manifests. This is the
-canonical record for module runs and DAG workflows; `save_run_log` remains as a
-compatibility alias that writes a workflow manifest.
+canonical record for module runs and DAG workflows. Use `save_provenance`
+to write a workflow manifest.
 
 ## Module-run manifest
 
