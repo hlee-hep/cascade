@@ -18,7 +18,7 @@ class PythonWorkerIntegrationTests(unittest.TestCase):
             module.set_output_directory(root / "output")
             module.set_cache_directory(root / "cache")
             result = controller.run_module_isolated(module)
-            self.assertEqual(result.status.value, "Done")
+            self.assertEqual(result.status.value, "Done", result.message)
             self.assertEqual(result.cache_decision, "bypassed")
             refreshed = controller.refresh_plugins()
             self.assertEqual(refreshed["added_cpp"], [])

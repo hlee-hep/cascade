@@ -97,7 +97,7 @@ jobs:
           export CASCADE_TEST_ASSERT_ISOLATED_PYTHON=1
           export PYTHONPATH="$PWD/build/test-runtime"
           export TMPDIR="$RUNNER_TEMP"
-          export LD_LIBRARY_PATH="$PWD/build/src:$PWD/build/utils:$PWD/build/AnalysisManager:$PWD/build/ParamManager:$PWD/build/PlotManager:$PWD/build/main:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$PWD/build/src:$PWD/build/utils:$PWD/build/AnalysisConfig:$PWD/build/ParamManager:$PWD/build/PlotManager:$PWD/build/main:${LD_LIBRARY_PATH:-}"
 
           python -m unittest -v tests/test_*.py
 
@@ -113,7 +113,7 @@ jobs:
 
       - name: Check installed runtime
         run: |
-          python -c 'import cascade; assert cascade.__version__ == "0.3.0"; assert cascade.__abi_version__ == 3; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
+          python -c 'import cascade; assert cascade.__version__ == "0.3.0"; assert cascade.__abi_version__ == 4; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
           cascade doctor runtime --json
 
       - name: Install and verify toy dimuon plugin
