@@ -9,6 +9,7 @@ class RuntimeOptions:
     artifact_hash_cache_entries: int
 
 from .py_amcm import Controller as Controller
+from .py_amcm import WorkflowProvenanceError as WorkflowProvenanceError
 
 def configure_runtime(**values: Any) -> RuntimeOptions: ...
 def get_runtime_options() -> RuntimeOptions: ...

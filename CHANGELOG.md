@@ -7,6 +7,13 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Changed
 
+- Default workflow provenance to the common module output directory when one is
+  available. Python `Controller.run_dag()` preserves the DAG result when workflow
+  recording fails, reports the storage error separately, and offers
+  `require_provenance=True` with a result-carrying `WorkflowProvenanceError`.
+- Preflight publication Python/LaTeX dependencies before rendering or creating
+  output directories. Support per-save `dpi`, `PublicationStyle.dpi`, C++
+  `PublicationStyle.Dpi`, and renderer CLI `--dpi` while preserving atomic exports.
 - Synchronize the generated test runtime with current outputs, removing retired
   modules and bytecode. Add clean deployment staging and check the staged runtime
   in release CI.

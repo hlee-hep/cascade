@@ -303,7 +303,7 @@ void PlotManager::SavePublication(const std::vector<PlotSpec> &panels, const std
         {"legend_columns", l.LegendColumns}, {"share_x", l.ShareX}, {"share_y", l.ShareY},
         {"panel_labels", l.PanelLabels}, {"ratio_gap", l.RatioGap}, {"colorbar_space", l.ColorbarSpace}};
     Json style = {{"font_size", s.FontSize}, {"axis_size", s.AxisSize}, {"legend_size", s.LegendSize},
-        {"marker_size", s.MarkerSize}, {"line_width", s.LineWidth}, {"header_gap", s.HeaderGap}, {"use_tex", s.UseTex}, {"color_map", s.ColorMap}};
+        {"marker_size", s.MarkerSize}, {"line_width", s.LineWidth}, {"header_gap", s.HeaderGap}, {"use_tex", s.UseTex}, {"color_map", s.ColorMap}, {"dpi", s.Dpi}};
     Json document = {{"schema_version", 1}, {"options", {{"layout", layout}, {"style", style}}}, {"panels", Json::array()}};
     for (const auto &panel : panels) document["panels"].push_back(Json::parse(ExportPublication(panel)));
     RunPublication(document, output, "single", python);

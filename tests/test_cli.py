@@ -1015,6 +1015,22 @@ class CliTests(unittest.TestCase):
                 str(pathlib.Path(directory) / "output" / "workflow.dot"),
             )
 
+    def test_dag_json_reports_provenance_failure_separately(self):
+        workflow = {"schema_version": 1, "modules": [{"module": "Module", "name": "module"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "workflow.json"
+            path.write_text(json.dumps(workflow), encoding="utf-8")
+            controller = _FakeController()
+            controller.last_workflow_provenance_error = "storage unavailable"
+            args = types.SimpleNamespace(workflow=str(path), fail_fast=None, dot=None, json=True)
+            with mock.patch.object(cli_execution, "_load_controller", return_value=controller), \
+                    mock.patch.object(cli_execution, "_emit") as emit:
+                cli_execution.cmd_dag_run(args)
+            payload = emit.call_args.args[0]
+            self.assertTrue(payload["succeeded"])
+            self.assertFalse(payload["failed"])
+            self.assertEqual(payload["provenance_error"], "storage unavailable")
+
     def test_dag_workflow_rejects_unknown_fields(self):
         workflow = {
             "schema_version": 1,

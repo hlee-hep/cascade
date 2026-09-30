@@ -38,6 +38,7 @@ __abi_tag__ = get_abi_tag()
 
 _LAZY_MODULES = {
     "Controller": "py_amcm",
+    "WorkflowProvenanceError": "py_amcm",
     "histogram_panel": "plot_data",
     "PublicationFigure": "publication",
     "PublicationLayout": "publication",
