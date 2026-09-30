@@ -17,6 +17,7 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
     workflow.FailFast = failFast;
     workflow.Succeeded = true;
     std::set<std::string> languages;
+    std::set<std::filesystem::path> outputDirectories;
 
     std::map<std::string, ModuleRunManifest> manifestsByInstance;
     for (const auto &entry : m_ExecutedModules)
@@ -26,6 +27,8 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
             manifest = ProvenanceRecorder::LoadModuleRun(entry.ManifestPath);
         if (manifest)
         {
+            if (!manifest->OutputDirectory.empty())
+                outputDirectories.insert(std::filesystem::absolute(manifest->OutputDirectory).lexically_normal());
             if (!manifest->Runtime.Language.empty()) languages.insert(manifest->Runtime.Language);
             manifestsByInstance[entry.InstanceName] = *manifest;
             workflow.ModuleManifestPaths.push_back(manifest->ManifestPath);
@@ -79,7 +82,10 @@ std::string AMCM::SaveProvenance(const std::string &path, bool failFast) const
     if (workflow.FinishedAt.empty()) workflow.FinishedAt = ProvenanceRecorder::NowUTC();
     workflow.Runtime = ProvenanceRecorder::Runtime(
         languages.size() > 1 ? "mixed" : (languages.empty() ? "cpp" : *languages.begin()));
-    const std::string saved = ProvenanceRecorder::WriteWorkflowRun(workflow, path);
+    std::filesystem::path target = path;
+    if (target.empty() && outputDirectories.size() == 1)
+        target = *outputDirectories.begin() / ".cascade" / "provenance" / "workflows" / (workflow.RunId + ".json");
+    const std::string saved = ProvenanceRecorder::WriteWorkflowRun(workflow, target);
     LOG_INFO("CONTROL", "Workflow provenance '" << saved << "' is saved.");
     return saved;
 }

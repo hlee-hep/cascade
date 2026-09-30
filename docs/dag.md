@@ -68,6 +68,26 @@ if result.failed():
 failed DAG node automatically. `Done` and cache/dry-run `Skipped` results allow
 dependents to proceed.
 
+`run_dag()` automatically saves workflow provenance. Without an explicit
+`provenance_path`, executions whose module manifests share one output directory
+write under `<output>/.cascade/provenance/workflows/`. With multiple output roots
+or no module manifests, the existing `CASCADE_CACHE_DIR`/home-cache default is used.
+An explicit path always takes precedence.
+
+Workflow recording happens after DAG execution. A recording failure logs a
+warning and sets `controller.last_workflow_provenance_error`; `run_dag()` still
+returns the actual DAG result and leaves committed outputs in place. The path
+attribute is empty when recording fails. Both recording attributes are cleared
+at the start of each invocation, so a previous successful path is not reused.
+
+When workflow recording is mandatory, use
+`run_dag(require_provenance=True)`. Recording failure then raises
+`WorkflowProvenanceError`, whose `result` contains the completed DAG outcome
+and whose `provenance_error` contains the original error. Calling
+`save_provenance()` explicitly continues to raise storage errors directly.
+CLI `dag run --json` includes a separate `provenance_error` field; its analysis
+status and exit code continue to reflect the DAG result.
+
 Set `isolated=True` per node when required:
 
 ```python

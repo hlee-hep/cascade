@@ -906,6 +906,35 @@ void TestControllerContracts()
     assert(!concurrentRunFailed.load());
 }
 
+void TestWorkflowProvenanceLocation()
+{
+    const auto root = std::filesystem::temp_directory_path() / "cascade-workflow-location";
+    std::filesystem::remove_all(root);
+    AMCM controller(PluginTrustPolicy::Verified, false);
+    auto first = std::make_shared<LifecycleModule>();
+    first->SetName("first");
+    first->SetOutputDirectory((root / "output").string());
+    first->SetCacheDirectory((root / "cache").string());
+    controller.RegisterModuleHandle(first);
+    assert(controller.RunAModule(first).Succeeded());
+    const auto saved = std::filesystem::path(controller.SaveProvenance());
+    assert(saved.parent_path() == root / "output" / ".cascade" / "provenance" / "workflows");
+    assert(std::filesystem::is_regular_file(saved));
+    const auto explicitPath = root / "explicit" / "workflow.json";
+    assert(controller.SaveProvenance(explicitPath.string()) == explicitPath.string());
+
+    // Multiple output roots retain the existing cache-directory fallback.
+    auto second = std::make_shared<LifecycleModule>();
+    second->SetName("second");
+    second->SetOutputDirectory((root / "other-output").string());
+    second->SetCacheDirectory((root / "cache").string());
+    controller.RegisterModuleHandle(second);
+    assert(controller.RunAModule(second).Succeeded());
+    const auto fallback = std::filesystem::path(controller.SaveProvenance());
+    assert(fallback.parent_path() == std::filesystem::path(std::getenv("CASCADE_CACHE_DIR")) / "provenance" / "workflows");
+    std::filesystem::remove_all(root);
+}
+
 void TestParamRoundTrip()
 {
     ParamManager source;
@@ -1941,6 +1970,7 @@ int main()
     TestProvenanceCacheLink();
     TestCacheIntegrityValidation();
     TestControllerContracts();
+    TestWorkflowProvenanceLocation();
     TestPluginTrustPolicy();
     TestPluginVerifierService();
     TestPluginSourceDependencies();

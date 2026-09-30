@@ -5,12 +5,14 @@ No histogram rebinning, normalization, fitting, or error estimation occurs here.
 """
 from copy import deepcopy
 from dataclasses import dataclass
+import importlib.util
 import math
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 
 
@@ -89,9 +91,10 @@ class PublicationStyle:
     header_gap: float = 3
     use_tex: bool = True
     color_map: str = "viridis"
+    dpi: float = 220
 
     def __post_init__(self):
-        for name in ("font_size", "axis_size", "legend_size", "marker_size", "line_width"):
+        for name in ("font_size", "axis_size", "legend_size", "marker_size", "line_width", "dpi"):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if not math.isfinite(self.header_gap) or self.header_gap < 0:
@@ -277,16 +280,46 @@ class PublicationFigure:
         self.panels.append(panel)
         return self
 
+    def check_dependencies(self):
+        """Report rendering readiness without importing plotting modules or writing files."""
+        missing = []
+        python = {name: importlib.util.find_spec(name) is not None for name in ("numpy", "matplotlib")}
+        missing.extend(name for name, available in python.items() if not available)
+        executables, packages = {}, {}
+        if self.use_tex:
+            executables = {name: shutil.which(name) for name in ("latex", "dvipng", "kpsewhich")}
+            missing.extend(name for name, path in executables.items() if path is None)
+            for package in ("amsmath.sty", "type1cm.sty", "type1ec.sty"):
+                available = False
+                if executables["kpsewhich"]:
+                    try:
+                        probe = subprocess.run([executables["kpsewhich"], package], capture_output=True,
+                                               text=True, timeout=10, check=False)
+                        available = probe.returncode == 0 and bool(probe.stdout.strip())
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                packages[package] = available
+                if not available:
+                    missing.append(package)
+        return {"ready": not missing, "missing": missing, "use_tex": self.use_tex,
+                "python": python, "executables": executables, "tex_packages": packages}
+
     def _rc(self):
-        if self.use_tex and (not shutil.which("latex") or not shutil.which("dvipng")):
-            raise RuntimeError("Publication output needs LaTeX and dvipng for REVTeX typography; install them or explicitly use use_tex=False")
+        dependencies = self.check_dependencies()
+        if not dependencies["ready"]:
+            message = "Publication rendering dependencies are missing: " + ", ".join(dependencies["missing"]) + "."
+            if not all(dependencies["python"].values()):
+                message += " Install NumPy and Matplotlib (python -m pip install numpy matplotlib)."
+            if self.use_tex:
+                message += " Install LaTeX/dvipng and the listed TeX packages, or explicitly use use_tex=False for mathtext."
+            raise RuntimeError(message)
         return {"text.usetex": self.use_tex, "text.latex.preamble": r"\usepackage{amsmath}",
                 "font.family": "serif", "font.serif": ["Computer Modern Roman"] if self.use_tex else ["DejaVu Serif"],
                 "mathtext.fontset": "cm", "font.size": self.style.font_size, "axes.labelsize": self.style.axis_size,
                 "xtick.labelsize": self.style.font_size, "ytick.labelsize": self.style.font_size, "legend.fontsize": self.style.legend_size,
                 "axes.linewidth": .8, "xtick.direction": "in", "ytick.direction": "in",
                 "xtick.top": True, "ytick.right": True, "legend.frameon": False,
-                "hatch.linewidth": .5, "savefig.dpi": 220, "pdf.fonttype": 42}
+                "hatch.linewidth": .5, "savefig.dpi": self.style.dpi, "pdf.fonttype": 42}
 
     def _draw_heatmap(self, fig, ax, item, index):
         import numpy as np
@@ -578,23 +611,33 @@ class PublicationFigure:
 
     def render(self):
         """Return a standalone Matplotlib Figure; save() keeps export rcParams scoped."""
+        rc = self._rc()
         import matplotlib as mpl
-        with mpl.rc_context(self._rc()):
+        with mpl.rc_context(rc):
             return self._draw()
 
-    def save(self, output):
-        """Atomically replace a PDF/PNG/SVG only after rendering has succeeded."""
-        import matplotlib as mpl
-        import matplotlib.pyplot as plt
+    def save(self, output, *, dpi=None):
+        """Atomically export PDF/PNG/SVG; dpi overrides style.dpi for this save only.
+
+        DPI sets PNG resolution and rasterized layers in vector files. Dependencies
+        and options are checked before creating output directories or rendering.
+        """
+        if dpi is not None and (not math.isfinite(dpi) or dpi <= 0):
+            raise ValueError("dpi must be finite and positive")
         output=Path(output)
         kind=output.suffix.lower().lstrip(".")
         if kind not in ("pdf","png","svg"):
             raise ValueError("Publication output must have a .pdf, .png, or .svg extension")
+        rc = self._rc()
+        if dpi is not None:
+            rc["savefig.dpi"] = dpi
+        import matplotlib as mpl
+        import matplotlib.pyplot as plt
         output.parent.mkdir(parents=True,exist_ok=True)
         temporary=None
         fig=None
         try:
-            with mpl.rc_context(self._rc()):
+            with mpl.rc_context(rc):
                 fig=self._draw()
                 fd,temporary=tempfile.mkstemp(prefix=".cascade-publication-",suffix="."+kind,dir=output.parent)
                 os.close(fd)
@@ -614,6 +657,7 @@ def main():
     parser.add_argument("--output",required=True)
     parser.add_argument("--layout",choices=_LAYOUTS,default="single")
     parser.add_argument("--no-tex",action="store_true")
+    parser.add_argument("--dpi",type=float,default=None,help="Override export resolution (style default: 220 dpi)")
     args=parser.parse_args()
     with open(args.input,encoding="utf-8") as stream:
         document=json.load(stream)
@@ -624,7 +668,7 @@ def main():
     style = PublicationStyle(**options.get("style", {}))
     plotter=PublicationFigure(layout, style=style, use_tex=False if args.no_tex else None)
     for panel in document["panels"]:plotter.add(panel)
-    plotter.save(args.output)
+    plotter.save(args.output, dpi=args.dpi)
 
 
 if __name__=="__main__":

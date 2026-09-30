@@ -226,6 +226,28 @@ Unrecognized ROOT commands fail with a request for an explicit LaTeX label.
 `render()` returns a Matplotlib figure; `save()` also scopes export settings and
 uses atomic file replacement. PDF, PNG, and SVG are supported.
 
+Check rendering dependencies before processing or exporting figures:
+
+```python
+figure = PublicationFigure(use_tex=False)
+readiness = figure.check_dependencies()
+print(readiness["ready"], readiness["missing"])
+```
+
+This checks NumPy/Matplotlib availability. LaTeX mode also checks `latex`,
+`dvipng`, `kpsewhich`, and the `amsmath.sty`, `type1cm.sty`, and `type1ec.sty`
+packages. Rendering and saving run the same preflight automatically. Missing
+dependencies produce an actionable error before output directories are created;
+the renderer does not silently change typography. Mathtext mode is selected
+explicitly with `use_tex=False`.
+
+`figure.save("selection.png", dpi=600)` overrides export DPI for that save only.
+Use `PublicationStyle(dpi=600)` for a figure-wide default; the existing default
+is 220. DPI controls PNG resolution and rasterized heatmaps in PDF/SVG while
+vector text and lines remain vector. C++ callers can set `options.Style.Dpi = 600`.
+The renderer CLI accepts `--dpi 600`. DPI must be finite and positive; invalid
+values and failed exports leave existing output files unchanged.
+
 Numerical behavior follows ROOT `Draw`: cloned histograms receive view
 transformations, data use ROOT Poisson errors, `ZeroError=false` suppresses
 zero-count data points, negative overlay scales normalize to the visible stack,

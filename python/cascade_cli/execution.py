@@ -340,6 +340,7 @@ def cmd_dag_run(args) -> None:
         "failed": result.failed(),
         "nodes": nodes,
         "provenance": getattr(controller, "last_workflow_provenance_path", ""),
+        "provenance_error": getattr(controller, "last_workflow_provenance_error", ""),
     }
     if args.json:
         _emit(payload, True)

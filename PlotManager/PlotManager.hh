@@ -472,6 +472,7 @@ struct PublicationStyle
     double MarkerSize = 3.2, LineWidth = 1.5, HeaderGap = 3; // Points.
     bool UseTex = true;
     std::string ColorMap = "viridis";
+    double Dpi = 220;
 };
 
 struct PublicationOptions

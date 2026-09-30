@@ -289,6 +289,16 @@ class _ModuleHandle:
         return self._ctrl.run_module_isolated(target)
 
 
+class WorkflowProvenanceError(RuntimeError):
+    """Workflow recording failed after execution; result retains the DAG outcome."""
+
+    def __init__(self, result, error):
+        self.result = result
+        self.provenance_error = error
+        outcome = "failed" if result.failed() else "completed"
+        super().__init__(f"DAG execution {outcome}; workflow provenance could not be saved: {error}")
+
+
 class Controller:
     """Public controller for verified C++ and Python analysis modules."""
 
@@ -304,6 +314,7 @@ class Controller:
         self._python_index_cache = None
         self._module_name_counters = {}
         self.last_workflow_provenance_path = ""
+        self.last_workflow_provenance_error = ""
         init_interrupt()
 
     def _python_index(self):
@@ -510,11 +521,23 @@ class Controller:
     def link_dag_parameter(self, from_node, from_key, to_node, to_key):
         self.ctrl.link_dag_module_parameter(from_node, from_key, to_node, to_key)
 
-    def run_dag(self, fail_fast=True, provenance_path=None):
+    def run_dag(self, fail_fast=True, provenance_path=None, *, require_provenance=False):
+        """Return the DAG outcome even if automatic workflow recording fails.
+
+        Recording failures are logged and retained in last_workflow_provenance_error.
+        require_provenance=True raises WorkflowProvenanceError carrying the DAG result.
+        """
+        self.last_workflow_provenance_path = ""
+        self.last_workflow_provenance_error = ""
         result = self.ctrl.run_dag(fail_fast)
-        self.last_workflow_provenance_path = self.save_provenance(
-            provenance_path, fail_fast=fail_fast
-        )
+        try:
+            self.save_provenance(provenance_path, fail_fast=fail_fast)
+        except (OSError, RuntimeError) as error:
+            self.last_workflow_provenance_error = str(error)
+            recording_error = WorkflowProvenanceError(result, error)
+            if require_provenance:
+                raise recording_error from error
+            log(log_level.WARN, "CONTROL", str(recording_error))
         return result
 
     def run_group(self, group, fail_fast=True):
