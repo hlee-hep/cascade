@@ -2,6 +2,18 @@
 
 Cascade tracks project releases and C++ plugin compatibility separately.
 
+| Source line | Framework version | C++ plugin ABI |
+| --- | --- | --- |
+| Current development tree | `0.4.0-dev` | 4 |
+| Latest release | `0.3.0` | 3 |
+
+`include/Version.hh` is the single source of truth for the framework version;
+`include/PluginABI.hh` defines the plugin ABI. Python, CLI, and provenance
+obtain the framework version from the C++ runtime. CI checks the installed runtime
+against these headers with `scripts/check_runtime_version.py`; release CI also
+checks the Git tag. Update current-version examples when changing the headers,
+and preserve historical release notes.
+
 ## Semantic version
 
 The project version is `MAJOR.MINOR.PATCH`, optionally followed by a SemVer
@@ -34,7 +46,7 @@ C++ definition:
 CASCADE_PLUGIN_ABI_VERSION
 ```
 
-The native ROOT transition uses ABI 4. It removes the AnalysisManager API and
+The 0.4.0-dev native ROOT transition uses ABI 4. It removes the AnalysisManager API and
 renames the ROOT scheduling hook to `UsesRoot`. Rebuild C++ plugins against the
 new headers and libraries. Cascade 0.3 used ABI 3; ABI 1 and 2 were pre-release.
 
@@ -68,7 +80,8 @@ configuration schema.
 
 ## Analysis configuration version
 
-Input, cut, and histogram YAML documents currently use `schema_version: 1`.
+Cut and histogram YAML documents currently use `schema_version: 1`.
+Input YAML configuration was removed in 0.4.0-dev.
 Parameter files use their registered parameter contract rather than a document
 schema version.
 
@@ -77,7 +90,8 @@ schema version.
 Module and workflow manifests use separate document identities,
 `cascade.module-run` and `cascade.workflow-run`, both at `schema_version: 1`.
 Snapshot cache schema 1 links hashes to module manifests. These document versions
-are independent of plugin ABI 4.
+are independent of plugin ABI 4. Snapshot identity hashing uses schema 5; this
+is distinct from the schema 1 cache document that stores those identities.
 
 ## Release policy
 

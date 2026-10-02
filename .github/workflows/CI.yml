@@ -113,7 +113,7 @@ jobs:
 
       - name: Check installed runtime
         run: |
-          python -c 'import cascade; assert cascade.__version__ == "0.3.0"; assert cascade.__abi_version__ == 4; print(cascade.__version__, cascade.__abi_version__, cascade.__abi_tag__)'
+          python scripts/check_runtime_version.py
           cascade doctor runtime --json
 
       - name: Install and verify toy dimuon plugin

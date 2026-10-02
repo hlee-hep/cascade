@@ -56,7 +56,7 @@ python3 -c 'import cascade; print(cascade.__version__, cascade.__abi_version__)'
 Expected version/ABI for this tree:
 
 ```text
-0.3.0 3
+0.4.0-dev 4
 ```
 
 ## 4. Install the example plugin

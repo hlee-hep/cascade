@@ -3,11 +3,14 @@
 Cascade versions the framework, plugin ABI, and document schemas independently.
 Read [Versioning and compatibility](versioning.md) before changing any version.
 
-## 0.3.0 release checklist
+## Upcoming release checklist
 
 ### Contract
 
-- [ ] `include/Version.hh`, the README, quickstart, and migration guide report the intended semantic version.
+- [ ] Set the intended version in `include/Version.hh` (currently `0.4.0-dev`);
+  remove `-dev` for a final release or replace it with the intended prerelease suffix.
+- [ ] Update current-version examples in the README, quickstart, versioning guide,
+  and migration guide while preserving historical release information.
 - [ ] `CASCADE_PLUGIN_ABI_VERSION` changes only when the public C++ binary contract changes.
 - [ ] Plugin manifest, analysis configuration, cache, and provenance schema versions remain compatible or have migration notes.
 - [ ] Public C++ headers and Python control surfaces match their documentation.
@@ -38,8 +41,10 @@ Read [Versioning and compatibility](versioning.md) before changing any version.
 - [ ] Re-sign distributed plugin manifests and verify them with provisioned public keys.
 - [ ] Review installation paths and runtime loader instructions on a fresh shell.
 - [ ] Create the release tag only after the staged artifacts pass verification.
-- [ ] Push `v0.3.0` only after CI is green; the tag workflow creates a GitHub
-  release and attaches the benchmark baseline JSON files.
+- [ ] Add `docs/releases/v<version>.md` for the intended release.
+- [ ] Push the matching `v<version>` tag only after CI is green; the tag workflow
+  checks it against the runtime, creates a GitHub release, and attaches the
+  benchmark baseline JSON files.
 
 ## Release commands
 

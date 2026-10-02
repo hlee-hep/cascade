@@ -65,17 +65,7 @@ jobs:
         run: |
           export PYTHONPATH="$RUNNER_TEMP/cascade-runtime/lib"
           export LD_LIBRARY_PATH="$RUNNER_TEMP/cascade-runtime/lib:${LD_LIBRARY_PATH:-}"
-          python - <<'PYTHON'
-          import os
-          import pathlib
-          import re
-          import cascade
-          header = pathlib.Path("include/PluginABI.hh").read_text()
-          abi = int(re.search(r"^#define CASCADE_PLUGIN_ABI_VERSION (\d+)$", header, re.M)[1])
-          assert cascade.__version__ == os.environ["GITHUB_REF_NAME"][1:]
-          assert cascade.__abi_version__ == abi
-          print(cascade.__version__, cascade.__abi_version__)
-          PYTHON
+          python scripts/check_runtime_version.py --tag "$GITHUB_REF_NAME"
 
       - name: Capture release benchmark baseline
         run: |

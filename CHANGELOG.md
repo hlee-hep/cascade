@@ -7,6 +7,10 @@ based on Keep a Changelog, and releases follow Semantic Versioning.
 
 ### Changed
 
+- Identify the ABI 4 development tree as `0.4.0-dev`, separate from the released
+  `0.3.0` / ABI 3 baseline. Derive the ABI tag from the ABI version constant and
+  check runtime versions and ABI tags against the source headers in CI.
+
 - Default workflow provenance to the common module output directory when one is
   available. Python `Controller.run_dag()` preserves the DAG result when workflow
   recording fails, reports the storage error separately, and offers

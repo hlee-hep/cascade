@@ -63,7 +63,7 @@
 #endif
 
 #define CASCADE_ABI_TAG                                                                                                                                            \
-    "abi=3;cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
+    "abi=" CASCADE_STRINGIFY(CASCADE_PLUGIN_ABI_VERSION) ";cxx=" CASCADE_STRINGIFY(__cplusplus) ";compiler=" CASCADE_COMPILER_STR ";stdlib=" CASCADE_STDLIB_STR                           \
     ";cxx11abi=" CASCADE_STDLIB_ABI_STR ";root=" CASCADE_ROOT_VERSION ";ptr=" CASCADE_POINTER_WIDTH_STR                                      \
     ";build=" CASCADE_BUILD_MODE_STR ";glibcxx_debug=" CASCADE_GLIBCXX_DEBUG_STR
 

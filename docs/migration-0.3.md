@@ -3,7 +3,13 @@
 Cascade 0.3 establishes the first public plugin contract and updates older
 analysis config documents. No pre-0.3 plugin ABI is supported.
 
-## Compatibility summary
+This guide records the `0.3.0` / ABI 3 migration baseline. The current development
+tree is `0.4.0-dev` / ABI 4; its native ROOT changes supersede the AnalysisManager
+and input-YAML instructions below. See [Native ROOT migration](analysis-config.md)
+and [Versioning and compatibility](versioning.md) for the current contract.
+Sections 9 and 10 describe additional development-tree migrations.
+
+## Compatibility summary (0.3.0 release)
 
 | Area | 0.3 requirement |
 | --- | --- |
@@ -228,7 +234,8 @@ controllers can safely use different policies. Python callers should use
 
 ## Migration verification
 
-- [ ] Framework reports version 0.3.0 and ABI 3.
+- [ ] Framework version and ABI match the target source headers (currently
+  `0.4.0-dev` / ABI 4; the historical 0.3.0 release used ABI 3).
 - [ ] No development-only binaries built against pre-baseline headers remain in active plugin roots.
 - [ ] Every analysis config has `schema_version: 1`.
 - [ ] Every protected output uses a staging helper.

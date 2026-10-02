@@ -10,8 +10,9 @@ supplies lifecycle management,
 typed parameters, analysis configuration, DAG execution, reproducible caching, transactional
 outputs, versioned provenance, and optional subprocess isolation.
 
-The latest release is **0.3.0** (plugin ABI 3). This development tree uses
-**plugin ABI 4** for the native ROOT transition; C++ plugins must be rebuilt.
+This development tree is **0.4.0-dev** with **plugin ABI 4** for the native ROOT
+transition; C++ plugins must be rebuilt. The latest release is **0.3.0**
+(plugin ABI 3).
 The full build fingerprint is checked in addition to the integer ABI.
 
 Release notes are tracked in [CHANGELOG.md](CHANGELOG.md), and the verification
